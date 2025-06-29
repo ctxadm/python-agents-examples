@@ -69,26 +69,36 @@ class VisionAgent(Agent):
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
         # Add the latest video frame, if any, to the new message
         if self._latest_frame:
+            logger.info(f"Adding frame to message: {self._latest_frame.width}x{self._latest_frame.height}")
             new_message.content.append(ImageContent(image=self._latest_frame))
-            self._latest_frame = None
+            # Nicht löschen, damit wir kontinuierlich Frames haben
+            # self._latest_frame = None
+        else:
+            logger.warning("No frame available when user asked question")
     
     # Helper method to buffer the latest video frame from the user's track
     def _create_video_stream(self, track: rtc.Track):
-        # Close any existing stream (we only want one at a time)
+        # VideoStream hat keine close() Methode - wir setzen es einfach auf None
         if self._video_stream is not None:
-            self._video_stream.close()
+            self._video_stream = None
         
         # Create a new stream to receive frames
         self._video_stream = rtc.VideoStream(track)
         
         async def read_stream():
+            frame_count = 0
             async for event in self._video_stream:
+                frame_count += 1
                 # Store the latest frame for use later
                 self._latest_frame = event.frame
+                
+                # Log every 30 frames
+                if frame_count % 30 == 0:
+                    logger.info(f"Received {frame_count} frames, latest: {event.frame.width}x{event.frame.height}")
         
         # Store the async task
         task = asyncio.create_task(read_stream())
-        task.add_done_callback(lambda t: self._tasks.remove(t))
+        task.add_done_callback(lambda t: self._tasks.remove(t) if t in self._tasks else None)
         self._tasks.append(task)
 
 async def entrypoint(ctx: JobContext):
