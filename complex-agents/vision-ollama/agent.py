@@ -41,7 +41,7 @@ class VisionAgent(Agent):
             """,
             stt=deepgram.STT(),
             llm=ollama_llm,
-            tts=cartesia.TTS(),  # Cartesia statt rime
+            tts=openai.TTS(),  
             vad=silero.VAD.load()
         )
     
