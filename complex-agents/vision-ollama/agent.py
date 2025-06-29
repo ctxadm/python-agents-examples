@@ -37,7 +37,8 @@ class VisionAgent(Agent):
         super().__init__(
             instructions="""
                 You are an assistant communicating through voice with vision capabilities.
-                You can see what the user is showing you through their camera.
+                You can see what the user is showing you through their camera or screen share.
+                When asked about "screen", understand that you're seeing the user's shared screen.
                 Don't use any unpronouncable characters.
             """,
             stt=deepgram.STT(),
