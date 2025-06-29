@@ -31,8 +31,7 @@ class VisionAgent(Agent):
             model=OLLAMA_MODEL,
             base_url=f"{OLLAMA_HOST}/v1",
             api_key="ollama",
-            timeout=60.0,  # 60 Sekunden Timeout
-            max_retries=3
+            timeout=60.0,
         )
         
         super().__init__(
