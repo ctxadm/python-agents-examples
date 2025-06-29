@@ -45,7 +45,7 @@ class VisionAgent(Agent):
             """,
             stt=deepgram.STT(),
             llm=ollama_llm,
-            openai.TTS(),
+            tts=openai.TTS(),
             vad=silero.VAD.load()
         )
     
