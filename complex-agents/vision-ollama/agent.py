@@ -45,27 +45,44 @@ class VisionAgent(Agent):
             """,
             stt=deepgram.STT(),
             llm=ollama_llm,
-            tts=openai.TTS(),
+            tts=cartesia.TTS(),  # oder openai.TTS() falls kein Cartesia Key
             vad=silero.VAD.load()
         )
     
     async def on_enter(self):
         room = get_job_context().room
         
+        # Debug: Log all participants and tracks
+        logger.info(f"Room participants: {len(room.remote_participants)}")
+        
         # Find the first video track (if any) from the remote participant
         if room.remote_participants:
-            remote_participant = list(room.remote_participants.values())[0]
-            video_tracks = [
-                publication.track
-                for publication in list(remote_participant.track_publications.values())
-                if publication.track and publication.track.kind == rtc.TrackKind.KIND_VIDEO
-            ]
-            if video_tracks:
-                self._create_video_stream(video_tracks[0])
+            for participant_id, remote_participant in room.remote_participants.items():
+                logger.info(f"Participant {participant_id}: {remote_participant.name or 'Unknown'}")
+                
+                # Log all track publications
+                for track_id, publication in remote_participant.track_publications.items():
+                    logger.info(f"  Track {track_id}: kind={publication.kind}, subscribed={publication.subscribed}")
+                
+                # Get video tracks
+                video_tracks = [
+                    publication.track
+                    for publication in list(remote_participant.track_publications.values())
+                    if publication.track and publication.track.kind == rtc.TrackKind.KIND_VIDEO
+                ]
+                
+                if video_tracks:
+                    logger.info(f"Found {len(video_tracks)} video track(s), using first one")
+                    self._create_video_stream(video_tracks[0])
+                else:
+                    logger.warning("No video tracks found at startup")
+        else:
+            logger.warning("No remote participants found at startup")
         
         # Watch for new video tracks not yet published
         @room.on("track_subscribed")
         def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+            logger.info(f"Track subscribed event: kind={track.kind}, sid={track.sid}, participant={participant.name}")
             if track.kind == rtc.TrackKind.KIND_VIDEO:
                 logger.info(f"New video track subscribed: {track.sid}")
                 self._create_video_stream(track)
@@ -86,11 +103,16 @@ class VisionAgent(Agent):
             self._frame_buffer.clear()
         else:
             logger.warning("No frames in buffer when user turn completed")
+            logger.info(f"Video stream active: {self._video_stream is not None}")
+            logger.info(f"Active tasks: {len(self._tasks)}")
     
     # Helper method to buffer video frames from the user's track
     def _create_video_stream(self, track: rtc.Track):
+        logger.info(f"Creating video stream for track: {track.sid}")
+        
         # Close any existing stream (we only want one at a time)
         if self._video_stream is not None:
+            logger.info("Closing existing video stream")
             self._video_stream.close()
         
         # Create a new stream to receive frames
@@ -98,23 +120,30 @@ class VisionAgent(Agent):
         
         async def read_stream():
             frame_count = 0
-            async for event in self._video_stream:
-                frame_count += 1
-                
-                # Frame zum Buffer hinzufügen
-                self._frame_buffer.append(event.frame)
-                
-                # Buffer-Größe begrenzen
-                if len(self._frame_buffer) > self._max_frames:
-                    self._frame_buffer.pop(0)  # Ältestes Frame entfernen
-                
-                # Debug-Info alle 30 Frames
-                if frame_count % 30 == 0:
-                    logger.debug(f"Frame buffer size: {len(self._frame_buffer)}, total frames: {frame_count}")
+            logger.info(f"Starting to read frames from track {track.sid}")
+            try:
+                async for event in self._video_stream:
+                    frame_count += 1
+                    
+                    # Frame zum Buffer hinzufügen
+                    self._frame_buffer.append(event.frame)
+                    
+                    # Buffer-Größe begrenzen
+                    if len(self._frame_buffer) > self._max_frames:
+                        self._frame_buffer.pop(0)  # Ältestes Frame entfernen
+                    
+                    # Debug-Info alle 30 Frames
+                    if frame_count % 30 == 0:
+                        logger.info(f"Frame buffer size: {len(self._frame_buffer)}, total frames: {frame_count}")
+                        logger.info(f"Latest frame: {event.frame.width}x{event.frame.height}")
+            except Exception as e:
+                logger.error(f"Error reading video stream: {e}")
+            finally:
+                logger.info(f"Video stream ended after {frame_count} frames")
         
         # Store the async task
         task = asyncio.create_task(read_stream())
-        task.add_done_callback(lambda t: self._tasks.remove(t))
+        task.add_done_callback(lambda t: self._tasks.remove(t) if t in self._tasks else None)
         self._tasks.append(task)
 
 async def entrypoint(ctx: JobContext):
