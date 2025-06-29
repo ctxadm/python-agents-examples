@@ -30,7 +30,9 @@ class VisionAgent(Agent):
         ollama_llm = openai.LLM(
             model=OLLAMA_MODEL,
             base_url=f"{OLLAMA_HOST}/v1",
-            api_key="ollama"  # Ollama braucht keinen echten API Key
+            api_key="ollama",
+            timeout=60.0,  # 60 Sekunden Timeout
+            max_retries=3
         )
         
         super().__init__(
