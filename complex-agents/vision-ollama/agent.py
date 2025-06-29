@@ -36,9 +36,9 @@ class VisionAgent(Agent):
         
         super().__init__(
             instructions="""
-                You are an assistant communicating through voice with vision capabilities.
-                You can see what the user is showing you through their camera.
-                Don't use any unpronouncable characters.
+                You are an assistant who communicates by voice and can also see.
+                You can see what the user is showing you through their camera. You can see what the user is showing you through their screen.
+                Do not use unpronounceable characters.
             """,
             stt=deepgram.STT(),
             llm=ollama_llm,
