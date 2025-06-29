@@ -45,7 +45,7 @@ class VisionAgent(Agent):
             """,
             stt=deepgram.STT(),
             llm=ollama_llm,
-            tts=cartesia.TTS(),  # oder openai.TTS() falls kein Cartesia Key
+            tts=openai.TTS(),
             vad=silero.VAD.load()
         )
     
