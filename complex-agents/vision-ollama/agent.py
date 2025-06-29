@@ -45,7 +45,7 @@ class VisionAgent(Agent):
             """,
             stt=deepgram.STT(),
             llm=ollama_llm,
-            tts=openai.TTS(),
+            oder openai.TTS(),
             vad=silero.VAD.load()
         )
     
@@ -86,6 +86,18 @@ class VisionAgent(Agent):
             if track.kind == rtc.TrackKind.KIND_VIDEO:
                 logger.info(f"New video track subscribed: {track.sid}")
                 self._create_video_stream(track)
+        
+        # Watch for track updates (wichtig für Screen Share!)
+        @room.on("track_muted")
+        def on_track_muted(publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+            logger.info(f"Track muted: {publication.sid}")
+        
+        @room.on("track_unmuted")
+        def on_track_unmuted(publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+            logger.info(f"Track unmuted: {publication.sid}")
+            if publication.track and publication.track.kind == rtc.TrackKind.KIND_VIDEO:
+                logger.info(f"Video track unmuted, recreating stream")
+                self._create_video_stream(publication.track)
     
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
         # Add a frame from the buffer to the new message
@@ -109,6 +121,10 @@ class VisionAgent(Agent):
     # Helper method to buffer video frames from the user's track
     def _create_video_stream(self, track: rtc.Track):
         logger.info(f"Creating video stream for track: {track.sid}")
+        
+        # Clear frame buffer when switching tracks
+        self._frame_buffer.clear()
+        logger.info("Cleared frame buffer for new track")
         
         # Close any existing stream (we only want one at a time)
         if self._video_stream is not None:
@@ -136,6 +152,12 @@ class VisionAgent(Agent):
                     if frame_count % 30 == 0:
                         logger.info(f"Frame buffer size: {len(self._frame_buffer)}, total frames: {frame_count}")
                         logger.info(f"Latest frame: {event.frame.width}x{event.frame.height}")
+                        
+                    # Log bei Auflösungsänderung (wichtig für Screen Share Erkennung)
+                    if frame_count == 1 or (frame_count > 1 and len(self._frame_buffer) > 1):
+                        prev_frame = self._frame_buffer[-2] if len(self._frame_buffer) > 1 else None
+                        if prev_frame and (prev_frame.width != event.frame.width or prev_frame.height != event.frame.height):
+                            logger.info(f"Resolution changed: {prev_frame.width}x{prev_frame.height} -> {event.frame.width}x{event.frame.height}")
             except Exception as e:
                 logger.error(f"Error reading video stream: {e}")
             finally:
