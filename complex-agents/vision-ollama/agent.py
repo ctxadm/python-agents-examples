@@ -32,15 +32,18 @@ class VisionAgent(Agent):
             base_url=f"{OLLAMA_HOST}/v1",
             api_key="ollama",
             timeout=120.0  # 120 Sekunden Timeout für lokale Modelle
+            temperature=0.3,    # NEU: Niedrige Temperatur hinzufügen
+            max_tokens=100      # NEU: Maximale Token-Anzahl begrenzen
         )
         
         super().__init__(
             instructions="""
-                You are an assistant with vision capabilities.
-                Be very careful and accurate when describing what you see.
-                If someone tells you that you're wrong about what you see, reconsider and look again.
-                Common applications include YouTube, web browsers, IDEs, and other software.
-                Never insist on something if the user corrects you.
+                - Keep responses under 50 words
+                - Only answer what is directly asked
+                - Do not offer additional help or ask follow-up questions
+                - Never say "Is there anything else I can help with?"
+                - Be accurate when describing what you see
+                - If corrected, acknowledge briefly and move on
             """,
             stt=deepgram.STT(),
             llm=ollama_llm,
