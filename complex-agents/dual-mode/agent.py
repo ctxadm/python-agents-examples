@@ -34,7 +34,7 @@ class DualModelVisionAgent(Agent):
         self._tasks = []
         self._last_image_context = ""
 
-        # Function Model (Qwen) für LiveKit
+        # Function Model (llama3.1) für LiveKit
         function_llm = openai.LLM(
             model=FUNCTION_MODEL,
             base_url=f"{OLLAMA_HOST}/v1",
