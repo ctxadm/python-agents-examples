@@ -45,16 +45,23 @@ class DualModelVisionAgent(Agent):
         super().__init__(
             instructions="""You are an assistant with vision capabilities and access to a knowledge base.
             
+            IMPORTANT: For ANY questions about:
+            - BAKOM, Funkkonzession, Swiss regulations, frequencies, radio licenses
+            - Communication permits, telecommunications in Switzerland
+            - Funk, Konzession, Frequenzen, Schweiz
+            
+            YOU MUST use the search_knowledge function FIRST before answering.
+            NEVER make up information about Swiss regulations or BAKOM.
+            
+            When users ask about licenses or permits in Switzerland, ALWAYS search for "BAKOM Konzession".
+            When users ask where to apply for licenses, search for "BAKOM Konzessionsgesuche".
+            
             You work with two AI models:
             1. A vision model that analyzes images
             2. Your main model that can search the knowledge base
             
-            When users ask about:
-            - BAKOM, Funkkonzession, Swiss regulations -> search the knowledge base
-            - What you see in an image -> use the vision analysis
-            - Combine both when needed
-            
-            Always be accurate and helpful.""",
+            Always use the search results in your answer. Be accurate and helpful.
+            If you cannot find information in the knowledge base, say so clearly.""",
             stt=deepgram.STT(),
             llm=function_llm,
             tts=openai.TTS(),
@@ -107,15 +114,19 @@ class DualModelVisionAgent(Agent):
     async def search_knowledge(
         self,
         query: str,
-        use_image_context: bool = False
+        use_image_context: Optional[bool] = False
     ) -> str:
-        """Search the knowledge base"""
+        """Search the knowledge base for specific information"""
+        
+        # Handle None or string "null"
+        if use_image_context is None or str(use_image_context).lower() == "null":
+            use_image_context = False
         
         # Erweitere Query mit Bildkontext wenn gewünscht
         if use_image_context and self._last_image_context:
             query = f"{query} (Image shows: {self._last_image_context[:200]})"
         
-        logger.info(f"RAG Search: {query}")
+        logger.info(f"RAG Search initiated: {query}")
         
         try:
             async with aiohttp.ClientSession() as session:
@@ -126,18 +137,26 @@ class DualModelVisionAgent(Agent):
                 
                 # Collection-Auswahl basierend auf Keywords
                 query_lower = query.lower()
-                if any(word in query_lower for word in ["bakom", "funk", "konzession", "radio", "frequenz"]):
+                if any(word in query_lower for word in ["bakom", "funk", "konzession", "radio", "frequenz", "schweiz", "swiss"]):
                     payload["collection"] = "scrape-data"
+                    logger.info("Using scrape-data collection")
                 elif any(word in query_lower for word in ["qdrant", "vector", "database"]):
                     payload["collection"] = "Qdrant-Documentation"
+                    logger.info("Using Qdrant-Documentation collection")
                 else:
-                    payload["agent_type"] = "general"
+                    payload["collection"] = "scrape-data"  # Default to scrape-data
+                    logger.info("Defaulting to scrape-data collection")
+                
+                logger.info(f"Sending search request: {payload}")
                 
                 async with session.post(
                     f"{RAG_SERVICE_URL}/search",
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
+                    response_text = await resp.text()
+                    logger.info(f"RAG Response status: {resp.status}")
+                    
                     if resp.status == 200:
                         data = await resp.json()
                         
@@ -146,17 +165,25 @@ class DualModelVisionAgent(Agent):
                             for i, res in enumerate(data['results'][:3], 1):
                                 content = res.get('content', '')
                                 score = res.get('score', 0)
+                                metadata = res.get('metadata', {})
                                 
                                 # Kürzen für bessere Lesbarkeit
                                 if len(content) > 400:
                                     content = content[:400] + "..."
                                 
-                                results.append(f"Result {i} (Score: {score:.2f}):\n{content}")
+                                result_text = f"Result {i} (Score: {score:.2f}):\n{content}"
+                                if metadata.get('topic'):
+                                    result_text += f"\nTopic: {metadata['topic']}"
+                                
+                                results.append(result_text)
                             
-                            return f"Found {len(data['results'])} results:\n\n" + "\n\n---\n\n".join(results)
+                            response = f"Found {len(data['results'])} results in knowledge base:\n\n"
+                            response += "\n\n---\n\n".join(results)
+                            return response
                         else:
-                            return "No results found in the knowledge base."
+                            return "No results found in the knowledge base for this query."
                     else:
+                        logger.error(f"Search error: {response_text}")
                         return f"Search error: HTTP {resp.status}"
                         
         except Exception as e:
@@ -166,10 +193,12 @@ class DualModelVisionAgent(Agent):
     async def on_enter(self):
         room = get_job_context().room
         
-        logger.info(f"Dual Model Agent started")
+        logger.info("=" * 50)
+        logger.info("Dual Model Agent starting...")
         logger.info(f"Vision Model: {VISION_MODEL} at {OLLAMA_HOST}")
         logger.info(f"Function Model: {FUNCTION_MODEL} at {OLLAMA_HOST}")
         logger.info(f"RAG Service: {RAG_SERVICE_URL}")
+        logger.info("=" * 50)
         
         # Test connections
         await self._test_connections()
@@ -188,6 +217,7 @@ class DualModelVisionAgent(Agent):
         @room.on("track_subscribed")
         def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
             if track.kind == rtc.TrackKind.KIND_VIDEO:
+                logger.info("New video track subscribed")
                 self._create_video_stream(track)
 
     async def _test_connections(self):
@@ -198,7 +228,13 @@ class DualModelVisionAgent(Agent):
                 async with session.get(f"{RAG_SERVICE_URL}/health") as resp:
                     if resp.status == 200:
                         health = await resp.json()
-                        logger.info(f"✅ RAG Service: {health}")
+                        logger.info(f"✅ RAG Service connected: {health}")
+                        
+                        # Collections anzeigen
+                        async with session.get(f"{RAG_SERVICE_URL}/collections") as resp2:
+                            if resp2.status == 200:
+                                collections = await resp2.json()
+                                logger.info(f"Available collections: {collections}")
         except Exception as e:
             logger.error(f"❌ RAG Service error: {e}")
         
@@ -208,7 +244,14 @@ class DualModelVisionAgent(Agent):
                 async with session.get(f"{OLLAMA_HOST}/api/tags") as resp:
                     if resp.status == 200:
                         models = await resp.json()
-                        logger.info(f"✅ Ollama models: {[m['name'] for m in models.get('models', [])]}")
+                        available_models = [m['name'] for m in models.get('models', [])]
+                        logger.info(f"✅ Ollama connected. Available models: {available_models}")
+                        
+                        # Check if required models are available
+                        if VISION_MODEL not in str(available_models):
+                            logger.warning(f"⚠️ Vision model {VISION_MODEL} not found!")
+                        if FUNCTION_MODEL not in str(available_models):
+                            logger.warning(f"⚠️ Function model {FUNCTION_MODEL} not found!")
         except Exception as e:
             logger.error(f"❌ Ollama error: {e}")
 
@@ -217,20 +260,23 @@ class DualModelVisionAgent(Agent):
         
         # Wenn ein Frame vorhanden ist, analysiere es
         if self._latest_frame:
-            logger.info(f"Frame available: {self._latest_frame.width}x{self._latest_frame.height}")
+            logger.info(f"Analyzing frame: {self._latest_frame.width}x{self._latest_frame.height}")
             
             # Analysiere mit Vision Model
             vision_result = await self._analyze_frame_with_vision(self._latest_frame)
             self._last_image_context = vision_result
             
-            # Füge Kontext zur Nachricht hinzu
-            enhanced_content = f"{new_message.content}\n\n[Vision Context: I can see {vision_result[:200]}...]"
+            # Erweitere die Nachricht mit Vision-Kontext
+            original_content = str(new_message.content)
+            enhanced_content = f"{original_content}\n\n[Vision Context: {vision_result}]"
+            
+            # Erstelle neue Nachricht mit erweitertem Inhalt
             new_message.content = enhanced_content
             
-            # Frame für LiveKit hinzufügen (optional für Logging)
-            new_message.content.append(ImageContent(image=self._latest_frame))
+            logger.info(f"Enhanced message with vision context")
         else:
-            logger.info("No frame available")
+            logger.info("No frame available for analysis")
+            self._last_image_context = ""
 
     def _create_video_stream(self, track: rtc.Track):
         if self._video_stream is not None:
@@ -245,7 +291,7 @@ class DualModelVisionAgent(Agent):
                 self._latest_frame = event.frame
 
                 if frame_count % 30 == 0:
-                    logger.info(f"Received {frame_count} frames")
+                    logger.info(f"Video stream active: {frame_count} frames received")
 
         task = asyncio.create_task(read_stream())
         task.add_done_callback(lambda t: self._tasks.remove(t) if t in self._tasks else None)
@@ -253,8 +299,7 @@ class DualModelVisionAgent(Agent):
 
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
-
-    logger.info("Starting Dual Model Vision Agent")
+    logger.info("Dual Model Vision Agent - Entrypoint reached")
     
     session = AgentSession()
     await session.start(
