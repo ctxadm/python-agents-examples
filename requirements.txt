@@ -10,3 +10,4 @@ websockets>=11.0.3
 rich
 mcp
 librosa
+httpx>=0.25.0
