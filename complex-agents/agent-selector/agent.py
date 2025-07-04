@@ -18,8 +18,12 @@ class AgentSelector:
     async def entrypoint(self, ctx: JobContext):
         """Haupteinstiegspunkt - wählt Agent basierend auf Room-Namen"""
         
+        # WICHTIG: Zuerst verbinden!
+        await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+        
+        # Jetzt können wir auf room zugreifen
         room_name = ctx.room.name.lower()
-        room_id = await ctx.room.sid  # FIX: await hinzugefügt
+        room_id = await ctx.room.sid
         
         logger.info(f"=== Neuer Job empfangen ===")
         logger.info(f"Room Name: '{ctx.room.name}'")
