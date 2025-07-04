@@ -19,7 +19,7 @@ class AgentSelector:
         """Haupteinstiegspunkt - wählt Agent basierend auf Room-Namen"""
         
         room_name = ctx.room.name.lower()
-        room_id = ctx.room.sid
+        room_id = await ctx.room.sid  # FIX: await hinzugefügt
         
         logger.info(f"=== Neuer Job empfangen ===")
         logger.info(f"Room Name: '{ctx.room.name}'")
