@@ -21,8 +21,8 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
 
 # Ollama Konfiguration
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://172.16.0.146:11434")
-VISION_MODEL = os.getenv("VISION_MODEL", "llava:latest")
-FUNCTION_MODEL = os.getenv("FUNCTION_MODEL", "llama3.1")
+VISION_MODEL = os.getenv("VISION_MODEL", "llava-llama3:latest")
+FUNCTION_MODEL = os.getenv("FUNCTION_MODEL", "llama3.1:latest")
 
 # RAG Service
 RAG_SERVICE_URL = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
