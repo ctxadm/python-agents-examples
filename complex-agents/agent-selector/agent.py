@@ -137,10 +137,50 @@ if __name__ == "__main__":
     # Agent Selector starten
     selector = AgentSelector()
     
+# Hauptprogramm
+if __name__ == "__main__":
+    # Logging konfigurieren
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    
+    logger.info("=== LiveKit Agent Selector gestartet ===")
+    logger.info(f"Working Directory: {os.getcwd()}")
+    logger.info(f"Python Version: {sys.version}")
+    
+    # Verfügbare Agents anzeigen
+    logger.info("Prüfe verfügbare Agents:")
+    
+    vision_path = "/app/complex-agents/vision-ollama/agent.py"
+    rag_path = "/app/rag/main.py"
+    
+    if os.path.exists(vision_path):
+        logger.info(f"✓ Vision-Ollama Agent gefunden: {vision_path}")
+    else:
+        logger.error(f"✗ Vision-Ollama Agent nicht gefunden: {vision_path}")
+        
+    if os.path.exists(rag_path):
+        logger.info(f"✓ RAG Agent gefunden: {rag_path}")
+    else:
+        logger.error(f"✗ RAG Agent nicht gefunden: {rag_path}")
+    
+    # Umgebungsvariablen anzeigen
+    logger.info("Umgebungsvariablen:")
+    logger.info(f"  LIVEKIT_URL: {os.getenv('LIVEKIT_URL', 'nicht gesetzt')}")
+    logger.info(f"  OLLAMA_HOST: {os.getenv('OLLAMA_HOST', 'nicht gesetzt')}")
+    logger.info(f"  OLLAMA_MODEL: {os.getenv('OLLAMA_MODEL', 'nicht gesetzt')}")
+    logger.info(f"  RAG_SERVICE_URL: {os.getenv('RAG_SERVICE_URL', 'nicht gesetzt')}")
+    
+    # Agent Selector starten
+    selector = AgentSelector()
+    
+    # Einfache WorkerOptions ohne Type
     cli.run_app(
         WorkerOptions(
-            entrypoint_fnc=selector.entrypoint,
-            # Worker wird für alle Rooms zuständig sein
-            worker_type=WorkerOptions.Type.ROOM,
+            entrypoint_fnc=selector.entrypoint
         )
     )
