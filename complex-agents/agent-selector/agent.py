@@ -73,7 +73,7 @@ class AgentSelector:
             # Dynamisch das RAG Modul laden
             spec = importlib.util.spec_from_file_location(
                 "rag_agent", 
-                "/app/rag/main.py"
+                "/app/complex-agents/rag-agent/agent.py" 
             )
             rag_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(rag_module)
