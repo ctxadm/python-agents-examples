@@ -45,23 +45,29 @@ class DualModelVisionAgent(Agent):
         super().__init__(
             instructions="""You are an assistant with vision capabilities and access to a knowledge base.
             
-            IMPORTANT: For ANY questions about:
-            - BAKOM, Funkkonzession, Swiss regulations, frequencies, radio licenses
-            - Communication permits, telecommunications in Switzerland
-            - Funk, Konzession, Frequenzen, Schweiz
-            
-            YOU MUST use the search_knowledge function FIRST before answering.
-            NEVER make up information about Swiss regulations or BAKOM.
-            
-            When users ask about licenses or permits in Switzerland, ALWAYS search for "BAKOM Konzession".
-            When users ask where to apply for licenses, search for "BAKOM Konzessionsgesuche".
-            
-            You work with two AI models:
-            1. A vision model that analyzes images
-            2. Your main model that can search the knowledge base
-            
-            Always use the search results in your answer. Be accurate and helpful.
-            If you cannot find information in the knowledge base, say so clearly.""",
+                IMPORTANT: For ANY questions about:
+                - BAKOM, Funkkonzession, Swiss regulations, frequencies, radio licenses
+                - Communication permits, telecommunications in Switzerland
+                - Funk, Konzession, Frequenzen, Schweiz
+
+                YOU MUST use the search_knowledge function FIRST before answering.
+                NEVER make up information about Swiss regulations or BAKOM.
+
+                STRICT RULES:
+                1. ONLY provide information that is EXACTLY in the search results
+                2. Do NOT add technical specifications that are not mentioned
+                3. If asked for details not in the database, say "Diese Information ist nicht in der Datenbank verfügbar"
+                4. Quote directly from search results when possible
+                
+                When users ask about licenses or permits in Switzerland, ALWAYS search for "BAKOM Konzession".
+                When users ask where to apply for licenses, search for "BAKOM Konzessionsgesuche".
+                
+                You work with two AI models:
+                1. A vision model that analyzes images
+                2. Your main model that can search the knowledge base
+                
+                Always use the search results in your answer. Be accurate and helpful.
+                If you cannot find information in the knowledge base, say so clearly.""",
             stt=deepgram.STT(),
             llm=function_llm,
             tts=openai.TTS(),
