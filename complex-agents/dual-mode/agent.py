@@ -48,24 +48,19 @@ class DualModelVisionAgent(Agent):
         )
 
         super().__init__(
-            instructions="""You are an assistant with vision capabilities and access to a knowledge base.
+            instructions="""Ich bin ein KI-Assistent mit Bilderkennungs-Fähigkeiten und Zugriff auf eine Wissensdatenbank.
+
+            Wenn ich nach dem Bildschirm oder was ich sehe gefragt werde:
+            - Analysiere ich den aktuellen Bildschirm/Kamera-Feed und beschreibe was ich sehe
+            - Ich kann Text, Logos, Dokumente und andere visuelle Elemente erkennen
             
-            IMPORTANT: When you receive a message starting with "Please respond with exactly this text:" or "Please respond with:", 
-            you MUST output ONLY the text that follows, without any additions or modifications.
+            Für WISSENS-ANFRAGEN (über Schweizer Regulierungen, BAKOM, Frequenzen):
+            - Nutze die search_knowledge Funktion für genaue Informationen
+            - Fokus auf Regulierungen, Lizenzen und Frequenzzuteilungen
+            - Artikel unter "Konzessionsfreie Funkdienste" = keine Lizenz erforderlich
+            - Artikel unter "Verbotene Funkdienste" = verboten
             
-            For KNOWLEDGE QUERIES (about Swiss regulations, BAKOM, frequencies):
-            - Questions about licenses, permits, frequencies
-            - BAKOM, Funkkonzession, regulations
-            → Use search_knowledge function
-            
-            For OTHER QUERIES:
-            - Answer normally based on the context provided
-            - If vision context is provided in brackets, you can reference it
-            
-            When searching the knowledge base:
-            - Items under "Konzessionsfreie Funkdienste" = no license required
-            - Items under "Verbotene Funkdienste" = prohibited
-            - Be accurate, don't invent details""",
+            Ich gebe direkte, hilfreiche Antworten basierend auf dem was ich sehe und weiß.""",
             stt=deepgram.STT(),
             llm=function_llm,
             tts=openai.TTS(),
@@ -183,7 +178,7 @@ class DualModelVisionAgent(Agent):
             
             if not model_ready:
                 logger.error("Vision model failed to load")
-                return "Vision model is not available at the moment. Please try again later."
+                return "Vision Model ist momentan nicht verfügbar. Bitte versuche es später erneut."
             
             await asyncio.sleep(1)
             
@@ -202,7 +197,7 @@ class DualModelVisionAgent(Agent):
                     height = frame.frame.height
                 else:
                     logger.error(f"Unknown frame format: {type(frame)}")
-                    return "Error: Unknown frame format"
+                    return "Fehler: Unbekanntes Frame-Format"
                 
                 # Check data size to determine format
                 actual_size = len(frame_data)
@@ -230,7 +225,6 @@ class DualModelVisionAgent(Agent):
                     logger.info("Detected YUV420/I420 format, converting to RGB")
                     
                     # Convert YUV420 to RGB
-                    # YUV420 format: Y plane (width*height), U plane (width/2*height/2), V plane (width/2*height/2)
                     y_size = width * height
                     uv_size = (width // 2) * (height // 2)
                     
@@ -260,13 +254,13 @@ class DualModelVisionAgent(Agent):
                 
                 else:
                     logger.error(f"Unknown frame format. Size: {actual_size}, expected RGB: {rgb_size}, RGBA: {rgba_size}, YUV420: {yuv420_size}")
-                    return "Error: Unknown video frame format"
+                    return "Fehler: Unbekanntes Video-Frame-Format"
                 
                 logger.info(f"Successfully processed frame: {width}x{height}")
                 
             except Exception as e:
                 logger.error(f"Frame conversion error: {e}", exc_info=True)
-                return "Error processing the image frame"
+                return "Fehler beim Verarbeiten des Bildes"
             
             # Convert to Base64
             buffered = io.BytesIO()
@@ -279,7 +273,7 @@ class DualModelVisionAgent(Agent):
             async with aiohttp.ClientSession() as session:
                 payload = {
                     "model": VISION_MODEL,
-                    "prompt": "Describe what you see in this image. Be specific about any text, logos, or documents visible.",
+                    "prompt": "Beschreibe was du in diesem Bild siehst. Sei spezifisch über sichtbare Texte, Logos oder Dokumente.",
                     "images": [img_base64],
                     "stream": False,
                     "keep_alive": "2m"
@@ -292,22 +286,22 @@ class DualModelVisionAgent(Agent):
                 ) as resp:
                     if resp.status == 200:
                         result = await resp.json()
-                        description = result.get('response', 'Could not analyze image')
+                        description = result.get('response', 'Konnte das Bild nicht analysieren')
                         logger.info(f"Vision analysis completed: {description[:100]}...")
                         return description
                     else:
                         error_text = await resp.text()
                         logger.error(f"Vision API error {resp.status}: {error_text}")
-                        return "Error analyzing image - vision service returned an error"
+                        return "Fehler beim Analysieren des Bildes - Vision Service hat einen Fehler zurückgegeben"
                         
         except asyncio.TimeoutError:
             logger.error("Vision analysis timed out")
-            return "Vision analysis timed out. The image might be too complex or the model is busy."
+            return "Vision-Analyse hat zu lange gedauert. Das Bild könnte zu komplex sein oder das Modell ist beschäftigt."
         except Exception as e:
             logger.error(f"Vision analysis error: {str(e)}")
-            return f"Could not analyze image due to technical error: {str(e)}"
+            return f"Konnte das Bild nicht analysieren aufgrund eines technischen Fehlers: {str(e)}"
 
-    @function_tool(description="Search the knowledge base for information about regulations, BAKOM, frequencies, etc.")
+    @function_tool(description="Durchsuche die Wissensdatenbank nach Informationen über Regulierungen, BAKOM, Frequenzen, etc.")
     async def search_knowledge(
         self,
         query: str,
@@ -325,7 +319,7 @@ class DualModelVisionAgent(Agent):
         logger.info(f"search_knowledge called with query='{query}', use_image_context={use_image_context} (type: {type(use_image_context)})")
         
         if use_image_context and self._last_image_context:
-            query = f"{query} (Image shows: {self._last_image_context[:200]})"
+            query = f"{query} (Bild zeigt: {self._last_image_context[:200]})"
         
         logger.info(f"RAG Search initiated: {query}")
         
@@ -372,26 +366,52 @@ class DualModelVisionAgent(Agent):
                                 if len(content) > 400:
                                     content = content[:400] + "..."
                                 
-                                result_text = f"Result {i} (Score: {score:.2f}):\n{content}"
+                                result_text = f"Resultat {i} (Score: {score:.2f}):\n{content}"
                                 if metadata.get('topic'):
-                                    result_text += f"\nTopic: {metadata['topic']}"
+                                    result_text += f"\nThema: {metadata['topic']}"
                                 
                                 results.append(result_text)
                             
-                            response = f"Found {len(data['results'])} results in knowledge base:\n\n"
+                            response = f"Fand {len(data['results'])} Resultate in der Wissensdatenbank:\n\n"
                             response += "\n\n---\n\n".join(results)
                             logger.info(f"Returning {len(results)} results to agent")
                             return response
                         else:
                             logger.warning("No results found in knowledge base")
-                            return "No results found in the knowledge base for this query."
+                            return "Keine Resultate in der Wissensdatenbank für diese Anfrage gefunden."
                     else:
                         logger.error(f"Search error: {response_text}")
-                        return f"Search error: HTTP {resp.status}"
+                        return f"Suchfehler: HTTP {resp.status}"
                         
         except Exception as e:
             logger.error(f"RAG Search error: {e}")
-            return f"Could not search knowledge base: {str(e)}"
+            return f"Konnte Wissensdatenbank nicht durchsuchen: {str(e)}"
+
+    @function_tool(description="Analysiere den aktuellen Bildschirm/Kamera-Feed")
+    async def analyze_screen(self) -> str:
+        """Analysiert das aktuelle Bild vom Bildschirm oder der Kamera"""
+        
+        if not self._latest_frame:
+            return "Kein Bildschirm oder Kamera-Feed verfügbar. Bitte teile deinen Bildschirm."
+        
+        if self._processing_vision:
+            return "Vision-Analyse läuft bereits, bitte warte einen Moment."
+        
+        self._processing_vision = True
+        try:
+            logger.info(f"Analyzing frame via function tool: {self._latest_frame.width}x{self._latest_frame.height}")
+            
+            vision_result = await self._analyze_frame_with_vision(self._latest_frame)
+            self._last_image_context = vision_result
+            
+            if any(error_indicator in vision_result for error_indicator in 
+                  ["Fehler", "nicht analysieren", "nicht verfügbar", "zu lange", "technischen Fehlers"]):
+                return f"Fehler bei der Bildanalyse: {vision_result}"
+            
+            return f"Bildschirmanalyse: {vision_result}"
+            
+        finally:
+            self._processing_vision = False
 
     async def on_enter(self):
         room = get_job_context().room
@@ -481,7 +501,8 @@ class DualModelVisionAgent(Agent):
         logger.info(f"User message: {original_content}")
         
         # Check if this is a vision-related query
-        vision_keywords = ['see', 'screen', 'show', 'display', 'image', 'picture', 'what do you see', 'was siehst du', 'bildschirm', 'radio', 'radios']
+        vision_keywords = ['see', 'screen', 'show', 'display', 'image', 'picture', 'what do you see', 
+                          'was siehst du', 'bildschirm', 'zeig', 'sehen', 'erkennen', 'siehst du']
         is_vision_query = any(keyword in original_content.lower() for keyword in vision_keywords)
         
         if is_vision_query and self._latest_frame:
@@ -499,36 +520,71 @@ class DualModelVisionAgent(Agent):
                 
                 # Check if vision analysis was successful
                 if not any(error_indicator in vision_result for error_indicator in 
-                          ["Error", "cannot analyze", "not available", "timed out", "technical error"]):
-                    # Success - modify the message so the LLM responds with the vision result
-                    logger.info("Vision analysis successful, injecting into LLM context")
+                          ["Fehler", "nicht analysieren", "nicht verfügbar", "zu lange", "technischen Fehlers"]):
+                    # Erfolg - Vision-Ergebnis direkt als Antwort setzen
+                    logger.info("Vision analysis successful, creating direct response")
                     
-                    # Create a prompt that will make the LLM output the vision result
-                    vision_response = f"I can see your screen. {vision_result}"
+                    # Kontext neu aufbauen für direkte Antwort
+                    turn_ctx.messages.clear()
                     
-                    # Replace the user's message with a system instruction
-                    # This tricks the LLM into outputting our vision result
-                    new_message.content = f"Please respond with exactly this text: '{vision_response}'"
+                    # Original User-Nachricht hinzufügen
+                    turn_ctx.messages.append(ChatMessage(
+                        role="user",
+                        content=original_content
+                    ))
+                    
+                    # Vision-Antwort als Assistant-Nachricht hinzufügen
+                    turn_ctx.messages.append(ChatMessage(
+                        role="assistant",
+                        content=f"Ja, ich kann deinen Bildschirm sehen. {vision_result}"
+                    ))
+                    
+                    # Dies wird den Agent dazu bringen, das Vision-Ergebnis direkt auszusprechen
+                    return
                     
                 else:
-                    # Error in vision analysis
+                    # Fehler bei der Vision-Analyse
                     logger.error(f"Vision analysis failed: {vision_result}")
-                    new_message.content = f"Please respond with: '{vision_result}'"
+                    turn_ctx.messages.clear()
+                    turn_ctx.messages.append(ChatMessage(
+                        role="user",
+                        content=original_content
+                    ))
+                    turn_ctx.messages.append(ChatMessage(
+                        role="assistant",
+                        content=vision_result
+                    ))
+                    return
+                    
             finally:
                 self._processing_vision = False
                 
         elif is_vision_query and not self._latest_frame:
             logger.warning("Vision query but no frame available")
-            new_message.content = "Please respond with: 'I cannot see your screen right now. Please make sure you're sharing your screen or camera.'"
-        else:
-            # Non-vision query - keep original processing
-            if self._latest_frame and self._last_image_context:
-                # For non-vision queries, append context as before
-                enhanced_content = f"{original_content}\n\n[Available Vision Context: {self._last_image_context}]"
-                new_message.content = enhanced_content
-                logger.info("Enhanced non-vision query with available context")
-            else:
-                logger.info("Processing non-vision query")
+            # Direkte Antwort bei fehlendem Frame
+            turn_ctx.messages.clear()
+            turn_ctx.messages.append(ChatMessage(
+                role="user",
+                content=original_content
+            ))
+            turn_ctx.messages.append(ChatMessage(
+                role="assistant",
+                content="Ich kann deinen Bildschirm gerade nicht sehen. Bitte stelle sicher, dass du deinen Bildschirm oder deine Kamera teilst."
+            ))
+            return
+            
+        # Für Nicht-Vision-Anfragen normaler Flow
+        # aber Vision-Kontext hinzufügen falls verfügbar
+        if self._last_image_context:
+            # Vision-Kontext als System-Nachricht einfügen
+            vision_context = ChatMessage(
+                role="system",
+                content=f"Aktueller Bildschirminhalt: {self._last_image_context[:500]}"
+            )
+            # Vor der letzten User-Nachricht einfügen
+            insert_index = len(turn_ctx.messages) - 1
+            turn_ctx.messages.insert(insert_index, vision_context)
+            logger.info("Enhanced non-vision query with available context")
 
     def _create_video_stream(self, track: rtc.Track):
         # Cancel existing stream task if any
