@@ -50,9 +50,12 @@ class DualModelVisionAgent(Agent):
         super().__init__(
             instructions="""Ich bin ein KI-Assistent mit Bilderkennungs-Fähigkeiten und Zugriff auf eine Wissensdatenbank.
 
+            WICHTIG: Wenn meine Eingabe bereits eine Bildschirmbeschreibung enthält (z.B. "Ja, ich kann deinen Bildschirm sehen..."), 
+            dann gebe ich diese Information DIREKT und UNVERÄNDERT wieder.
+            
             Wenn ich nach dem Bildschirm oder was ich sehe gefragt werde:
-            - Analysiere ich den aktuellen Bildschirm/Kamera-Feed und beschreibe was ich sehe
-            - Ich kann Text, Logos, Dokumente und andere visuelle Elemente erkennen
+            - Gebe ich die bereitgestellte Bildschirmbeschreibung direkt wieder
+            - Ich füge keine zusätzlichen Erklärungen hinzu
             
             Für WISSENS-ANFRAGEN (über Schweizer Regulierungen, BAKOM, Frequenzen):
             - Nutze die search_knowledge Funktion für genaue Informationen
@@ -60,7 +63,7 @@ class DualModelVisionAgent(Agent):
             - Artikel unter "Konzessionsfreie Funkdienste" = keine Lizenz erforderlich
             - Artikel unter "Verbotene Funkdienste" = verboten
             
-            Ich gebe direkte, hilfreiche Antworten basierend auf dem was ich sehe und weiß.""",
+            Wenn Bildschirm-Kontext in eckigen Klammern verfügbar ist, nutze ich diesen für relevante Antworten.""",
             stt=deepgram.STT(),
             llm=function_llm,
             tts=openai.TTS(),
@@ -521,70 +524,34 @@ class DualModelVisionAgent(Agent):
                 # Check if vision analysis was successful
                 if not any(error_indicator in vision_result for error_indicator in 
                           ["Fehler", "nicht analysieren", "nicht verfügbar", "zu lange", "technischen Fehlers"]):
-                    # Erfolg - Vision-Ergebnis direkt als Antwort setzen
-                    logger.info("Vision analysis successful, creating direct response")
+                    # Erfolg - Vision-Ergebnis in die Nachricht einfügen
+                    logger.info("Vision analysis successful, injecting result into message")
                     
-                    # Kontext neu aufbauen für direkte Antwort
-                    turn_ctx.messages.clear()
-                    
-                    # Original User-Nachricht hinzufügen
-                    turn_ctx.messages.append(ChatMessage(
-                        role="user",
-                        content=original_content
-                    ))
-                    
-                    # Vision-Antwort als Assistant-Nachricht hinzufügen
-                    turn_ctx.messages.append(ChatMessage(
-                        role="assistant",
-                        content=f"Ja, ich kann deinen Bildschirm sehen. {vision_result}"
-                    ))
-                    
-                    # Dies wird den Agent dazu bringen, das Vision-Ergebnis direkt auszusprechen
-                    return
+                    # Modifiziere die User-Nachricht, um die Vision-Antwort zu erzwingen
+                    vision_response = f"Ja, ich kann deinen Bildschirm sehen. {vision_result}"
+                    new_message.content = vision_response
+                    logger.info(f"Replaced message content with vision result")
                     
                 else:
                     # Fehler bei der Vision-Analyse
                     logger.error(f"Vision analysis failed: {vision_result}")
-                    turn_ctx.messages.clear()
-                    turn_ctx.messages.append(ChatMessage(
-                        role="user",
-                        content=original_content
-                    ))
-                    turn_ctx.messages.append(ChatMessage(
-                        role="assistant",
-                        content=vision_result
-                    ))
-                    return
+                    new_message.content = vision_result
                     
             finally:
                 self._processing_vision = False
                 
         elif is_vision_query and not self._latest_frame:
             logger.warning("Vision query but no frame available")
-            # Direkte Antwort bei fehlendem Frame
-            turn_ctx.messages.clear()
-            turn_ctx.messages.append(ChatMessage(
-                role="user",
-                content=original_content
-            ))
-            turn_ctx.messages.append(ChatMessage(
-                role="assistant",
-                content="Ich kann deinen Bildschirm gerade nicht sehen. Bitte stelle sicher, dass du deinen Bildschirm oder deine Kamera teilst."
-            ))
-            return
+            # Ersetze die Nachricht mit der Fehlermeldung
+            new_message.content = "Ich kann deinen Bildschirm gerade nicht sehen. Bitte stelle sicher, dass du deinen Bildschirm oder deine Kamera teilst."
             
-        # Für Nicht-Vision-Anfragen normaler Flow
-        # aber Vision-Kontext hinzufügen falls verfügbar
-        if self._last_image_context:
-            # Vision-Kontext als System-Nachricht einfügen
-            vision_context = ChatMessage(
-                role="system",
-                content=f"Aktueller Bildschirminhalt: {self._last_image_context[:500]}"
-            )
-            # Vor der letzten User-Nachricht einfügen
-            insert_index = len(turn_ctx.messages) - 1
-            turn_ctx.messages.insert(insert_index, vision_context)
-            logger.info("Enhanced non-vision query with available context")
+        else:
+            # Für Nicht-Vision-Anfragen - füge Kontext hinzu falls verfügbar
+            if self._last_image_context:
+                # Erweitere die Nachricht mit Vision-Kontext
+                enhanced_content = f"{original_content}\n\n[Verfügbarer Bildschirm-Kontext: {self._last_image_context[:500]}]"
+                new_message.content = enhanced_content
+                logger.info("Enhanced non-vision query with available context")
 
     def _create_video_stream(self, track: rtc.Track):
         # Cancel existing stream task if any
