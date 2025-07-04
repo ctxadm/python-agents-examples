@@ -50,7 +50,8 @@ class DualModelVisionAgent(Agent):
         super().__init__(
             instructions="""You are an assistant with vision capabilities and access to a knowledge base.
             
-            IMPORTANT: Your responses are automatically handled by the system. Do NOT repeat vision analysis results that are already provided.
+            IMPORTANT: When you receive a message starting with "Please respond with exactly this text:" or "Please respond with:", 
+            you MUST output ONLY the text that follows, without any additions or modifications.
             
             For KNOWLEDGE QUERIES (about Swiss regulations, BAKOM, frequencies):
             - Questions about licenses, permits, frequencies
@@ -480,7 +481,7 @@ class DualModelVisionAgent(Agent):
         logger.info(f"User message: {original_content}")
         
         # Check if this is a vision-related query
-        vision_keywords = ['see', 'screen', 'show', 'display', 'image', 'picture', 'what do you see', 'was siehst du', 'bildschirm']
+        vision_keywords = ['see', 'screen', 'show', 'display', 'image', 'picture', 'what do you see', 'was siehst du', 'bildschirm', 'radio', 'radios']
         is_vision_query = any(keyword in original_content.lower() for keyword in vision_keywords)
         
         if is_vision_query and self._latest_frame:
@@ -499,29 +500,26 @@ class DualModelVisionAgent(Agent):
                 # Check if vision analysis was successful
                 if not any(error_indicator in vision_result for error_indicator in 
                           ["Error", "cannot analyze", "not available", "timed out", "technical error"]):
-                    # Success - speak the result directly
-                    logger.info("Vision analysis successful, speaking result")
-                    response = f"I can see your screen. {vision_result}"
+                    # Success - modify the message so the LLM responds with the vision result
+                    logger.info("Vision analysis successful, injecting into LLM context")
                     
-                    # Use TTS to speak the response
-                    ctx = get_job_context()
-                    await ctx.room.local_participant.publish_data(
-                        response.encode('utf-8'),
-                        reliable=True
-                    )
+                    # Create a prompt that will make the LLM output the vision result
+                    vision_response = f"I can see your screen. {vision_result}"
                     
-                    # Also update the message for the transcript
-                    new_message.content = [response]
+                    # Replace the user's message with a system instruction
+                    # This tricks the LLM into outputting our vision result
+                    new_message.content = f"Please respond with exactly this text: '{vision_response}'"
+                    
                 else:
                     # Error in vision analysis
                     logger.error(f"Vision analysis failed: {vision_result}")
-                    new_message.content = [vision_result]
+                    new_message.content = f"Please respond with: '{vision_result}'"
             finally:
                 self._processing_vision = False
                 
         elif is_vision_query and not self._latest_frame:
             logger.warning("Vision query but no frame available")
-            new_message.content = ["I cannot see your screen right now. Please make sure you're sharing your screen or camera."]
+            new_message.content = "Please respond with: 'I cannot see your screen right now. Please make sure you're sharing your screen or camera.'"
         else:
             # Non-vision query - keep original processing
             if self._latest_frame and self._last_image_context:
