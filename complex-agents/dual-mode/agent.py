@@ -36,6 +36,7 @@ class DualModelVisionAgent(Agent):
         self._last_image_context = ""
         self._current_loaded_model = None
         self._model_lock = asyncio.Lock()
+        self._processing_vision = False  # Add flag to prevent concurrent vision processing
 
         # Function Model (llama3.2) für LiveKit
         function_llm = openai.LLM(
@@ -483,22 +484,40 @@ class DualModelVisionAgent(Agent):
         is_vision_query = any(keyword in original_content.lower() for keyword in vision_keywords)
         
         if is_vision_query and self._latest_frame:
-            logger.info(f"Vision query detected. Analyzing frame: {self._latest_frame.width}x{self._latest_frame.height}")
-            
-            vision_result = await self._analyze_frame_with_vision(self._latest_frame)
-            self._last_image_context = vision_result
-            
-            # Check if vision analysis was successful
-            if not any(error_indicator in vision_result for error_indicator in 
-                      ["Error", "cannot analyze", "not available", "timed out", "technical error"]):
-                # Success - replace the message with the vision result
-                logger.info("Vision analysis successful, sending result to user")
-                # ChatMessage content must be a list!
-                new_message.content = [f"I can see your screen. {vision_result}"]
-            else:
-                # Error in vision analysis
-                logger.error(f"Vision analysis failed: {vision_result}")
-                new_message.content = [vision_result]
+            # Check if already processing vision
+            if self._processing_vision:
+                logger.warning("Already processing vision query, skipping")
+                return
+                
+            self._processing_vision = True
+            try:
+                logger.info(f"Vision query detected. Analyzing frame: {self._latest_frame.width}x{self._latest_frame.height}")
+                
+                vision_result = await self._analyze_frame_with_vision(self._latest_frame)
+                self._last_image_context = vision_result
+                
+                # Check if vision analysis was successful
+                if not any(error_indicator in vision_result for error_indicator in 
+                          ["Error", "cannot analyze", "not available", "timed out", "technical error"]):
+                    # Success - speak the result directly
+                    logger.info("Vision analysis successful, speaking result")
+                    response = f"I can see your screen. {vision_result}"
+                    
+                    # Use TTS to speak the response
+                    ctx = get_job_context()
+                    await ctx.room.local_participant.publish_data(
+                        response.encode('utf-8'),
+                        reliable=True
+                    )
+                    
+                    # Also update the message for the transcript
+                    new_message.content = [response]
+                else:
+                    # Error in vision analysis
+                    logger.error(f"Vision analysis failed: {vision_result}")
+                    new_message.content = [vision_result]
+            finally:
+                self._processing_vision = False
                 
         elif is_vision_query and not self._latest_frame:
             logger.warning("Vision query but no frame available")
