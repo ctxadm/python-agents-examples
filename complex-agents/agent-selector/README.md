@@ -1,23 +1,25 @@
-# complex-agents/agent-selector/README.md
+# Agent Selector für LiveKit
 
-# LiveKit Agent Selector
-
-Dieser Agent wählt automatisch zwischen verschiedenen Agent-Typen basierend auf dem Room-Namen.
+Dieser Agent wählt automatisch zwischen verschiedenen AI Agents basierend auf dem Room-Namen.
 
 ## Unterstützte Agents
 
-### Vision-Ollama Agent
-Wird aktiviert bei Room-Namen mit:
+### 1. Vision-Ollama Agent
+**Aktiviert durch Room-Namen mit:**
 - `vision`
 - `ollama`
 - `bild`
 - `image`
 - `visual`
+- `camera`
 
-Beispiele: `vision-demo`, `image-analysis`, `bildverarbeitung`
+**Beispiele:** 
+- `vision-demo`
+- `image-analysis-room`
+- `bildverarbeitung-test`
 
-### RAG Agent (Qdrant)
-Wird aktiviert bei Room-Namen mit:
+### 2. RAG Agent (mit Qdrant)
+**Aktiviert durch Room-Namen mit:**
 - `rag`
 - `knowledge`
 - `wissen`
@@ -25,23 +27,20 @@ Wird aktiviert bei Room-Namen mit:
 - `qdrant`
 - `search`
 
-Beispiele: `rag-demo`, `wissensdatenbank`, `knowledge-base`
+**Beispiele:**
+- `rag-demo`
+- `knowledge-base`
+- `wissensdatenbank-test`
 
 ## Standard-Verhalten
-Wenn kein Keyword erkannt wird, startet der Vision-Ollama Agent.
 
-## Umgebungsvariablen
+Wenn kein Keyword im Room-Namen erkannt wird, wird automatisch der **Vision-Ollama Agent** gestartet.
 
-```bash
-# Ollama Konfiguration (für Vision Agent)
-OLLAMA_HOST=http://localhost:11434
-OLLAMA_MODEL=llava-llama3:latest
+## Verwendung
 
-# RAG Service
-RAG_SERVICE_URL=http://localhost:8000
+1. LiveKit Playground öffnen
+2. Mit Server verbinden
+3. Room-Namen eingeben (z.B. `vision-test` oder `rag-demo`)
+4. Connect klicken
 
-# OpenAI (für TTS und RAG LLM)
-OPENAI_API_KEY=sk-...
-
-# Deepgram (für STT)
-DEEPGRAM_API_KEY=...
+Der Agent-Selector wählt automatisch den passenden Agent aus.
