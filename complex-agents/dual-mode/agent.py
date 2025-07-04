@@ -218,26 +218,68 @@ class DualModelVisionAgent(Agent):
                     logger.error(f"Unknown frame format: {type(frame)}")
                     return "Error: Unknown frame format"
                 
-                # Validate frame data
-                expected_size = width * height * 3  # RGB
-                if len(frame_data) < expected_size:
-                    logger.error(f"Frame data too small: {len(frame_data)} < {expected_size}")
-                    # Try to handle different pixel formats
-                    if len(frame_data) == width * height * 4:  # RGBA
-                        # Convert RGBA to RGB
-                        frame_array = np.frombuffer(frame_data, dtype=np.uint8).reshape((height, width, 4))
-                        frame_array = frame_array[:, :, :3]  # Drop alpha channel
-                        pil_image = Image.fromarray(frame_array, 'RGB')
-                    else:
-                        return "Error: Invalid frame data size"
-                else:
-                    # Standard RGB conversion
-                    pil_image = Image.frombytes('RGB', (width, height), frame_data)
+                # Check data size to determine format
+                actual_size = len(frame_data)
+                rgb_size = width * height * 3
+                rgba_size = width * height * 4
+                yuv420_size = int(width * height * 1.5)
                 
-                logger.info(f"Successfully converted frame: {width}x{height}")
+                logger.info(f"Frame info: {width}x{height}, data size: {actual_size} bytes")
+                logger.info(f"Expected sizes - RGB: {rgb_size}, RGBA: {rgba_size}, YUV420: {yuv420_size}")
+                
+                if actual_size == rgb_size:
+                    # Standard RGB
+                    pil_image = Image.frombytes('RGB', (width, height), frame_data)
+                    logger.info("Detected RGB format")
+                
+                elif actual_size == rgba_size:
+                    # RGBA format
+                    frame_array = np.frombuffer(frame_data, dtype=np.uint8).reshape((height, width, 4))
+                    frame_array = frame_array[:, :, :3]  # Drop alpha channel
+                    pil_image = Image.fromarray(frame_array, 'RGB')
+                    logger.info("Detected RGBA format, converted to RGB")
+                
+                elif actual_size == yuv420_size:
+                    # YUV420/I420 format - most common in video streaming
+                    logger.info("Detected YUV420/I420 format, converting to RGB")
+                    
+                    # Convert YUV420 to RGB
+                    # YUV420 format: Y plane (width*height), U plane (width/2*height/2), V plane (width/2*height/2)
+                    y_size = width * height
+                    uv_size = (width // 2) * (height // 2)
+                    
+                    # Extract Y, U, V planes
+                    y_data = np.frombuffer(frame_data[:y_size], dtype=np.uint8).reshape((height, width))
+                    u_data = np.frombuffer(frame_data[y_size:y_size + uv_size], dtype=np.uint8).reshape((height // 2, width // 2))
+                    v_data = np.frombuffer(frame_data[y_size + uv_size:], dtype=np.uint8).reshape((height // 2, width // 2))
+                    
+                    # Upsample U and V to full resolution
+                    u_data = np.repeat(np.repeat(u_data, 2, axis=0), 2, axis=1)
+                    v_data = np.repeat(np.repeat(v_data, 2, axis=0), 2, axis=1)
+                    
+                    # Convert YUV to RGB using standard conversion formula
+                    rgb_array = np.zeros((height, width, 3), dtype=np.uint8)
+                    
+                    # Vectorized conversion
+                    y = y_data.astype(np.float32)
+                    u = u_data.astype(np.float32) - 128
+                    v = v_data.astype(np.float32) - 128
+                    
+                    rgb_array[:, :, 0] = np.clip(y + 1.402 * v, 0, 255).astype(np.uint8)  # R
+                    rgb_array[:, :, 1] = np.clip(y - 0.344 * u - 0.714 * v, 0, 255).astype(np.uint8)  # G
+                    rgb_array[:, :, 2] = np.clip(y + 1.772 * u, 0, 255).astype(np.uint8)  # B
+                    
+                    pil_image = Image.fromarray(rgb_array, 'RGB')
+                    logger.info("Successfully converted YUV420 to RGB")
+                
+                else:
+                    logger.error(f"Unknown frame format. Size: {actual_size}, expected RGB: {rgb_size}, RGBA: {rgba_size}, YUV420: {yuv420_size}")
+                    return "Error: Unknown video frame format"
+                
+                logger.info(f"Successfully processed frame: {width}x{height}")
                 
             except Exception as e:
-                logger.error(f"Frame conversion error: {e}")
+                logger.error(f"Frame conversion error: {e}", exc_info=True)
                 return "Error processing the image frame"
             
             # Convert to Base64
