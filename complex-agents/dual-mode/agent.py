@@ -493,35 +493,20 @@ class DualModelVisionAgent(Agent):
                       ["Error", "cannot analyze", "not available", "timed out", "technical error"]):
                 # Success - replace the message with the vision result
                 logger.info("Vision analysis successful, sending result to user")
-                # Create a system message with the vision result
-                system_msg = ChatMessage(
-                    role="assistant",
-                    content=f"I can see your screen. {vision_result}"
-                )
-                turn_ctx.messages.append(system_msg)
-                # Clear the original message to prevent double processing
-                new_message.content = ""
+                # ChatMessage content must be a list!
+                new_message.content = [f"I can see your screen. {vision_result}"]
             else:
                 # Error in vision analysis
                 logger.error(f"Vision analysis failed: {vision_result}")
-                error_msg = ChatMessage(
-                    role="assistant", 
-                    content=vision_result
-                )
-                turn_ctx.messages.append(error_msg)
-                new_message.content = ""
+                new_message.content = [vision_result]
                 
         elif is_vision_query and not self._latest_frame:
             logger.warning("Vision query but no frame available")
-            no_frame_msg = ChatMessage(
-                role="assistant",
-                content="I cannot see your screen right now. Please make sure you're sharing your screen or camera."
-            )
-            turn_ctx.messages.append(no_frame_msg)
-            new_message.content = ""
+            new_message.content = ["I cannot see your screen right now. Please make sure you're sharing your screen or camera."]
         else:
-            # Non-vision query - add vision context if available for other purposes
+            # Non-vision query - keep original processing
             if self._latest_frame and self._last_image_context:
+                # For non-vision queries, append context as before
                 enhanced_content = f"{original_content}\n\n[Available Vision Context: {self._last_image_context}]"
                 new_message.content = enhanced_content
                 logger.info("Enhanced non-vision query with available context")
