@@ -48,38 +48,22 @@ class DualModelVisionAgent(Agent):
 
         super().__init__(
             instructions="""You are an assistant with vision capabilities and access to a knowledge base.
-
-            CRITICAL RULES:
-            1. If you get a vision error, say "I cannot see the image right now due to a technical issue"
-            2. NEVER make up or imagine what's on screen if vision analysis fails
-            3. Keep vision and knowledge base answers separate
             
-            You can handle TWO types of queries:
+            IMPORTANT: Your responses are automatically handled by the system. Do NOT repeat vision analysis results that are already provided.
             
-            1. VISION QUERIES (about what you see):
-               - "What do you see?"
-               - "What's on the screen?"
-               - "Describe the image"
-               → Use vision analysis, do NOT search the knowledge base
-               → If vision fails: Say "I cannot analyze the image at the moment"
+            For KNOWLEDGE QUERIES (about Swiss regulations, BAKOM, frequencies):
+            - Questions about licenses, permits, frequencies
+            - BAKOM, Funkkonzession, regulations
+            → Use search_knowledge function
             
-            2. KNOWLEDGE QUERIES (about Swiss regulations, BAKOM, frequencies):
-               - Questions about licenses, permits, frequencies
-               - BAKOM, Funkkonzession, regulations
-               → Use search_knowledge function
-            
-            IMPORTANT RULES:
-            - First determine if it's a VISION or KNOWLEDGE query
-            - For VISION queries: Describe ONLY what you actually see
-            - For KNOWLEDGE queries: Search the knowledge base first
-            - Only talk about BAKOM when specifically asked about Swiss regulations
+            For OTHER QUERIES:
+            - Answer normally based on the context provided
+            - If vision context is provided in brackets, you can reference it
             
             When searching the knowledge base:
             - Items under "Konzessionsfreie Funkdienste" = no license required
             - Items under "Verbotene Funkdienste" = prohibited
-            - Be accurate, don't invent details
-            
-            Be honest about technical limitations.""",
+            - Be accurate, don't invent details""",
             stt=deepgram.STT(),
             llm=function_llm,
             tts=openai.TTS(),
@@ -491,21 +475,58 @@ class DualModelVisionAgent(Agent):
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
         """Wird aufgerufen wenn User spricht"""
         
-        if self._latest_frame:
-            logger.info(f"Analyzing frame: {self._latest_frame.width}x{self._latest_frame.height}")
+        original_content = str(new_message.content)
+        logger.info(f"User message: {original_content}")
+        
+        # Check if this is a vision-related query
+        vision_keywords = ['see', 'screen', 'show', 'display', 'image', 'picture', 'what do you see', 'was siehst du', 'bildschirm']
+        is_vision_query = any(keyword in original_content.lower() for keyword in vision_keywords)
+        
+        if is_vision_query and self._latest_frame:
+            logger.info(f"Vision query detected. Analyzing frame: {self._latest_frame.width}x{self._latest_frame.height}")
             
             vision_result = await self._analyze_frame_with_vision(self._latest_frame)
             self._last_image_context = vision_result
             
-            original_content = str(new_message.content)
-            enhanced_content = f"{original_content}\n\n[Vision Context: {vision_result}]"
-            
-            new_message.content = enhanced_content
-            
-            logger.info(f"Enhanced message with vision context")
+            # Check if vision analysis was successful
+            if not any(error_indicator in vision_result for error_indicator in 
+                      ["Error", "cannot analyze", "not available", "timed out", "technical error"]):
+                # Success - replace the message with the vision result
+                logger.info("Vision analysis successful, sending result to user")
+                # Create a system message with the vision result
+                system_msg = ChatMessage(
+                    role="assistant",
+                    content=f"I can see your screen. {vision_result}"
+                )
+                turn_ctx.messages.append(system_msg)
+                # Clear the original message to prevent double processing
+                new_message.content = ""
+            else:
+                # Error in vision analysis
+                logger.error(f"Vision analysis failed: {vision_result}")
+                error_msg = ChatMessage(
+                    role="assistant", 
+                    content=vision_result
+                )
+                turn_ctx.messages.append(error_msg)
+                new_message.content = ""
+                
+        elif is_vision_query and not self._latest_frame:
+            logger.warning("Vision query but no frame available")
+            no_frame_msg = ChatMessage(
+                role="assistant",
+                content="I cannot see your screen right now. Please make sure you're sharing your screen or camera."
+            )
+            turn_ctx.messages.append(no_frame_msg)
+            new_message.content = ""
         else:
-            logger.info("No frame available for analysis")
-            self._last_image_context = ""
+            # Non-vision query - add vision context if available for other purposes
+            if self._latest_frame and self._last_image_context:
+                enhanced_content = f"{original_content}\n\n[Available Vision Context: {self._last_image_context}]"
+                new_message.content = enhanced_content
+                logger.info("Enhanced non-vision query with available context")
+            else:
+                logger.info("Processing non-vision query")
 
     def _create_video_stream(self, track: rtc.Track):
         # Cancel existing stream task if any
