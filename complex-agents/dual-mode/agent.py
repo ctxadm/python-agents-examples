@@ -13,6 +13,7 @@ import aiohttp
 from typing import Optional, Union
 import io
 from PIL import Image
+import numpy as np
 
 logger = logging.getLogger("dual-model-vision-agent")
 logger.setLevel(logging.INFO)
@@ -22,7 +23,7 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
 # Ollama Konfiguration
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://172.16.0.146:11434")
 VISION_MODEL = os.getenv("VISION_MODEL", "llava-llama3:latest")
-FUNCTION_MODEL = os.getenv("FUNCTION_MODEL", "llama3.2:latest")  # Updated to llama3.2
+FUNCTION_MODEL = os.getenv("FUNCTION_MODEL", "llama3.2:latest")
 
 # RAG Service
 RAG_SERVICE_URL = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
@@ -31,10 +32,10 @@ class DualModelVisionAgent(Agent):
     def __init__(self) -> None:
         self._latest_frame = None
         self._video_stream = None
-        self._tasks = []
+        self._stream_task = None  # Track the stream task
         self._last_image_context = ""
-        self._current_loaded_model = None  # Track which model is currently loaded
-        self._model_lock = asyncio.Lock()  # Prevent concurrent model operations
+        self._current_loaded_model = None
+        self._model_lock = asyncio.Lock()
 
         # Function Model (llama3.2) für LiveKit
         function_llm = openai.LLM(
@@ -42,7 +43,7 @@ class DualModelVisionAgent(Agent):
             base_url=f"{OLLAMA_HOST}/v1",
             api_key="ollama",
             timeout=120.0,
-            temperature=0.3  # Niedrigere Temperatur für konsistentere Antworten
+            temperature=0.3
         )
 
         super().__init__(
@@ -89,7 +90,6 @@ class DualModelVisionAgent(Agent):
         """Get information about currently loaded models from Ollama"""
         try:
             async with aiohttp.ClientSession() as session:
-                # Try to get running models (ps endpoint)
                 async with session.get(f"{OLLAMA_HOST}/api/ps") as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -111,7 +111,7 @@ class DualModelVisionAgent(Agent):
                 payload = {
                     "model": model_name,
                     "prompt": "",
-                    "keep_alive": 0  # This tells Ollama to unload the model
+                    "keep_alive": 0
                 }
                 async with session.post(
                     f"{OLLAMA_HOST}/api/generate",
@@ -137,7 +137,6 @@ class DualModelVisionAgent(Agent):
                     "keep_alive": keep_alive
                 }
                 
-                # For vision models, add a dummy image
                 if "llava" in model_name.lower():
                     img = Image.new('RGB', (1, 1), color='black')
                     buffered = io.BytesIO()
@@ -148,10 +147,10 @@ class DualModelVisionAgent(Agent):
                 async with session.post(
                     f"{OLLAMA_HOST}/api/generate",
                     json=payload,
-                    timeout=aiohttp.ClientTimeout(total=120)  # Increased timeout for large models
+                    timeout=aiohttp.ClientTimeout(total=120)
                 ) as resp:
                     if resp.status == 200:
-                        result = await resp.json()  # Wait for complete response
+                        result = await resp.json()
                         logger.info(f"✅ Model {model_name} preloaded successfully")
                         self._current_loaded_model = model_name
                         return True
@@ -165,30 +164,25 @@ class DualModelVisionAgent(Agent):
     async def _ensure_model_loaded(self, model_name: str) -> bool:
         """Ensure the required model is loaded, managing GPU memory efficiently"""
         async with self._model_lock:
-            # Check what's currently loaded
             loaded_models = await self._get_loaded_models_info()
             
-            # If the model is already loaded, just update keep_alive
             if model_name in loaded_models:
                 logger.info(f"Model {model_name} already loaded, updating keep_alive")
                 return await self._preload_model(model_name, "5m")
             
-            # If a different model is loaded, unload it first to free GPU memory
             for loaded_model in loaded_models:
                 if loaded_model != model_name:
                     logger.info(f"Unloading {loaded_model} to make room for {model_name}")
                     await self._unload_model(loaded_model)
-                    await asyncio.sleep(2)  # More time to unload
+                    await asyncio.sleep(2)
             
-            # Load the requested model and wait for completion
             logger.info(f"Loading {model_name}, this may take a moment...")
             success = await self._preload_model(model_name, "5m")
             
             if success:
-                # Extra wait for large models to fully initialize
                 if "llava" in model_name:
                     logger.info("Waiting for vision model to fully initialize...")
-                    await asyncio.sleep(3)  # Extra time for vision model
+                    await asyncio.sleep(3)
                 logger.info(f"Model {model_name} is ready")
             else:
                 logger.error(f"Failed to load model {model_name}")
@@ -198,7 +192,6 @@ class DualModelVisionAgent(Agent):
     async def _analyze_frame_with_vision(self, frame) -> str:
         """Analysiert Frame mit Vision Model (llava)"""
         try:
-            # Ensure vision model is loaded and ready
             logger.info("Preparing vision model...")
             model_ready = await self._ensure_model_loaded(VISION_MODEL)
             
@@ -206,33 +199,62 @@ class DualModelVisionAgent(Agent):
                 logger.error("Vision model failed to load")
                 return "Vision model is not available at the moment. Please try again later."
             
-            # Add small delay to ensure model is fully ready
             await asyncio.sleep(1)
             
-            # Frame zu PIL Image konvertieren
+            # Enhanced frame conversion with better error handling
             try:
-                pil_image = Image.frombytes('RGB', 
-                                          (frame.width, frame.height), 
-                                          frame.data)
+                # Get frame data based on format
+                if hasattr(frame, 'data') and hasattr(frame, 'width') and hasattr(frame, 'height'):
+                    # Direct frame data
+                    frame_data = frame.data
+                    width = frame.width
+                    height = frame.height
+                elif hasattr(frame, 'frame'):
+                    # Wrapped frame
+                    frame_data = frame.frame.data
+                    width = frame.frame.width
+                    height = frame.frame.height
+                else:
+                    logger.error(f"Unknown frame format: {type(frame)}")
+                    return "Error: Unknown frame format"
+                
+                # Validate frame data
+                expected_size = width * height * 3  # RGB
+                if len(frame_data) < expected_size:
+                    logger.error(f"Frame data too small: {len(frame_data)} < {expected_size}")
+                    # Try to handle different pixel formats
+                    if len(frame_data) == width * height * 4:  # RGBA
+                        # Convert RGBA to RGB
+                        frame_array = np.frombuffer(frame_data, dtype=np.uint8).reshape((height, width, 4))
+                        frame_array = frame_array[:, :, :3]  # Drop alpha channel
+                        pil_image = Image.fromarray(frame_array, 'RGB')
+                    else:
+                        return "Error: Invalid frame data size"
+                else:
+                    # Standard RGB conversion
+                    pil_image = Image.frombytes('RGB', (width, height), frame_data)
+                
+                logger.info(f"Successfully converted frame: {width}x{height}")
+                
             except Exception as e:
                 logger.error(f"Frame conversion error: {e}")
                 return "Error processing the image frame"
             
-            # Zu Base64
+            # Convert to Base64
             buffered = io.BytesIO()
             pil_image.save(buffered, format="PNG")
             img_base64 = base64.b64encode(buffered.getvalue()).decode()
             
             logger.info(f"Sending image to {VISION_MODEL} for analysis...")
             
-            # Ollama API direkt aufrufen
+            # Call Ollama API
             async with aiohttp.ClientSession() as session:
                 payload = {
                     "model": VISION_MODEL,
                     "prompt": "Describe what you see in this image. Be specific about any text, logos, or documents visible.",
                     "images": [img_base64],
                     "stream": False,
-                    "keep_alive": "2m"  # Keep vision model loaded for 2 minutes
+                    "keep_alive": "2m"
                 }
                 
                 async with session.post(
@@ -265,20 +287,15 @@ class DualModelVisionAgent(Agent):
     ) -> str:
         """Search the knowledge base for specific information"""
         
-        # Note: The function model (llama3.2) should already be loaded by the main LLM
-        # But we can ensure it stays loaded
         await self._ensure_model_loaded(FUNCTION_MODEL)
         
-        # Robust handling of use_image_context parameter
         if isinstance(use_image_context, str):
             use_image_context = use_image_context.lower() not in ['false', 'null', 'none', '']
         elif use_image_context is None:
             use_image_context = False
         
-        # Log the received parameters for debugging
         logger.info(f"search_knowledge called with query='{query}', use_image_context={use_image_context} (type: {type(use_image_context)})")
         
-        # Erweitere Query mit Bildkontext wenn gewünscht
         if use_image_context and self._last_image_context:
             query = f"{query} (Image shows: {self._last_image_context[:200]})"
         
@@ -291,7 +308,6 @@ class DualModelVisionAgent(Agent):
                     "top_k": 5
                 }
                 
-                # Collection-Auswahl basierend auf Keywords
                 query_lower = query.lower()
                 if any(word in query_lower for word in ["bakom", "funk", "konzession", "radio", "frequenz", 
                                                          "schweiz", "swiss", "pmr", "cb-funk", "freenet", 
@@ -302,7 +318,7 @@ class DualModelVisionAgent(Agent):
                     payload["collection"] = "Qdrant-Documentation"
                     logger.info("Using Qdrant-Documentation collection")
                 else:
-                    payload["collection"] = "scrape-data"  # Default to scrape-data
+                    payload["collection"] = "scrape-data"
                     logger.info("Defaulting to scrape-data collection")
                 
                 logger.info(f"Sending search request: {payload}")
@@ -325,7 +341,6 @@ class DualModelVisionAgent(Agent):
                                 score = res.get('score', 0)
                                 metadata = res.get('metadata', {})
                                 
-                                # Kürzen für bessere Lesbarkeit
                                 if len(content) > 400:
                                     content = content[:400] + "..."
                                 
@@ -360,10 +375,8 @@ class DualModelVisionAgent(Agent):
         logger.info(f"RAG Service: {RAG_SERVICE_URL}")
         logger.info("=" * 50)
         
-        # Test connections
         await self._test_connections()
         
-        # Preload the function model as it's used most often
         logger.info("Preloading function model for faster responses...")
         await self._ensure_model_loaded(FUNCTION_MODEL)
         
@@ -394,7 +407,6 @@ class DualModelVisionAgent(Agent):
                         health = await resp.json()
                         logger.info(f"✅ RAG Service connected: {health}")
                         
-                        # Collections anzeigen
                         async with session.get(f"{RAG_SERVICE_URL}/collections") as resp2:
                             if resp2.status == 200:
                                 collections = await resp2.json()
@@ -411,7 +423,6 @@ class DualModelVisionAgent(Agent):
                         available_models = [m['name'] for m in models.get('models', [])]
                         logger.info(f"✅ Ollama connected. Available models: {available_models}")
                         
-                        # Check if required models are available
                         vision_found = False
                         function_found = False
                         
@@ -428,7 +439,6 @@ class DualModelVisionAgent(Agent):
                         if not function_found:
                             logger.error(f"❌ Function model {FUNCTION_MODEL} not found!")
                             
-                        # Show what's currently loaded
                         loaded = await self._get_loaded_models_info()
                         if loaded:
                             logger.info(f"Currently loaded in Ollama: {list(loaded.keys())}")
@@ -439,19 +449,15 @@ class DualModelVisionAgent(Agent):
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
         """Wird aufgerufen wenn User spricht"""
         
-        # Wenn ein Frame vorhanden ist, analysiere es
         if self._latest_frame:
             logger.info(f"Analyzing frame: {self._latest_frame.width}x{self._latest_frame.height}")
             
-            # Analysiere mit Vision Model
             vision_result = await self._analyze_frame_with_vision(self._latest_frame)
             self._last_image_context = vision_result
             
-            # Erweitere die Nachricht mit Vision-Kontext
             original_content = str(new_message.content)
             enhanced_content = f"{original_content}\n\n[Vision Context: {vision_result}]"
             
-            # Erstelle neue Nachricht mit erweitertem Inhalt
             new_message.content = enhanced_content
             
             logger.info(f"Enhanced message with vision context")
@@ -460,6 +466,11 @@ class DualModelVisionAgent(Agent):
             self._last_image_context = ""
 
     def _create_video_stream(self, track: rtc.Track):
+        # Cancel existing stream task if any
+        if self._stream_task and not self._stream_task.done():
+            logger.info("Cancelling existing video stream task")
+            self._stream_task.cancel()
+        
         if self._video_stream is not None:
             self._video_stream = None
 
@@ -467,16 +478,20 @@ class DualModelVisionAgent(Agent):
 
         async def read_stream():
             frame_count = 0
-            async for event in self._video_stream:
-                frame_count += 1
-                self._latest_frame = event.frame
+            try:
+                async for event in self._video_stream:
+                    frame_count += 1
+                    self._latest_frame = event.frame
 
-                if frame_count % 30 == 0:
-                    logger.info(f"Video stream active: {frame_count} frames received")
+                    if frame_count % 30 == 0:
+                        logger.info(f"Video stream active: {frame_count} frames received")
+            except asyncio.CancelledError:
+                logger.info(f"Video stream cancelled after {frame_count} frames")
+                raise
+            except Exception as e:
+                logger.error(f"Video stream error: {e}")
 
-        task = asyncio.create_task(read_stream())
-        task.add_done_callback(lambda t: self._tasks.remove(t) if t in self._tasks else None)
-        self._tasks.append(task)
+        self._stream_task = asyncio.create_task(read_stream())
 
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
