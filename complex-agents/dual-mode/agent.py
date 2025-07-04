@@ -10,7 +10,7 @@ from livekit.agents.llm import function_tool, ImageContent, ChatContext, ChatMes
 from livekit.agents.voice import Agent, AgentSession, RunContext
 from livekit.plugins import deepgram, openai, silero
 import aiohttp
-from typing import Optional
+from typing import Optional, Union
 import io
 from PIL import Image
 
@@ -39,35 +39,38 @@ class DualModelVisionAgent(Agent):
             model=FUNCTION_MODEL,
             base_url=f"{OLLAMA_HOST}/v1",
             api_key="ollama",
-            timeout=120.0
+            timeout=120.0,
+            temperature=0.3  # Niedrigere Temperatur für konsistentere Antworten
         )
 
         super().__init__(
             instructions="""You are an assistant with vision capabilities and access to a knowledge base.
+
+            IMPORTANT: For ANY questions about:
+            - BAKOM, Funkkonzession, Swiss regulations, frequencies, radio licenses
+            - Communication permits, telecommunications in Switzerland
+            - Funk, Konzession, Frequenzen, Schweiz, CB-Funk, PMR, Amateurfunk
+
+            YOU MUST use the search_knowledge function FIRST before answering.
+
+            RULES:
+            1. Base your answers on information from search results
+            2. If something is listed under "Konzessionsfreie Funkdienste", it means NO license needed
+            3. If something is listed under "Verbotene Funkdienste", it means it's FORBIDDEN
+            4. Do NOT invent technical details not in the search results
+            5. If specific details are not available, say "Diese Information ist nicht in der Datenbank verfügbar"
+
+            When searching:
+            - For CB-Funk questions, search for "CB-Funk konzessionsfrei"
+            - For Freenet questions, search for "Freenet verboten"
+            - For PMR questions, search for "PMR-446"
+            - For general license questions, search for "konzessionsfrei" or "BAKOM"
+
+            Always interpret the search results intelligently:
+            - Items under "Konzessionsfreie Funkdienste" = no license required
+            - Items under "Verbotene Funkdienste" = prohibited in Switzerland
             
-                IMPORTANT: For ANY questions about:
-                - BAKOM, Funkkonzession, Swiss regulations, frequencies, radio licenses
-                - Communication permits, telecommunications in Switzerland
-                - Funk, Konzession, Frequenzen, Schweiz
-
-                YOU MUST use the search_knowledge function FIRST before answering.
-                NEVER make up information about Swiss regulations or BAKOM.
-
-                STRICT RULES:
-                1. ONLY provide information that is EXACTLY in the search results
-                2. Do NOT add technical specifications that are not mentioned
-                3. If asked for details not in the database, say "Diese Information ist nicht in der Datenbank verfügbar"
-                4. Quote directly from search results when possible
-                
-                When users ask about licenses or permits in Switzerland, ALWAYS search for "BAKOM Konzession".
-                When users ask where to apply for licenses, search for "BAKOM Konzessionsgesuche".
-                
-                You work with two AI models:
-                1. A vision model that analyzes images
-                2. Your main model that can search the knowledge base
-                
-                Always use the search results in your answer. Be accurate and helpful.
-                If you cannot find information in the knowledge base, say so clearly.""",
+            Be accurate and helpful. If you cannot find information, say so clearly.""",
             stt=deepgram.STT(),
             llm=function_llm,
             tts=openai.TTS(),
@@ -120,13 +123,18 @@ class DualModelVisionAgent(Agent):
     async def search_knowledge(
         self,
         query: str,
-        use_image_context: Optional[bool] = False
+        use_image_context: Union[bool, str, None] = False
     ) -> str:
         """Search the knowledge base for specific information"""
         
-        # Handle None or string "null"
-        if use_image_context is None or str(use_image_context).lower() == "null":
+        # Robust handling of use_image_context parameter
+        if isinstance(use_image_context, str):
+            use_image_context = use_image_context.lower() not in ['false', 'null', 'none', '']
+        elif use_image_context is None:
             use_image_context = False
+        
+        # Log the received parameters for debugging
+        logger.info(f"search_knowledge called with query='{query}', use_image_context={use_image_context} (type: {type(use_image_context)})")
         
         # Erweitere Query mit Bildkontext wenn gewünscht
         if use_image_context and self._last_image_context:
@@ -143,7 +151,9 @@ class DualModelVisionAgent(Agent):
                 
                 # Collection-Auswahl basierend auf Keywords
                 query_lower = query.lower()
-                if any(word in query_lower for word in ["bakom", "funk", "konzession", "radio", "frequenz", "schweiz", "swiss"]):
+                if any(word in query_lower for word in ["bakom", "funk", "konzession", "radio", "frequenz", 
+                                                         "schweiz", "swiss", "pmr", "cb-funk", "freenet", 
+                                                         "konzessionsfrei", "verboten"]):
                     payload["collection"] = "scrape-data"
                     logger.info("Using scrape-data collection")
                 elif any(word in query_lower for word in ["qdrant", "vector", "database"]):
@@ -185,8 +195,10 @@ class DualModelVisionAgent(Agent):
                             
                             response = f"Found {len(data['results'])} results in knowledge base:\n\n"
                             response += "\n\n---\n\n".join(results)
+                            logger.info(f"Returning {len(results)} results to agent")
                             return response
                         else:
+                            logger.warning("No results found in knowledge base")
                             return "No results found in the knowledge base for this query."
                     else:
                         logger.error(f"Search error: {response_text}")
