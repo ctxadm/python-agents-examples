@@ -32,8 +32,7 @@ class VisionAgent(Agent):
             base_url=f"{OLLAMA_HOST}/v1",
             api_key="ollama",
             timeout=120.0,  # 120 Sekunden Timeout für lokale Modelle
-            temperature=0.3,    # NEU: Niedrige Temperatur hinzufügen
-            max_tokens=100      # NEU: Maximale Token-Anzahl begrenzen
+            temperature=0.3,    # NEU: Niedrige Temperatur hinzufügen  
         )
         
         super().__init__(
