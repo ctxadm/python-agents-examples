@@ -1,15 +1,21 @@
-# complex-agents/agent-selector/agent_selector.py
+# complex-agents/agent-selector/agent.py
 
 import asyncio
 import logging
 import os
 import sys
-from typing import Optional, Dict
+from typing import Optional, Dict, Annotated
+from livekit import agents
 from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli, llm
-from livekit.agents.voice_assistant import VoiceAssistant
 from livekit.plugins import deepgram, openai, silero, ollama
 import httpx
-from typing import Annotated
+
+# Korrekte Imports für VoiceAssistant
+try:
+    from livekit.agents.voice_assistant import VoiceAssistant
+except ImportError:
+    # Fallback für ältere Versionen
+    from livekit.agents import VoiceAssistant
 
 logger = logging.getLogger("agent-selector")
 logger.setLevel(logging.INFO)
@@ -64,173 +70,123 @@ class AgentSelector:
         """Vision-Ollama Agent"""
         logger.info(f"Vision-Ollama Agent initialisiert für Room {room_id}")
         
-        # VAD
-        vad = silero.VAD.load()
-        
-        # Vision Agent Context
-        initial_ctx = llm.ChatContext().append(
-            role="system",
-            text=(
-                "Du bist ein hilfreicher KI-Assistent mit Vision-Fähigkeiten. "
-                "Du kannst Bilder analysieren und Fragen dazu beantworten. "
-                "Sei freundlich, präzise und hilfreich. "
-                "Antworte auf Deutsch, wenn du auf Deutsch angesprochen wirst."
+        try:
+            # Import aus dem Repository
+            sys.path.insert(0, '/app')
+            from complex_agents.vision_ollama.agent import entrypoint as vision_entrypoint
+            
+            # Rufe die Original-Entrypoint-Funktion auf
+            await vision_entrypoint(ctx)
+            
+        except ImportError:
+            logger.error("Vision-Ollama Agent nicht gefunden, verwende Fallback")
+            
+            # Fallback Implementation
+            vad = silero.VAD.load()
+            
+            initial_ctx = llm.ChatContext().append(
+                role="system",
+                text=(
+                    "Du bist ein hilfreicher KI-Assistent mit Vision-Fähigkeiten. "
+                    "Du kannst Bilder analysieren und Fragen dazu beantworten."
+                )
             )
-        )
-        
-        # Ollama Konfiguration
-        ollama_model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
-        ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-        
-        logger.info(f"Verwende Ollama Model: {ollama_model} auf {ollama_host}")
-        
-        assistant = VoiceAssistant(
-            vad=vad,
-            stt=deepgram.STT(
-                language="de-DE"  # Deutsch als primäre Sprache
-            ),
-            llm=ollama.LLM(
-                model=ollama_model,
-                base_url=ollama_host
-            ),
-            tts=openai.TTS(
-                voice="alloy",
-                model="tts-1",
-                language="de"  # Deutsche Stimme
-            ),
-            chat_ctx=initial_ctx,
-        )
-        
-        # Starte den Assistant
-        assistant.start(ctx.room)
-        
-        # Warte auf Room-Ende
-        @ctx.room.on("participant_disconnected")
-        def on_participant_disconnected(participant):
-            logger.info(f"Participant {participant.identity} hat Room verlassen")
-        
-        # Agent am Leben halten
-        await asyncio.Future()
+            
+            assistant = VoiceAssistant(
+                vad=vad,
+                stt=deepgram.STT(),
+                llm=ollama.LLM(
+                    model=os.getenv("OLLAMA_MODEL", "llama3.1:8b"),
+                    base_url=os.getenv("OLLAMA_HOST", "http://localhost:11434")
+                ),
+                tts=openai.TTS(voice="alloy"),
+                chat_ctx=initial_ctx,
+            )
+            
+            assistant.start(ctx.room)
+            await asyncio.Future()
     
     async def run_rag_agent(self, ctx: JobContext, room_id: str):
         """RAG Agent mit Qdrant Integration"""
         logger.info(f"RAG Agent initialisiert für Room {room_id}")
         
-        # VAD
-        vad = silero.VAD.load()
-        
-        # RAG Service URL
-        rag_service_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
-        
-        # Function Context für RAG
-        class RagFunctions(llm.FunctionContext):
-            @llm.ai_callable()
-            async def search_knowledge_base(
-                self,
-                query: Annotated[str, llm.TypeInfo(description="Die Suchanfrage für die Wissensdatenbank")]
-            ):
-                """Durchsucht die Qdrant Wissensdatenbank nach relevanten Informationen"""
-                logger.info(f"RAG Suche: {query}")
-                
-                try:
-                    async with httpx.AsyncClient(timeout=30.0) as client:
-                        response = await client.post(
-                            f"{rag_service_url}/search",
-                            json={
-                                "query": query,
-                                "agent_type": "general",
-                                "top_k": 3
-                            }
-                        )
-                        
-                        if response.status_code == 200:
-                            data = response.json()
-                            results = data.get("results", [])
-                            collection = data.get("collection_used", "unknown")
-                            
-                            logger.info(f"RAG gefunden: {len(results)} Ergebnisse aus Collection '{collection}'")
-                            
-                            if results:
-                                formatted = "\n\n".join([
-                                    f"[Relevanz: {r['score']:.2f}]\n{r['content']}"
-                                    for r in results
-                                ])
-                                return f"Gefundene Informationen aus {collection}:\n\n{formatted}"
-                            else:
-                                return "Keine relevanten Informationen in der Wissensdatenbank gefunden."
-                        else:
-                            logger.error(f"RAG Service Error: {response.status_code}")
-                            return f"Fehler beim Zugriff auf die Wissensdatenbank (Status: {response.status_code})"
-                            
-                except Exception as e:
-                    logger.error(f"RAG Service Exception: {e}")
-                    return f"Verbindungsfehler zur Wissensdatenbank: {str(e)}"
+        try:
+            # Import aus dem Repository
+            sys.path.insert(0, '/app')
+            from rag.agent import entrypoint as rag_entrypoint
             
-            @llm.ai_callable()
-            async def list_available_collections(self):
-                """Zeigt alle verfügbaren Sammlungen in der Wissensdatenbank"""
-                try:
-                    async with httpx.AsyncClient(timeout=30.0) as client:
-                        response = await client.get(f"{rag_service_url}/collections")
-                        
-                        if response.status_code == 200:
-                            data = response.json()
-                            collections = data.get("collections", [])
+            # Rufe die Original-Entrypoint-Funktion auf
+            await rag_entrypoint(ctx)
+            
+        except ImportError:
+            logger.error("RAG Agent nicht gefunden, verwende Fallback")
+            
+            # Fallback Implementation
+            vad = silero.VAD.load()
+            
+            # RAG Service URL
+            rag_service_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
+            
+            class RagFunctions(llm.FunctionContext):
+                @llm.ai_callable()
+                async def search_knowledge_base(
+                    self,
+                    query: Annotated[str, llm.TypeInfo(description="Suchanfrage")]
+                ):
+                    """Durchsucht die Wissensdatenbank"""
+                    logger.info(f"RAG Suche: {query}")
+                    
+                    try:
+                        async with httpx.AsyncClient(timeout=30.0) as client:
+                            response = await client.post(
+                                f"{rag_service_url}/search",
+                                json={
+                                    "query": query,
+                                    "agent_type": "general",
+                                    "top_k": 3
+                                }
+                            )
                             
-                            if collections:
-                                formatted = "\n".join([
-                                    f"- {c['name']} ({c['documents']} Dokumente)"
-                                    for c in collections
-                                ])
-                                return f"Verfügbare Wissenssammlungen:\n{formatted}"
+                            if response.status_code == 200:
+                                data = response.json()
+                                results = data.get("results", [])
+                                
+                                if results:
+                                    formatted = "\n\n".join([
+                                        f"[Score: {r['score']:.2f}] {r['content']}"
+                                        for r in results
+                                    ])
+                                    return f"Ergebnisse:\n\n{formatted}"
+                                else:
+                                    return "Keine Ergebnisse gefunden."
                             else:
-                                return "Keine Sammlungen in der Wissensdatenbank gefunden."
-                        else:
-                            return "Fehler beim Abrufen der Sammlungen"
-                            
-                except Exception as e:
-                    logger.error(f"Collections Error: {e}")
-                    return "Fehler beim Verbinden zur Wissensdatenbank"
-        
-        # RAG Context
-        initial_ctx = llm.ChatContext().append(
-            role="system",
-            text=(
-                "Du bist ein intelligenter KI-Assistent mit Zugriff auf eine umfangreiche Wissensdatenbank. "
-                "Nutze die Funktion 'search_knowledge_base' um nach relevanten Informationen zu suchen. "
-                "Beantworte Fragen präzise basierend auf den gefundenen Informationen. "
-                "Wenn du dir unsicher bist, suche in der Wissensdatenbank nach. "
-                "Du kannst auch 'list_available_collections' nutzen um zu sehen, welche Wissensgebiete verfügbar sind. "
-                "Antworte auf Deutsch, wenn du auf Deutsch angesprochen wirst."
+                                return f"Fehler: Status {response.status_code}"
+                                
+                    except Exception as e:
+                        logger.error(f"RAG Error: {e}")
+                        return f"Fehler: {str(e)}"
+            
+            initial_ctx = llm.ChatContext().append(
+                role="system",
+                text=(
+                    "Du bist ein KI-Assistent mit Zugriff auf eine Wissensdatenbank. "
+                    "Nutze search_knowledge_base() für Informationen."
+                )
             )
-        )
-        
-        # Function Context
-        fnc_ctx = RagFunctions()
-        
-        assistant = VoiceAssistant(
-            vad=vad,
-            stt=deepgram.STT(
-                language="de-DE"
-            ),
-            llm=openai.LLM(
-                model="gpt-4-turbo-preview",
-                temperature=0.7
-            ),
-            tts=openai.TTS(
-                voice="alloy",
-                model="tts-1",
-                language="de"
-            ),
-            chat_ctx=initial_ctx,
-            fnc_ctx=fnc_ctx,
-        )
-        
-        # Starte den Assistant
-        assistant.start(ctx.room)
-        
-        # Agent am Leben halten
-        await asyncio.Future()
+            
+            fnc_ctx = RagFunctions()
+            
+            assistant = VoiceAssistant(
+                vad=vad,
+                stt=deepgram.STT(),
+                llm=openai.LLM(model="gpt-4-turbo-preview"),
+                tts=openai.TTS(voice="alloy"),
+                chat_ctx=initial_ctx,
+                fnc_ctx=fnc_ctx,
+            )
+            
+            assistant.start(ctx.room)
+            await asyncio.Future()
 
 # Hauptprogramm
 if __name__ == "__main__":
@@ -243,11 +199,9 @@ if __name__ == "__main__":
         ]
     )
     
-    # Umgebungsvariablen prüfen
     logger.info("=== Agent Selector gestartet ===")
     logger.info(f"RAG Service URL: {os.getenv('RAG_SERVICE_URL', 'http://localhost:8000')}")
     logger.info(f"Ollama Host: {os.getenv('OLLAMA_HOST', 'http://localhost:11434')}")
-    logger.info(f"Ollama Model: {os.getenv('OLLAMA_MODEL', 'llama3.1:8b')}")
     
     selector = AgentSelector()
     
