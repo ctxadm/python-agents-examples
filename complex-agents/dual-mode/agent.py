@@ -47,6 +47,11 @@ class DualModelVisionAgent(Agent):
 
         super().__init__(
             instructions="""You are an assistant with vision capabilities and access to a knowledge base.
+
+            CRITICAL RULES:
+            1. If you get a vision error, say "I cannot see the image right now due to a technical issue"
+            2. NEVER make up or imagine what's on screen if vision analysis fails
+            3. Keep vision and knowledge base answers separate
             
             You can handle TWO types of queries:
             
@@ -55,6 +60,7 @@ class DualModelVisionAgent(Agent):
                - "What's on the screen?"
                - "Describe the image"
                → Use vision analysis, do NOT search the knowledge base
+               → If vision fails: Say "I cannot analyze the image at the moment"
             
             2. KNOWLEDGE QUERIES (about Swiss regulations, BAKOM, frequencies):
                - Questions about licenses, permits, frequencies
@@ -63,7 +69,7 @@ class DualModelVisionAgent(Agent):
             
             IMPORTANT RULES:
             - First determine if it's a VISION or KNOWLEDGE query
-            - For VISION queries: Describe what you see, do NOT mention BAKOM
+            - For VISION queries: Describe ONLY what you actually see
             - For KNOWLEDGE queries: Search the knowledge base first
             - Only talk about BAKOM when specifically asked about Swiss regulations
             
@@ -72,7 +78,7 @@ class DualModelVisionAgent(Agent):
             - Items under "Verbotene Funkdienste" = prohibited
             - Be accurate, don't invent details
             
-            Be helpful and respond appropriately to the type of query.""",
+            Be honest about technical limitations.""",
             stt=deepgram.STT(),
             llm=function_llm,
             tts=openai.TTS(),
@@ -119,8 +125,8 @@ class DualModelVisionAgent(Agent):
         except Exception as e:
             logger.error(f"Error unloading model {model_name}: {e}")
 
-    async def _preload_model(self, model_name: str, keep_alive: str = "5m"):
-        """Preload a model in Ollama memory"""
+    async def _preload_model(self, model_name: str, keep_alive: str = "5m") -> bool:
+        """Preload a model in Ollama memory and wait for it to be ready"""
         try:
             logger.info(f"Preloading model {model_name} with keep_alive={keep_alive}")
             async with aiohttp.ClientSession() as session:
@@ -142,18 +148,21 @@ class DualModelVisionAgent(Agent):
                 async with session.post(
                     f"{OLLAMA_HOST}/api/generate",
                     json=payload,
-                    timeout=aiohttp.ClientTimeout(total=60)
+                    timeout=aiohttp.ClientTimeout(total=120)  # Increased timeout for large models
                 ) as resp:
                     if resp.status == 200:
-                        await resp.json()
+                        result = await resp.json()  # Wait for complete response
                         logger.info(f"✅ Model {model_name} preloaded successfully")
                         self._current_loaded_model = model_name
+                        return True
                     else:
                         logger.error(f"Failed to preload model {model_name}: {resp.status}")
+                        return False
         except Exception as e:
             logger.error(f"Error preloading model {model_name}: {e}")
+            return False
 
-    async def _ensure_model_loaded(self, model_name: str):
+    async def _ensure_model_loaded(self, model_name: str) -> bool:
         """Ensure the required model is loaded, managing GPU memory efficiently"""
         async with self._model_lock:
             # Check what's currently loaded
@@ -162,36 +171,59 @@ class DualModelVisionAgent(Agent):
             # If the model is already loaded, just update keep_alive
             if model_name in loaded_models:
                 logger.info(f"Model {model_name} already loaded, updating keep_alive")
-                await self._preload_model(model_name, "5m")
-                return
+                return await self._preload_model(model_name, "5m")
             
             # If a different model is loaded, unload it first to free GPU memory
             for loaded_model in loaded_models:
                 if loaded_model != model_name:
                     logger.info(f"Unloading {loaded_model} to make room for {model_name}")
                     await self._unload_model(loaded_model)
-                    await asyncio.sleep(1)  # Give Ollama time to free memory
+                    await asyncio.sleep(2)  # More time to unload
             
-            # Load the requested model
-            await self._preload_model(model_name, "5m")
+            # Load the requested model and wait for completion
+            logger.info(f"Loading {model_name}, this may take a moment...")
+            success = await self._preload_model(model_name, "5m")
+            
+            if success:
+                # Extra wait for large models to fully initialize
+                if "llava" in model_name:
+                    logger.info("Waiting for vision model to fully initialize...")
+                    await asyncio.sleep(3)  # Extra time for vision model
+                logger.info(f"Model {model_name} is ready")
+            else:
+                logger.error(f"Failed to load model {model_name}")
+            
+            return success
 
     async def _analyze_frame_with_vision(self, frame) -> str:
         """Analysiert Frame mit Vision Model (llava)"""
         try:
-            # Ensure vision model is loaded
-            await self._ensure_model_loaded(VISION_MODEL)
+            # Ensure vision model is loaded and ready
+            logger.info("Preparing vision model...")
+            model_ready = await self._ensure_model_loaded(VISION_MODEL)
+            
+            if not model_ready:
+                logger.error("Vision model failed to load")
+                return "Vision model is not available at the moment. Please try again later."
+            
+            # Add small delay to ensure model is fully ready
+            await asyncio.sleep(1)
             
             # Frame zu PIL Image konvertieren
-            pil_image = Image.frombytes('RGB', 
-                                      (frame.width, frame.height), 
-                                      frame.data)
+            try:
+                pil_image = Image.frombytes('RGB', 
+                                          (frame.width, frame.height), 
+                                          frame.data)
+            except Exception as e:
+                logger.error(f"Frame conversion error: {e}")
+                return "Error processing the image frame"
             
             # Zu Base64
             buffered = io.BytesIO()
             pil_image.save(buffered, format="PNG")
             img_base64 = base64.b64encode(buffered.getvalue()).decode()
             
-            logger.info(f"Analyzing image with {VISION_MODEL}")
+            logger.info(f"Sending image to {VISION_MODEL} for analysis...")
             
             # Ollama API direkt aufrufen
             async with aiohttp.ClientSession() as session:
@@ -212,18 +244,18 @@ class DualModelVisionAgent(Agent):
                         result = await resp.json()
                         description = result.get('response', 'Could not analyze image')
                         logger.info(f"Vision analysis completed: {description[:100]}...")
-                        
-                        # After vision analysis, we could switch back to function model
-                        # But let's keep it loaded for a bit in case of follow-up questions
-                        
                         return description
                     else:
-                        logger.error(f"Vision API error: {resp.status}")
-                        return "Error analyzing image"
+                        error_text = await resp.text()
+                        logger.error(f"Vision API error {resp.status}: {error_text}")
+                        return "Error analyzing image - vision service returned an error"
                         
+        except asyncio.TimeoutError:
+            logger.error("Vision analysis timed out")
+            return "Vision analysis timed out. The image might be too complex or the model is busy."
         except Exception as e:
-            logger.error(f"Vision analysis error: {e}")
-            return f"Could not analyze image: {str(e)}"
+            logger.error(f"Vision analysis error: {str(e)}")
+            return f"Could not analyze image due to technical error: {str(e)}"
 
     @function_tool(description="Search the knowledge base for information about regulations, BAKOM, frequencies, etc.")
     async def search_knowledge(
