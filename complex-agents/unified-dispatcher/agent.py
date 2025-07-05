@@ -56,7 +56,7 @@ async def entrypoint(ctx: JobContext):
         
         # RAG agent mit lokalem LLM (mit Function Calling Support)
         rag_llm = openai.LLM(
-            model="llama3.2:latest",  # oder "mixtral" für besseres Function Calling
+            model="llama3.2:latest",  # ✅ Korrekt: llama3.2:latest für RAG
             base_url=f"{OLLAMA_HOST}/v1",
             api_key="ollama",
             timeout=60.0,
