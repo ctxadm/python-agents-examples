@@ -22,9 +22,9 @@ async def entrypoint(ctx: JobContext):
         logger.info("→ Starting Medical Agent for Voice Assistant Frontend")
         await ctx.connect()
         
-        # Medical agent mit lokalem LLM
+        # Medical agent mit lokalem LLM - HARDCODED
         medical_llm = openai.LLM(
-            model="llama3",  # oder "mistral", "qwen2.5"
+            model="llama3.2:latest",  # HARDCODED: llama3 für Medical Agent
             base_url=f"{OLLAMA_HOST}/v1",
             api_key="ollama",
             timeout=60.0,
@@ -35,7 +35,7 @@ async def entrypoint(ctx: JobContext):
             instructions="You are a medical triage assistant. Be helpful and professional.",
             stt=deepgram.STT(),
             llm=medical_llm,
-            tts=openai.TTS(),  # Noch OpenAI TTS
+            tts=openai.TTS(),
         )
         session = AgentSession(vad=silero.VAD.load())
         await session.start(agent=agent, room=ctx.room)
@@ -45,6 +45,7 @@ async def entrypoint(ctx: JobContext):
         try:
             sys.path.insert(0, '/app')
             from complex_agents.vision_ollama.agent import entrypoint as vision_entrypoint
+            # Vision Agent nutzt OLLAMA_MODEL aus ENV (llava-llama3:latest)
             await vision_entrypoint(ctx)
         except ImportError as e:
             logger.error(f"Could not import vision agent: {e}")
@@ -54,9 +55,9 @@ async def entrypoint(ctx: JobContext):
         logger.info("→ Starting RAG Agent")
         await ctx.connect()
         
-        # RAG agent mit lokalem LLM (mit Function Calling Support)
+        # RAG agent mit lokalem LLM - HARDCODED
         rag_llm = openai.LLM(
-            model="llama3.2:latest",  # ✅ Korrekt: llama3.2:latest für RAG
+            model="llama3.2:latest",  # HARDCODED: llama3.2:latest für RAG
             base_url=f"{OLLAMA_HOST}/v1",
             api_key="ollama",
             timeout=60.0,
@@ -76,9 +77,9 @@ async def entrypoint(ctx: JobContext):
         logger.info("→ Starting Default Agent")
         await ctx.connect()
         
-        # Default agent mit lokalem LLM
+        # Default agent mit lokalem LLM - HARDCODED
         default_llm = openai.LLM(
-            model="llama3",
+            model="llama3.2:latest",  # HARDCODED: llama3 für Default Agent
             base_url=f"{OLLAMA_HOST}/v1",
             api_key="ollama",
             timeout=60.0,
