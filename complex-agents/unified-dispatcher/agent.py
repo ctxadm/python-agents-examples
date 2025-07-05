@@ -29,7 +29,7 @@ async def entrypoint(ctx: JobContext):
             base_url=f"{OLLAMA_HOST}/v1",
             api_key="ollama",
             timeout=60.0,
-            temperature=0.7
+            temperature=0.5
         )
         
         agent = Agent(
