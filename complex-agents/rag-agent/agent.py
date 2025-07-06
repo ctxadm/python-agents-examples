@@ -151,8 +151,7 @@ Antworte auf Deutsch, wenn du auf Deutsch angesprochen wirst."""
         llm=agent_llm,
         tts=openai.TTS(
             voice="alloy",
-            model="tts-1",
-            language="de"
+            model="tts-1"            
         ),
         tools=[search_knowledge_base, list_available_collections]  # Functions direkt als Liste
     )
