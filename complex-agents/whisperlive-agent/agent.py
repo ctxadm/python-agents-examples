@@ -1,4 +1,3 @@
-# python-agents/complex-agents/whisperlive-agent/agent.py
 import os
 import logging
 import asyncio
@@ -17,7 +16,10 @@ from livekit.agents import (
 from livekit.agents.stt import (
     STTCapabilities, SpeechEvent, SpeechEventType, SpeechData, STT
 )
-from livekit.plugins import silero
+from livekit.plugins import silero, openai
+
+# Import local services - stellen Sie sicher, dass local_services.py im gleichen Verzeichnis ist
+from local_services import RemotePiperTTS
 
 logger = logging.getLogger("whisperlive-agent")
 
@@ -27,13 +29,13 @@ class WhisperLiveKitSTT(STT):
     
     def __init__(
         self, 
-        api_url: str = "http://172.16.0.146:9090",
+        api_url: str = "http://localhost:9090",
         model: str = "base",
         language: str = "de"
     ):
         super().__init__(
             capabilities=STTCapabilities(
-                streaming=False,  # Start mit non-streaming
+                streaming=False,
                 interim_results=False
             )
         )
@@ -125,12 +127,6 @@ class WhisperLiveKitSTT(STT):
             await self._session.close()
 
 
-# Import existing TTS from local_services
-import sys
-sys.path.insert(0, '/app/services')
-from local_services import RemotePiperTTS
-
-
 async def entrypoint(ctx: JobContext):
     """WhisperLiveKit Agent Entry Point"""
     await ctx.connect()
@@ -140,8 +136,8 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"Participant: {ctx.participant}")
     
     try:
-        # Initialize STT
-        whisper_url = f"http://{os.getenv('VISION_AI_SERVER_IP', '172.16.0.146')}:9090"
+        # Initialize STT - verwende localhost da alles lokal läuft
+        whisper_url = "http://localhost:9090"
         logger.info(f"Connecting to WhisperLiveKit at {whisper_url}")
         
         stt_service = WhisperLiveKitSTT(
@@ -151,7 +147,7 @@ async def entrypoint(ctx: JobContext):
         )
         
         # Initialize TTS
-        piper_url = f"http://{os.getenv('VISION_AI_SERVER_IP', '172.16.0.146')}:8001"
+        piper_url = "http://localhost:8001"
         logger.info(f"Connecting to Piper TTS at {piper_url}")
         
         tts_service = RemotePiperTTS(
@@ -159,12 +155,10 @@ async def entrypoint(ctx: JobContext):
             base_url=piper_url
         )
         
-        # Initialize LLM
-        ollama_url = f"http://{os.getenv('RAG_AI_SERVER_IP', '172.16.0.136')}:11434"
+        # Initialize LLM - anpassen Sie die URL für Ihren Ollama Server
+        ollama_url = os.getenv('OLLAMA_URL', 'http://localhost:11434')
         logger.info(f"Connecting to Ollama at {ollama_url}")
         
-        # Use openai plugin with custom base_url
-        from livekit.plugins import openai
         llm_service = openai.LLM(
             model="llama3.2:latest",
             base_url=f"{ollama_url}/v1",
@@ -187,6 +181,9 @@ async def entrypoint(ctx: JobContext):
         await session.start(agent=agent, room=ctx.room)
         
         logger.info("✓ WhisperLiveKit Agent successfully started!")
+        logger.info("✓ STT: WhisperLiveKit on port 9090")
+        logger.info("✓ TTS: Piper on port 8001")
+        logger.info("✓ LLM: Ollama")
         
     except Exception as e:
         logger.error(f"Failed to start agent: {e}", exc_info=True)
