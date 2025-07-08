@@ -68,34 +68,26 @@ class WhisperLiveKitWebSocketSTT(STT):
         """Process audio via WhisperLiveKit WebSocket"""
         
         try:
-            # Convert AudioFrame to WAV
-            wav_buffer = io.BytesIO()
-            with wave.open(wav_buffer, 'wb') as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(16000)
-                
-                # Get audio data
-                if hasattr(buffer, 'data'):
-                    if isinstance(buffer.data, np.ndarray):
-                        audio_data = buffer.data.tobytes()
-                    else:
-                        audio_data = bytes(buffer.data)
+            # Get raw PCM audio data
+            if hasattr(buffer, 'data'):
+                if isinstance(buffer.data, np.ndarray):
+                    audio_data = buffer.data.tobytes()
                 else:
-                    audio_data = bytes(buffer)
-                    
-                wav_file.writeframes(audio_data)
+                    audio_data = bytes(buffer.data)
+            else:
+                audio_data = bytes(buffer)
             
-            wav_buffer.seek(0)
-            wav_data = wav_buffer.getvalue()
+            # WhisperLiveKit expects WebM/Opus from browser OR raw PCM
+            # Let's send raw PCM data directly
+            logger.debug(f"Sending {len(audio_data)} bytes of raw PCM")
             
             # Ensure WebSocket connection
             await self._ensure_websocket()
             
             if self._websocket:
-                # Send audio data
-                await self._websocket.send(wav_data)
-                logger.debug(f"Sent {len(wav_data)} bytes to WhisperLiveKit")
+                # Send raw PCM audio data
+                await self._websocket.send(audio_data)
+                logger.debug(f"Sent {len(audio_data)} bytes to WhisperLiveKit")
                 
                 # Wait for response with timeout
                 try:
