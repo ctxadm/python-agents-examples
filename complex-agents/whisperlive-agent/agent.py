@@ -29,7 +29,7 @@ class WhisperLiveKitSTT(STT):
     
     def __init__(
         self, 
-        api_url: str = "http://localhost:9090",
+        api_url: str = "http://172.16.0.146:9090",
         model: str = "base",
         language: str = "de"
     ):
@@ -133,11 +133,12 @@ async def entrypoint(ctx: JobContext):
     
     logger.info("=== Starting WhisperLiveKit Agent ===")
     logger.info(f"Room: {ctx.room.name}")
-    logger.info(f"Participant: {ctx.participant}")
+    # FIX: ctx.participant existiert nicht in dieser Version
+    # logger.info(f"Participant: {ctx.participant}")
     
     try:
-        # Initialize STT - verwende localhost da alles lokal läuft
-        whisper_url = "http://localhost:9090"
+        # Initialize STT - verwende die korrekte IP für WhisperLiveKit
+        whisper_url = os.getenv('WHISPERLIVEKIT_URL', 'http://172.16.0.146:9090')
         logger.info(f"Connecting to WhisperLiveKit at {whisper_url}")
         
         stt_service = WhisperLiveKitSTT(
@@ -146,8 +147,8 @@ async def entrypoint(ctx: JobContext):
             language="de"
         )
         
-        # Initialize TTS
-        piper_url = "http://localhost:8001"
+        # Initialize TTS - verwende die korrekte IP für Piper
+        piper_url = os.getenv('PIPER_URL', 'http://172.16.0.146:8001')
         logger.info(f"Connecting to Piper TTS at {piper_url}")
         
         tts_service = RemotePiperTTS(
@@ -156,7 +157,8 @@ async def entrypoint(ctx: JobContext):
         )
         
         # Initialize LLM - anpassen Sie die URL für Ihren Ollama Server
-        ollama_url = os.getenv('OLLAMA_URL', 'http://localhost:11434')
+        # Falls Ollama auf einem anderen Server läuft, ändern Sie die IP hier
+        ollama_url = os.getenv('OLLAMA_URL', 'http://172.16.0.106:11434')
         logger.info(f"Connecting to Ollama at {ollama_url}")
         
         llm_service = openai.LLM(
@@ -181,9 +183,9 @@ async def entrypoint(ctx: JobContext):
         await session.start(agent=agent, room=ctx.room)
         
         logger.info("✓ WhisperLiveKit Agent successfully started!")
-        logger.info("✓ STT: WhisperLiveKit on port 9090")
-        logger.info("✓ TTS: Piper on port 8001")
-        logger.info("✓ LLM: Ollama")
+        logger.info(f"✓ STT: WhisperLiveKit on {whisper_url}")
+        logger.info(f"✓ TTS: Piper on {piper_url}")
+        logger.info(f"✓ LLM: Ollama on {ollama_url}")
         
     except Exception as e:
         logger.error(f"Failed to start agent: {e}", exc_info=True)
