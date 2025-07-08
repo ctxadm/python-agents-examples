@@ -158,7 +158,7 @@ async def entrypoint(ctx: JobContext):
         
         # Initialize LLM - anpassen Sie die URL für Ihren Ollama Server
         # Falls Ollama auf einem anderen Server läuft, ändern Sie die IP hier
-        ollama_url = os.getenv('OLLAMA_URL', 'http://172.16.0.106:11434')
+        ollama_url = os.getenv('OLLAMA_URL', 'http://172.16.0.146:11434')
         logger.info(f"Connecting to Ollama at {ollama_url}")
         
         llm_service = openai.LLM(
