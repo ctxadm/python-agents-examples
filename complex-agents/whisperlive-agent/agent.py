@@ -1,88 +1,51 @@
+# python-agents/complex-agents/whisperlive-agent/agent.py
 import os
-import sys
-# Add project root to PYTHONPATH so top-level 'services' package is found
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-
 import logging
 import asyncio
-import websockets
 import json
+import io
+import wave
 import numpy as np
-from typing import Optional
+from typing import Optional, AsyncIterator
+import aiohttp
 
-from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
-from livekit.agents.stt import STT, STTCapabilities, SpeechEvent, SpeechEventType, SpeechData
-from livekit.plugins import openai, silero
-from livekit import rtc
-
-# Use top-level services package for Piper TTS
-from services.local_services import RemotePiperTTS
+from livekit import rtc, agents
+from livekit.agents import (
+    Agent, AgentSession, JobContext, WorkerOptions, cli,
+    stt, tts, llm
+)
+from livekit.agents.stt import (
+    STTCapabilities, SpeechEvent, SpeechEventType, SpeechData, STT
+)
+from livekit.plugins import silero
 
 logger = logging.getLogger("whisperlive-agent")
 
+
 class WhisperLiveKitSTT(STT):
-    """WebSocket-based STT using WhisperLiveKit"""
+    """HTTP-based STT using WhisperLiveKit REST API"""
     
     def __init__(
         self, 
-        ws_url: str = "ws://172.16.0.146:9090",
+        api_url: str = "http://172.16.0.146:9090",
         model: str = "base",
         language: str = "de"
     ):
         super().__init__(
             capabilities=STTCapabilities(
-                streaming=True,
-                interim_results=True
+                streaming=False,  # Start mit non-streaming
+                interim_results=False
             )
         )
-        self.ws_url = ws_url
+        self.api_url = api_url
         self.model = model
         self.language = language
-        self._websocket = None
-        self._audio_buffer = []
-        self._running = False
-        
-    async def _connect(self):
-        """Establish WebSocket connection"""
-        if not self._websocket:
-            self._websocket = await websockets.connect(self.ws_url)
-            # Send configuration
-            await self._websocket.send(json.dumps({
-                "type": "config",
-                "config": {
-                    "model": self.model,
-                    "language": self.language,
-                    "task": "transcribe",
-                    "vad_enabled": True,
-                    "realtime": True
-                }
-            }))
-            logger.info(f"Connected to WhisperLiveKit at {self.ws_url}")
+        self._session = None
+        logger.info(f"Initialized WhisperLiveKitSTT with {api_url}")
     
-    async def _process_audio_stream(self):
-        """Process audio and receive transcriptions"""
-        try:
-            async for message in self._websocket:
-                data = json.loads(message)
-                
-                if data.get("type") == "transcript":
-                    yield SpeechEvent(
-                        type=SpeechEventType.INTERIM_TRANSCRIPT,
-                        alternatives=[SpeechData(
-                            text=data.get("text", ""),
-                            confidence=data.get("confidence", 0.0)
-                        )]
-                    )
-                elif data.get("type") == "final":
-                    yield SpeechEvent(
-                        type=SpeechEventType.FINAL_TRANSCRIPT,
-                        alternatives=[SpeechData(
-                            text=data.get("text", ""),
-                            confidence=data.get("confidence", 1.0)
-                        )]
-                    )
-        except Exception as e:
-            logger.error(f"WebSocket error: {e}")
+    async def _ensure_session(self):
+        if not self._session:
+            self._session = aiohttp.ClientSession()
     
     async def recognize(
         self,
@@ -91,79 +54,144 @@ class WhisperLiveKitSTT(STT):
         language: Optional[str] = None,
         final: bool = True,
     ) -> SpeechEvent:
-        """Process single audio frame"""
-        await self._connect()
+        """Process audio via WhisperLiveKit HTTP API"""
+        await self._ensure_session()
         
-        # Convert to bytes and send
-        audio_bytes = buffer.data.tobytes()
-        await self._websocket.send(audio_bytes)
-        
-        # Get response
         try:
-            message = await asyncio.wait_for(
-                self._websocket.recv(), 
-                timeout=5.0
-            )
-            data = json.loads(message)
+            # Convert AudioFrame to WAV
+            wav_buffer = io.BytesIO()
+            with wave.open(wav_buffer, 'wb') as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(16000)
+                
+                # Get audio data
+                if hasattr(buffer, 'data'):
+                    if isinstance(buffer.data, np.ndarray):
+                        audio_data = buffer.data.tobytes()
+                    else:
+                        audio_data = bytes(buffer.data)
+                else:
+                    audio_data = bytes(buffer)
+                    
+                wav_file.writeframes(audio_data)
             
-            return SpeechEvent(
-                type=SpeechEventType.FINAL_TRANSCRIPT if final else SpeechEventType.INTERIM_TRANSCRIPT,
-                alternatives=[SpeechData(
-                    text=data.get("text", ""),
-                    confidence=data.get("confidence", 1.0)
-                )]
-            )
-        except asyncio.TimeoutError:
+            wav_buffer.seek(0)
+            
+            # Send to WhisperLiveKit API
+            data = aiohttp.FormData()
+            data.add_field('audio', wav_buffer, 
+                          filename='audio.wav',
+                          content_type='audio/wav')
+            data.add_field('model', self.model)
+            data.add_field('language', language or self.language)
+            
+            async with self._session.post(
+                f"{self.api_url}/transcribe",
+                data=data,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    text = result.get('text', '')
+                    
+                    return SpeechEvent(
+                        type=SpeechEventType.FINAL_TRANSCRIPT,
+                        alternatives=[SpeechData(
+                            text=text,
+                            confidence=result.get('confidence', 1.0)
+                        )]
+                    )
+                else:
+                    logger.error(f"WhisperLiveKit error: {response.status}")
+                    return SpeechEvent(
+                        type=SpeechEventType.FINAL_TRANSCRIPT,
+                        alternatives=[SpeechData(text="")]
+                    )
+                    
+        except Exception as e:
+            logger.error(f"STT error: {e}", exc_info=True)
             return SpeechEvent(
                 type=SpeechEventType.FINAL_TRANSCRIPT,
                 alternatives=[SpeechData(text="")]
             )
     
+    async def _recognize_impl(self, buffer, *, language=None):
+        """Required by base class"""
+        return await self.recognize(buffer, language=language)
+    
     async def aclose(self):
-        """Close WebSocket connection"""
-        if self._websocket:
-            await self._websocket.close()
-            self._websocket = None
+        if self._session:
+            await self._session.close()
+
+
+# Import existing TTS from local_services
+import sys
+sys.path.insert(0, '/app/services')
+from local_services import RemotePiperTTS
+
 
 async def entrypoint(ctx: JobContext):
-    """Agent using WhisperLiveKit for STT"""
-    # Connect and auto-subscribe to voice channel/events
-    await ctx.connect(auto_subscribe=True)
+    """WhisperLiveKit Agent Entry Point"""
+    await ctx.connect()
     
-    logger.info("Starting WhisperLiveKit Agent")
+    logger.info("=== Starting WhisperLiveKit Agent ===")
+    logger.info(f"Room: {ctx.room.name}")
+    logger.info(f"Participant: {ctx.participant}")
     
-    stt = WhisperLiveKitSTT(
-        ws_url=f"ws://{os.getenv('VISION_AI_SERVER_IP', '172.16.0.146')}:9090",
-        model="base",
-        language="de"
-    )
-    
-    tts = RemotePiperTTS(
-        voice="de_DE-thorsten-medium",
-        base_url=f"http://{os.getenv('VISION_AI_SERVER_IP', '172.16.0.146')}:8001"
-    )
-    
-    llm = openai.LLM(
-        model="llama3.2:latest",
-        base_url=f"http://{os.getenv('RAG_AI_SERVER_IP', '172.16.0.136')}:11434/v1",
-        api_key="ollama"
-    )
-    
-    agent = Agent(
-        instructions="Du bist ein hilfreicher Assistent. Antworte auf Deutsch.",
-        stt=stt,
-        llm=llm,
-        tts=tts,
-        vad=silero.VAD.load()
-    )
-    
-    session = AgentSession()
-    await session.start(agent=agent, room=ctx.room)
-    
-    # Optional greeting
-    await session.say("Hallo! Wie kann ich dir helfen?")
-    
-    logger.info("WhisperLiveKit Agent running!")
+    try:
+        # Initialize STT
+        whisper_url = f"http://{os.getenv('VISION_AI_SERVER_IP', '172.16.0.146')}:9090"
+        logger.info(f"Connecting to WhisperLiveKit at {whisper_url}")
+        
+        stt_service = WhisperLiveKitSTT(
+            api_url=whisper_url,
+            model="base",
+            language="de"
+        )
+        
+        # Initialize TTS
+        piper_url = f"http://{os.getenv('VISION_AI_SERVER_IP', '172.16.0.146')}:8001"
+        logger.info(f"Connecting to Piper TTS at {piper_url}")
+        
+        tts_service = RemotePiperTTS(
+            voice="de_DE-thorsten-medium",
+            base_url=piper_url
+        )
+        
+        # Initialize LLM
+        ollama_url = f"http://{os.getenv('RAG_AI_SERVER_IP', '172.16.0.136')}:11434"
+        logger.info(f"Connecting to Ollama at {ollama_url}")
+        
+        # Use openai plugin with custom base_url
+        from livekit.plugins import openai
+        llm_service = openai.LLM(
+            model="llama3.2:latest",
+            base_url=f"{ollama_url}/v1",
+            api_key="ollama"
+        )
+        
+        # Create agent
+        agent = Agent(
+            instructions="""Du bist ein hilfreicher KI-Assistent.
+            Antworte kurz und präzise auf Deutsch.
+            Sei freundlich und professionell.""",
+            stt=stt_service,
+            llm=llm_service,
+            tts=tts_service,
+            vad=silero.VAD.load()
+        )
+        
+        # Start session
+        session = AgentSession()
+        await session.start(agent=agent, room=ctx.room)
+        
+        logger.info("✓ WhisperLiveKit Agent successfully started!")
+        
+    except Exception as e:
+        logger.error(f"Failed to start agent: {e}", exc_info=True)
+        raise
+
 
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
