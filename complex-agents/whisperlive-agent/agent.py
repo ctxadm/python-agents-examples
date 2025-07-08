@@ -1,4 +1,8 @@
 import os
+import sys
+# Add project root to PYTHONPATH so top-level 'services' package is found
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
 import logging
 import asyncio
 import websockets
@@ -11,10 +15,7 @@ from livekit.agents.stt import STT, STTCapabilities, SpeechEvent, SpeechEventTyp
 from livekit.plugins import openai, silero
 from livekit import rtc
 
-# Verwende lokale Services-Paket für Piper TTS
-import sys
-# Ensure project root is on PYTHONPATH for absolute imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+# Use top-level services package for Piper TTS
 from services.local_services import RemotePiperTTS
 
 logger = logging.getLogger("whisperlive-agent")
@@ -126,31 +127,28 @@ class WhisperLiveKitSTT(STT):
 
 async def entrypoint(ctx: JobContext):
     """Agent using WhisperLiveKit for STT"""
+    # Connect and auto-subscribe to voice channel/events
     await ctx.connect(auto_subscribe=True)
     
     logger.info("Starting WhisperLiveKit Agent")
     
-    # Erstelle custom STT
     stt = WhisperLiveKitSTT(
         ws_url=f"ws://{os.getenv('VISION_AI_SERVER_IP', '172.16.0.146')}:9090",
         model="base",
         language="de"
     )
     
-    # Verwende TTS aus local_services
     tts = RemotePiperTTS(
         voice="de_DE-thorsten-medium",
         base_url=f"http://{os.getenv('VISION_AI_SERVER_IP', '172.16.0.146')}:8001"
     )
     
-    # LLM via OpenAI-Plugin
     llm = openai.LLM(
         model="llama3.2:latest",
         base_url=f"http://{os.getenv('RAG_AI_SERVER_IP', '172.16.0.136')}:11434/v1",
         api_key="ollama"
     )
     
-    # Erzeuge Agent
     agent = Agent(
         instructions="Du bist ein hilfreicher Assistent. Antworte auf Deutsch.",
         stt=stt,
@@ -159,11 +157,10 @@ async def entrypoint(ctx: JobContext):
         vad=silero.VAD.load()
     )
     
-    # Starte Session
     session = AgentSession()
     await session.start(agent=agent, room=ctx.room)
     
-    # Begrüßung
+    # Optional greeting
     await session.say("Hallo! Wie kann ich dir helfen?")
     
     logger.info("WhisperLiveKit Agent running!")
