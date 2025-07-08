@@ -1,4 +1,3 @@
-# python-agents/complex-agents/whisperlive-agent/agent.py
 import os
 import logging
 import asyncio
@@ -9,7 +8,6 @@ from typing import Optional
 
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
 from livekit.agents.stt import STT, STTCapabilities, SpeechEvent, SpeechEventType, SpeechData
-from livekit.agents.voice_assistant import VoiceAssistant
 from livekit.plugins import openai, silero
 from livekit import rtc
 
@@ -120,14 +118,12 @@ class WhisperLiveKitSTT(STT):
             await self._websocket.close()
             self._websocket = None
 
-
 # Use existing Piper TTS from local_services
 from services.local_services import RemotePiperTTS
 
-
 async def entrypoint(ctx: JobContext):
     """Agent using WhisperLiveKit for STT"""
-    await ctx.connect()
+    await ctx.connect(auto_subscribe=True)
     
     logger.info("Starting WhisperLiveKit Agent")
     
@@ -163,6 +159,9 @@ async def entrypoint(ctx: JobContext):
     # Start session
     session = AgentSession()
     await session.start(agent=agent, room=ctx.room)
+    
+    # Optional: Begrüßung durch Agent
+    await session.say("Hallo! Wie kann ich dir helfen?")
     
     logger.info("WhisperLiveKit Agent running!")
 
