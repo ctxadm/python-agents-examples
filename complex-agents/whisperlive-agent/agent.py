@@ -9,7 +9,7 @@ from typing import Optional
 
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
 from livekit.agents.stt import STT, STTCapabilities, SpeechEvent, SpeechEventType, SpeechData
-from livekit.agents.voice import VoiceAssistant
+from livekit.agents.voice_assistant import VoiceAssistant
 from livekit.plugins import openai, silero
 from livekit import rtc
 
