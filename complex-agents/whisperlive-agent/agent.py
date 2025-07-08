@@ -12,7 +12,10 @@ from livekit.plugins import openai, silero
 from livekit import rtc
 
 # Verwende lokale Services-Paket für Piper TTS
-from .services.local_services import RemotePiperTTS
+import sys
+# Ensure project root is on PYTHONPATH for absolute imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+from services.local_services import RemotePiperTTS
 
 logger = logging.getLogger("whisperlive-agent")
 
