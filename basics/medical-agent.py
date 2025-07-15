@@ -33,7 +33,7 @@ async def entrypoint(ctx: JobContext):
         stt=deepgram.STT(),
         llm=medical_llm,
         tts=deepgram.TTS(),
-        vad=silero.VAD()
+        vad=silero.VAD.load()
     )
     
     agent.start(ctx.room, participant)
