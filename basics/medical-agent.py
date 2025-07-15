@@ -1,7 +1,7 @@
 import os
 import logging
-from livekit.agents import JobContext, llm, WorkerOptions, cli
-from livekit.agents.voice import Agent
+from livekit.agents import JobContext, WorkerOptions, cli
+from livekit.agents.voice import AgentSession
 from livekit.plugins import openai, deepgram, silero
 
 logger = logging.getLogger("medical-ollama")
@@ -12,8 +12,8 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:latest")
 
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
-    participant = await ctx.wait_for_participant()
-    logger.info(f"Medical assistant starting for participant {participant.identity}")
+    
+    logger.info(f"Medical assistant starting")
     
     # Medical-spezifisches LLM
     medical_llm = openai.LLM(
@@ -24,8 +24,8 @@ async def entrypoint(ctx: JobContext):
         temperature=0.7,
     )
     
-    # Agent mit medical instructions erstellen
-    agent = Agent(
+    # Session mit Agent-Konfiguration erstellen
+    session = AgentSession(
         instructions="""You are a helpful medical information assistant.
         Important: Always remind users that you provide general information only 
         and they should consult healthcare professionals for medical advice.
@@ -36,15 +36,17 @@ async def entrypoint(ctx: JobContext):
         vad=silero.VAD.load()
     )
     
-    agent.start(ctx.room, participant)
+    # Session starten
+    await session.start(room=ctx.room)
     
-    @agent.on("agent_speech_created")
-    def on_agent_speech_created(msg: llm.ChatMessage):
-        logger.info(f"Agent: {msg.content}")
+    # Event handlers
+    @session.on("agent_speech_created")
+    def on_agent_speech_created(msg):
+        logger.info(f"Agent: {msg}")
     
-    @agent.on("user_speech_committed") 
-    def on_user_speech_committed(msg: llm.ChatMessage):
-        logger.info(f"User: {msg.content}")
+    @session.on("user_speech_committed") 
+    def on_user_speech_committed(msg):
+        logger.info(f"User: {msg}")
 
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
