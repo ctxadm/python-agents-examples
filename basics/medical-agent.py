@@ -1,8 +1,8 @@
 import os
 import logging
-from livekit import agents
+from livekit.agents import JobContext, llm, WorkerOptions, cli
+from livekit.agents.voice import Agent
 from livekit.plugins import openai, deepgram, silero
-from livekit.agents.voice import VoicePipelineAgent
 
 logger = logging.getLogger("medical-ollama")
 
@@ -10,9 +10,8 @@ logger = logging.getLogger("medical-ollama")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://172.16.0.146:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:latest")
 
-async def entrypoint(ctx: agents.JobContext):
+async def entrypoint(ctx: JobContext):
     await ctx.connect()
-    
     participant = await ctx.wait_for_participant()
     logger.info(f"Medical assistant starting for participant {participant.identity}")
     
@@ -25,26 +24,27 @@ async def entrypoint(ctx: agents.JobContext):
         temperature=0.7,
     )
     
-    # System Prompt für Medical Assistant
-    medical_llm = medical_llm.with_instructions(
-        """You are a helpful medical information assistant. 
-        You provide general health information and always remind users 
-        to consult with healthcare professionals for medical advice.
-        Keep responses concise and friendly."""
-    )
-    
-    # Voice Pipeline Setup
-    agent = VoicePipelineAgent(
-        vad=silero.VAD.load(),
+    # Agent mit medical instructions erstellen
+    agent = Agent(
+        instructions="""You are a helpful medical information assistant.
+        Important: Always remind users that you provide general information only 
+        and they should consult healthcare professionals for medical advice.
+        Be accurate, empathetic, and clear in your responses.""",
         stt=deepgram.STT(),
         llm=medical_llm,
-        tts=openai.TTS(voice="sage"),
+        tts=deepgram.TTS(),
+        vad=silero.VAD()
     )
     
     agent.start(ctx.room, participant)
     
-    @agent.on("agent_speech_committed")
-    def on_agent_speech_committed(msg: str):
-        logger.info(f"Medical agent said: {msg}")
+    @agent.on("agent_speech_created")
+    def on_agent_speech_created(msg: llm.ChatMessage):
+        logger.info(f"Agent: {msg.content}")
     
-    await agent.join()
+    @agent.on("user_speech_committed") 
+    def on_user_speech_committed(msg: llm.ChatMessage):
+        logger.info(f"User: {msg.content}")
+
+if __name__ == "__main__":
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
