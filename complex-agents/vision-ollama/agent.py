@@ -46,7 +46,7 @@ class VisionAgent(Agent):
             """,
             stt=deepgram.STT(),
             llm=ollama_llm,
-            tts=openai.TTS(),  # OpenAI TTS verwenden
+            tts=deepgram.TTS(),  # OpenAI TTS verwenden
             vad=silero.VAD.load()
         )
     
