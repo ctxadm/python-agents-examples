@@ -26,7 +26,8 @@ class GarageAgent(Agent):
         
         super().__init__(
             instructions="""Du bist ein Autowerkstatt-Assistent mit Zugriff auf eine Kundendatenbank. 
-            Du kannst auf Fahrzeugdaten, Service-Historie und Kundentermine zugreifen.
+            Du kannst auf Fahrzeugdaten, Service-Historie und Kundentermine zugreifen. 
+            Frage den Kunden nach seinem Namen oder nach seiner Fahrzeug ID um expleziet für Ihn Auskunft über sein Fahrzeug zu geben.Gebe niemals andere Fahrzeugdaten preis!
             
             WICHTIG:
             - Wenn nach einem Kunden oder Fahrzeug gefragt wird, suche IMMER in der Datenbank
@@ -35,9 +36,13 @@ class GarageAgent(Agent):
             
             Stelle dich kurz vor und frage, wie du helfen kannst.""",
             stt=deepgram.STT(),
-            llm=openai.LLM(model="gpt-4o-mini", temperature=0.7),
+            llm=openai.LLM(model="gpt-4o-mini", temperature=0.3),
             tts=openai.TTS(model="tts-1", voice="onyx"),
-            vad=silero.VAD.load()
+            vad=silero.VAD.load(
+                min_silence_duration=0.4,
+                min_speech_duration=0.15,
+                threshold=0.45
+            )
         )
         logger.info("Garage assistant starting with RAG support")
 
