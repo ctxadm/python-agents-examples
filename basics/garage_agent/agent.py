@@ -8,154 +8,134 @@ from typing import Optional, List, Dict
 from pathlib import Path
 from dotenv import load_dotenv
 from livekit import rtc
-from livekit.agents import JobContext, WorkerOptions, cli, get_job_context
-from livekit.agents.llm import function_tool, ChatContext, ChatMessage
-from livekit.agents.voice import Agent, AgentSession, RunContext
+from livekit.agents import JobContext, WorkerOptions, cli
+from livekit.agents.voice import Agent, AgentSession
+from livekit.agents.llm import ChatContext, ChatMessage, ChatContent
 from livekit.plugins import deepgram, openai, silero
 
-logger = logging.getLogger("garage-assistant")
-logger.setLevel(logging.INFO)
+# Load environment variables
+load_dotenv()
 
-load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
+logger = logging.getLogger("garage-assistant")
 
 class GarageAgent(Agent):
-    """Garage Agent with RAG integration"""
-    
-    def __init__(self) -> None:
-        # Initialize parent with instructions
+    def __init__(self):
+        self.base_url = os.getenv("RAG_SERVICE_URL", "http://rag-service:8000")
+        
         super().__init__(
-            instructions="""Du bist ein freundlicher und kompetenter Kundenservice-Mitarbeiter einer Autowerkstatt mit Zugriff auf die komplette Fahrzeugdatenbank.
-
-DEINE ROLLE:
-- Du hilfst Kunden bei allen Fragen zu ihren Fahrzeugen
-- Du gibst Auskunft über Service-Historie, anstehende Wartungen und aktuelle Probleme
-- Du bist hilfsbereit, verständnisvoll und lösungsorientiert
-
-DATENBANK-ZUGRIFF:
-- Du hast Zugriff auf alle Fahrzeugdaten unserer Kunden
-- Bei Anfragen zu spezifischen Fahrzeugen (z.B. "VW Golf mit Kennzeichen ZH 123456") durchsuchst du die Datenbank
-- Du kannst folgende Informationen bereitstellen:
-  * Fahrzeugdaten (Marke, Modell, Baujahr, Kilometerstand)
-  * Service-Historie mit durchgeführten Arbeiten
-  * Aktuelle Probleme und deren Status
-  * Anstehende Wartungen und Reparaturen
-  * Kostenvoranschläge
-  * Garantiestatus
-
-KUNDENSERVICE:
-- Erkläre technische Sachverhalte verständlich
-- Gib transparente Auskunft über Kosten
-- Empfehle notwendige Wartungen basierend auf Herstellervorgaben
-- Weise auf dringende Reparaturen hin (besonders sicherheitsrelevante)
-- Biete Terminvereinbarungen an
-- Zeige Verständnis für die Sorgen der Kunden
-
-KOMMUNIKATIONSSTIL:
-- Freundlich und professionell
-- Vermeide zu viel Fachjargon
-- Sei ehrlich über notwendige Reparaturen
-- Betone Sicherheit und Zuverlässigkeit
-
-Hilf den Kunden, ihr Fahrzeug optimal zu warten und sicher zu fahren.""",
+            instructions="""Du bist ein Autowerkstatt-Assistent mit Zugriff auf eine Kundendatenbank. 
+            Du kannst auf Fahrzeugdaten, Service-Historie und Kundentermine zugreifen.
+            
+            WICHTIG:
+            - Wenn nach einem Kunden oder Fahrzeug gefragt wird, suche IMMER in der Datenbank
+            - Beantworte Fragen basierend auf den gefundenen Daten
+            - Sei präzise und verwende die tatsächlichen Daten aus der Datenbank
+            
+            Stelle dich kurz vor und frage, wie du helfen kannst.""",
             stt=deepgram.STT(),
             llm=openai.LLM(model="gpt-4o-mini", temperature=0.7),
-            tts=openai.TTS(model="tts-1", voice="nova"),  # Männliche, freundliche Stimme
+            tts=openai.TTS(model="tts-1", voice="onyx"),
             vad=silero.VAD.load()
         )
-        
-        self.rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
-        self.rag_collection = os.getenv("RAG_COLLECTION", "automotive_docs")
-        logger.info(f"GarageAgent initialized with collection: {self.rag_collection}")
-    
+        logger.info("Garage assistant starting with RAG support")
+
     async def on_enter(self):
-        """Called when the agent session starts"""
-        logger.info("Garage agent entered the session")
+        """Called when the agent enters the conversation"""
+        logger.info("Garage assistant ready with RAG support")
         
-        # Test RAG connection
+        # Check RAG service health
         try:
             async with httpx.AsyncClient() as client:
-                health_response = await client.get(f"{self.rag_url}/health")
-                if health_response.status_code == 200:
+                response = await client.get(f"{self.base_url}/health")
+                if response.status_code == 200:
                     logger.info("RAG service is healthy")
                 else:
-                    logger.warning(f"RAG service unhealthy: {health_response.status_code}")
+                    logger.warning(f"RAG service health check failed: {response.status_code}")
         except Exception as e:
-            logger.error(f"Could not reach RAG service: {e}")
+            logger.error(f"Failed to check RAG service health: {e}")
         
-        # Initial greeting
-        await self.session.say(
-            "Guten Tag! Willkommen beim Kundenservice Ihrer Autowerkstatt. "
-            "Ich kann Ihnen alle Informationen zu Ihrem Fahrzeug geben - von der Service-Historie "
-            "bis zu anstehenden Wartungen. Wie kann ich Ihnen heute helfen?"
-        )
-    
+        # Greet the user
+        await self.session.say("Guten Tag! Ich bin Ihr Autowerkstatt-Assistent. Ich habe Zugriff auf Fahrzeugdaten, Service-Historien und Termine. Wie kann ich Ihnen heute helfen?")
+
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
         """Called when user finishes speaking - here we can enhance with RAG"""
-        user_query = new_message.content[0] if new_message.content else ""
+        user_query = new_message.content
         
-        if user_query:
-            # Search RAG for relevant information
-            rag_results = await self.search_knowledge(str(user_query))
+        if user_query and isinstance(user_query, list) and len(user_query) > 0:
+            # Extract text content from the message
+            query_text = str(user_query[0]) if hasattr(user_query[0], '__str__') else ""
             
-            if rag_results:
-                # Add RAG context to the conversation
-                rag_context = "\n\nRelevante Informationen aus der Fahrzeugdatenbank:\n"
-                for idx, result in enumerate(rag_results, 1):
-                    rag_context += f"\n{idx}. {result['content']}"
-                    if result.get('metadata'):
-                        rag_context += f"\n   Details: {json.dumps(result['metadata'], ensure_ascii=False)}"
+            if query_text:
+                # Search RAG for relevant information
+                rag_results = await self.search_knowledge(query_text)
                 
-                # Add system message with RAG context
-                turn_ctx.append(
-                    role="system",
-                    text=f"Nutze diese Datenbankinformationen für deine Antwort:{rag_context}"
-                )
-    
-    async def search_knowledge(self, query: str) -> Optional[List[Dict]]:
-        """Sucht in der Fahrzeug-Wissensdatenbank"""
+                if rag_results:
+                    # Create enhanced content with RAG results
+                    enhanced_content = f"{query_text}\n\nRelevante Informationen aus der Datenbank:\n{rag_results}"
+                    
+                    # Update the message content directly
+                    # In LiveKit 1.2.1, we modify the content directly instead of using append
+                    new_message.content = [enhanced_content]
+                    
+                    logger.info(f"Enhanced query with RAG results for: {query_text}")
+
+    async def search_knowledge(self, query: str) -> Optional[str]:
+        """Search the RAG service for relevant knowledge"""
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"{self.rag_url}/search",
+                    f"{self.base_url}/search",
                     json={
                         "query": query,
                         "agent_type": "garage",
                         "top_k": 3,
-                        "collection": self.rag_collection
-                    },
-                    timeout=10.0
+                        "collection": "garage_vehicle"
+                    }
                 )
                 
                 if response.status_code == 200:
                     data = response.json()
-                    logger.info(f"RAG search successful: {len(data['results'])} results for query: {query}")
-                    return data['results']
+                    results = data.get("results", [])
+                    
+                    if results:
+                        logger.info(f"RAG search successful: {len(results)} results for query: {query}")
+                        # Format results for LLM context
+                        formatted_results = []
+                        for i, result in enumerate(results):
+                            content = result.get("content", "").strip()
+                            if content:
+                                formatted_results.append(f"[{i+1}] {content}")
+                        
+                        return "\n\n".join(formatted_results)
+                    else:
+                        logger.info(f"No RAG results found for query: {query}")
+                        return None
                 else:
-                    logger.error(f"RAG search failed: {response.status_code}")
+                    logger.error(f"RAG search failed with status {response.status_code}")
                     return None
                     
         except Exception as e:
-            logger.error(f"RAG search error: {e}")
+            logger.error(f"Error searching RAG: {e}")
             return None
 
 async def entrypoint(ctx: JobContext):
-    """Main entry point for the garage assistant agent"""
-    logger.info("Garage assistant starting with RAG support")
+    """Main entry point for the agent"""
+    logger.info("Starting garage agent entrypoint")
     
+    # Connect to the room
     await ctx.connect()
-    logger.info(f"Connected to room: {ctx.room.name}")
     
-    # Create and start session
+    # Create and start the agent session
     session = AgentSession()
+    agent = GarageAgent()
+    agent.session = session  # Store reference for say() method
+    
     await session.start(
-        agent=GarageAgent(),
+        agent=agent,
         room=ctx.room
     )
     
-    logger.info("Garage assistant ready with RAG support")
+    logger.info("Garage agent session started")
 
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
-
-# Ensure the module can be imported
-__all__ = ['entrypoint']
