@@ -3,25 +3,22 @@ import os
 import logging
 import httpx
 import json
+import asyncio
 from typing import Optional, List, Dict
 from livekit import rtc
 from livekit.agents import JobContext, AutoSubscribe
+from livekit.agents.voice import Agent
+from livekit.agents import llm
 from livekit.plugins import deepgram, openai, silero
-from livekit.agents.voice_assistant import VoiceAssistant
 
 logger = logging.getLogger("medical-assistant")
 
-class MedicalAssistantWithRAG:
-    """Medical Assistant with RAG integration"""
+class MedicalAgent(Agent):
+    """Medical Agent with RAG integration"""
     
-    def __init__(self, rag_url: str = None):
-        self.rag_url = rag_url or os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
-        self.rag_collection = os.getenv("RAG_COLLECTION", "medical_nutrition")
-        self.chat_history = []
-        logger.info(f"MedicalAssistant initialized with collection: {self.rag_collection}")
-        
+    def __init__(self):
         # System prompt
-        self.system_prompt = """Du bist eine kompetente und erfahrene Arztsekretärin in einer medizinischen Praxis mit Zugriff auf die elektronische Patientenakte.
+        system_prompt = """Du bist eine kompetente und erfahrene Arztsekretärin in einer medizinischen Praxis mit Zugriff auf die elektronische Patientenakte.
 
 DEINE ROLLE:
 - Du unterstützt Ärzte bei der Vorbereitung von Patientengesprächen
@@ -46,6 +43,26 @@ ARBEITSWEISE:
 - Erinnere an anstehende Kontrollen oder Folgebehandlungen
 
 Bereite die Informationen so auf, dass der Arzt optimal auf das Patientengespräch vorbereitet ist."""
+        
+        # Initialize the parent Agent
+        super().__init__(
+            instructions=system_prompt,
+            stt=deepgram.STT(),
+            llm=openai.LLM(
+                model="gpt-4o-mini",
+                temperature=0.7,
+            ),
+            tts=openai.TTS(
+                model="tts-1",
+                voice="shimmer"
+            ),
+            vad=silero.VAD.load(),
+            allow_interruptions=True
+        )
+        
+        self.rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
+        self.rag_collection = os.getenv("RAG_COLLECTION", "medical_nutrition")
+        logger.info(f"MedicalAgent initialized with collection: {self.rag_collection}")
     
     async def search_knowledge(self, query: str) -> Optional[List[Dict]]:
         """Sucht in der medizinischen Wissensdatenbank"""
@@ -73,34 +90,6 @@ Bereite die Informationen so auf, dass der Arzt optimal auf das Patientengesprä
         except Exception as e:
             logger.error(f"RAG search error: {e}")
             return None
-    
-    def create_enhanced_messages(self, user_message: str, rag_results: List[Dict]) -> List[dict]:
-        """Erstellt Chat-Nachrichten mit RAG-Ergebnissen"""
-        messages = [
-            {"role": "system", "content": self.system_prompt}
-        ]
-        
-        # Füge Chat-Historie hinzu
-        messages.extend(self.chat_history)
-        
-        # Füge RAG-Kontext hinzu wenn vorhanden
-        if rag_results:
-            rag_context = "Relevante Informationen aus der Patientendatenbank:\n\n"
-            for idx, result in enumerate(rag_results, 1):
-                rag_context += f"{idx}. {result['content']}\n"
-                if result.get('metadata'):
-                    rag_context += f"   Details: {json.dumps(result['metadata'], ensure_ascii=False)}\n"
-                rag_context += "\n"
-            
-            messages.append({
-                "role": "system",
-                "content": f"Nutze diese Datenbankinformationen für deine Antwort:\n\n{rag_context}"
-            })
-        
-        # Füge die aktuelle Nutzeranfrage hinzu
-        messages.append({"role": "user", "content": user_message})
-        
-        return messages
 
 async def entrypoint(ctx: JobContext):
     """Main entry point for the medical assistant agent"""
@@ -111,11 +100,8 @@ async def entrypoint(ctx: JobContext):
         await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
         logger.info(f"Connected to room: {ctx.room.name}")
         
-        # Initialize assistant
-        rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
-        assistant = MedicalAssistantWithRAG(rag_url)
-        
         # Test RAG connection
+        rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
         try:
             async with httpx.AsyncClient() as client:
                 health_response = await client.get(f"{rag_url}/health")
@@ -126,62 +112,12 @@ async def entrypoint(ctx: JobContext):
         except Exception as e:
             logger.error(f"Could not reach RAG service: {e}")
         
-        # Create initial messages for the LLM
-        initial_messages = [
-            {"role": "system", "content": assistant.system_prompt}
-        ]
+        # Create and start the agent
+        agent = MedicalAgent()
+        agent.start(ctx.room, ctx.local_participant)
         
-        # Custom LLM wrapper that integrates RAG
-        class RAGIntegratedLLM:
-            def __init__(self, base_llm, assistant):
-                self.base_llm = base_llm
-                self.assistant = assistant
-            
-            async def chat(self, messages):
-                # Extract last user message
-                last_user_msg = None
-                for msg in reversed(messages):
-                    if msg.get("role") == "user":
-                        last_user_msg = msg.get("content", "")
-                        break
-                
-                if last_user_msg:
-                    # Search RAG
-                    rag_results = await self.assistant.search_knowledge(last_user_msg)
-                    
-                    # Create enhanced messages
-                    if rag_results:
-                        enhanced_messages = self.assistant.create_enhanced_messages(last_user_msg, rag_results)
-                        return await self.base_llm.chat(enhanced_messages)
-                
-                # No RAG results, use original messages
-                return await self.base_llm.chat(messages)
-        
-        # Create base LLM
-        base_llm = openai.LLM(
-            model="gpt-4o-mini",
-            temperature=0.7,
-        )
-        
-        # Wrap with RAG integration
-        rag_llm = RAGIntegratedLLM(base_llm, assistant)
-        
-        # Create voice assistant with custom LLM
-        voice_assistant = VoiceAssistant(
-            vad=silero.VAD.load(),
-            stt=deepgram.STT(),
-            llm=rag_llm,
-            tts=openai.TTS(
-                model="tts-1",
-                voice="shimmer"
-            )
-        )
-        
-        # Start the assistant
-        voice_assistant.start(ctx.room)
-        
-        # Generate initial greeting
-        await voice_assistant.say(
+        # Send initial greeting through the agent session
+        await agent.session.say(
             "Guten Tag Herr Doktor! Ich bin Ihre digitale Praxisassistentin. "
             "Ich kann Ihnen sofort alle relevanten Patientendaten aus unserer elektronischen Akte zur Verfügung stellen. "
             "Welchen Patienten möchten Sie besprechen?",
@@ -190,15 +126,9 @@ async def entrypoint(ctx: JobContext):
         
         logger.info("Medical assistant ready with RAG support")
         
-        # Keep the assistant running
-        await asyncio.Event().wait()
-        
     except Exception as e:
         logger.error(f"Error in medical assistant: {e}", exc_info=True)
         raise
-
-# Import asyncio at the top if not already done
-import asyncio
 
 # Ensure the module can be imported
 __all__ = ['entrypoint']
