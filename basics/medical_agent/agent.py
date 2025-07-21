@@ -28,18 +28,28 @@ class MedicalAgent(Agent):
             instructions="""Du bist ein medizinischer Assistent mit Zugriff auf eine Patientendatenbank. 
             Du kannst auf Patientendaten wie Behandlungen, Diagnosen und Medikationen zugreifen.
             
-            WICHTIG: 
-            - Wenn nach einem Patienten gefragt wird, suche IMMER in der Datenbank nach den Informationen
-            - Beantworte Fragen basierend auf den gefundenen Daten
-            - Sei präzise und verwende die tatsächlichen Daten aus der Datenbank
+            WICHTIG - Datenschutz und Patientenservice: 
+            - Frage nach dem Namen des Patienten oder der Patienten-ID
+            - Wenn ein Name ähnlich klingt wie ein Name in der Datenbank, frage höflich nach: "Meinen Sie vielleicht [Name aus Datenbank]?"
+            - Gib NUR Informationen zum bestätigten Patienten heraus
+            - Sei einfühlsam und versuche den Patienten zu verstehen
+            
+            Verhalten:
+            - Bei ähnlichen Namen: Mache hilfreiche Vorschläge aus der Datenbank
+            - Bei unklaren Eingaben: Bitte freundlich um Wiederholung
+            - Wenn du dir unsicher bist: Frage nach, bevor du medizinische Daten preisgibst
+            - Suche in der Datenbank auch bei ähnlich klingenden Namen
             
             Stelle dich kurz vor und frage, wie du helfen kannst.""",
-            stt=deepgram.STT(),
+            stt=deepgram.STT(
+                model="nova-2",      # Besseres Modell für genauere Erkennung
+                language="de"        # Explizit Deutsch für deutsche Namen
+            ),
             llm=openai.LLM(model="gpt-4o-mini", temperature=0.7),
             tts=openai.TTS(model="tts-1", voice="shimmer"),
             vad=silero.VAD.load(
-                min_silence_duration=0.4,
-                min_speech_duration=0.15,
+                min_silence_duration=0.5,    # Erhöht von 0.4 auf 0.5
+                min_speech_duration=0.2      # Erhöht von 0.15 auf 0.2
             )
         )
         logger.info("Medical assistant starting with RAG support")
