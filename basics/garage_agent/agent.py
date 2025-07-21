@@ -1,4 +1,6 @@
-# basics/garage_agent/agent.py
+# ========================================
+# GARAGE AGENT (basics/garage_agent/agent.py)
+# ========================================
 import os
 import logging
 import httpx
