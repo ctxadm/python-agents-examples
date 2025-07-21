@@ -3,12 +3,9 @@ import os
 import logging
 import httpx
 import json
-import asyncio
 from typing import Optional, List, Dict
-from livekit import rtc
-from livekit.agents import JobContext, AutoSubscribe
-from livekit.agents.voice import Agent, AgentSession
-from livekit.agents import llm
+from livekit import agents
+from livekit.agents import Agent, AgentSession, JobContext, RoomInputOptions
 from livekit.plugins import deepgram, openai, silero
 
 logger = logging.getLogger("medical-assistant")
@@ -17,8 +14,8 @@ class MedicalAgent(Agent):
     """Medical Agent with RAG integration"""
     
     def __init__(self):
-        # System prompt
-        system_prompt = """Du bist eine kompetente und erfahrene Arztsekretärin in einer medizinischen Praxis mit Zugriff auf die elektronische Patientenakte.
+        # System instructions
+        instructions = """Du bist eine kompetente und erfahrene Arztsekretärin in einer medizinischen Praxis mit Zugriff auf die elektronische Patientenakte.
 
 DEINE ROLLE:
 - Du unterstützt Ärzte bei der Vorbereitung von Patientengesprächen
@@ -45,20 +42,7 @@ ARBEITSWEISE:
 Bereite die Informationen so auf, dass der Arzt optimal auf das Patientengespräch vorbereitet ist."""
         
         # Initialize the parent Agent
-        super().__init__(
-            instructions=system_prompt,
-            stt=deepgram.STT(),
-            llm=openai.LLM(
-                model="gpt-4o-mini",
-                temperature=0.7,
-            ),
-            tts=openai.TTS(
-                model="tts-1",
-                voice="shimmer"
-            ),
-            vad=silero.VAD.load(),
-            allow_interruptions=True
-        )
+        super().__init__(instructions=instructions)
         
         self.rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
         self.rag_collection = os.getenv("RAG_COLLECTION", "medical_nutrition")
@@ -97,7 +81,7 @@ async def entrypoint(ctx: JobContext):
     
     try:
         # Connect to the room
-        await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+        await ctx.connect()
         logger.info(f"Connected to room: {ctx.room.name}")
         
         # Test RAG connection
@@ -112,9 +96,22 @@ async def entrypoint(ctx: JobContext):
         except Exception as e:
             logger.error(f"Could not reach RAG service: {e}")
         
-        # Create agent and session
+        # Create agent
         agent = MedicalAgent()
-        session = AgentSession()
+        
+        # Create session with voice pipeline
+        session = AgentSession(
+            stt=deepgram.STT(),
+            llm=openai.LLM(
+                model="gpt-4o-mini",
+                temperature=0.7,
+            ),
+            tts=openai.TTS(
+                model="tts-1",
+                voice="shimmer"
+            ),
+            vad=silero.VAD.load()
+        )
         
         # Start the session with the agent
         await session.start(
@@ -122,12 +119,9 @@ async def entrypoint(ctx: JobContext):
             room=ctx.room
         )
         
-        # Send initial greeting through the session
-        await session.say(
-            "Guten Tag Herr Doktor! Ich bin Ihre digitale Praxisassistentin. "
-            "Ich kann Ihnen sofort alle relevanten Patientendaten aus unserer elektronischen Akte zur Verfügung stellen. "
-            "Welchen Patienten möchten Sie besprechen?",
-            allow_interruptions=True
+        # Send initial greeting
+        await session.generate_reply(
+            instructions="Begrüße den Arzt als digitale Praxisassistentin und biete deine Hilfe bei Patientendaten an."
         )
         
         logger.info("Medical assistant ready with RAG support")
