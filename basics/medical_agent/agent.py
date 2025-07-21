@@ -37,7 +37,11 @@ class MedicalAgent(Agent):
             stt=deepgram.STT(),
             llm=openai.LLM(model="gpt-4o-mini", temperature=0.7),
             tts=openai.TTS(model="tts-1", voice="shimmer"),
-            vad=silero.VAD.load()
+            vad=silero.VAD.load(
+                min_silence_duration=0.4,
+                min_speech_duration=0.15,
+                threshold=0.45
+            )
         )
         logger.info("Medical assistant starting with RAG support")
 
