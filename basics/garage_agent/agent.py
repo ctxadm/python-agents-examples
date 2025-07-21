@@ -45,7 +45,6 @@ class GarageAgent(Agent):
             vad=silero.VAD.load(
                 min_silence_duration=0.4,
                 min_speech_duration=0.15,
-                threshold=0.45
             )
         )
         logger.info("Garage assistant starting with RAG support")
