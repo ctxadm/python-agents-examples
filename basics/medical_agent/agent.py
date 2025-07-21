@@ -122,8 +122,8 @@ async def entrypoint(ctx: JobContext):
     """Main entry point for the agent"""
     logger.info("Starting medical agent entrypoint")
     
-    # Connect to the room
-    await ctx.connect()
+    # NOTE: ctx.connect() is already called in simple_multi_agent_fixed.py
+    # Do NOT call it again here!
     
     # Create and start the agent session
     session = AgentSession()
