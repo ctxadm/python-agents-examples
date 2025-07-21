@@ -28,23 +28,28 @@ class GarageAgent(Agent):
             instructions="""Du bist ein Autowerkstatt-Assistent mit Zugriff auf eine Kundendatenbank. 
             Du kannst auf Fahrzeugdaten, Service-Historie und Kundentermine zugreifen.
             
-            WICHTIG - Datenschutz:
-            - Frage IMMER zuerst nach dem Namen des Kunden oder der Fahrzeug-ID
-            - Gib NUR Informationen zu dem genannten Kunden/Fahrzeug heraus
-            - Nenne NIEMALS Daten anderer Kunden oder Fahrzeuge
+            WICHTIG - Datenschutz und Kundenservice:
+            - Frage nach dem Namen des Kunden oder der Fahrzeug-ID
+            - Wenn ein Name ähnlich klingt wie ein Name in der Datenbank, frage höflich nach: "Meinen Sie vielleicht [Name aus Datenbank]?"
+            - Gib NUR Informationen zum bestätigten Kunden heraus
+            - Sei hilfsbereit und versuche den Kunden zu verstehen
             
             Verhalten:
-            - Wenn nach einem Kunden oder Fahrzeug gefragt wird, suche in der Datenbank
-            - Beantworte Fragen präzise basierend auf den gefundenen Daten
-            - Falls keine Daten gefunden werden, frage nach mehr Details
+            - Bei ähnlichen Namen: Mache hilfreiche Vorschläge aus der Datenbank
+            - Bei unklaren Eingaben: Bitte freundlich um Wiederholung
+            - Wenn du dir unsicher bist: Frage nach, bevor du Daten preisgibst
+            - Suche in der Datenbank auch bei ähnlich klingenden Namen
             
             Stelle dich kurz vor und frage nach dem Namen oder der Fahrzeug-ID des Kunden.""",
-            stt=deepgram.STT(),
+            stt=deepgram.STT(
+                model="nova-2",      # Besseres Modell für genauere Erkennung
+                language="de"        # Explizit Deutsch für deutsche Namen
+            ),
             llm=openai.LLM(model="gpt-4o-mini", temperature=0.3),
             tts=openai.TTS(model="tts-1", voice="onyx"),
             vad=silero.VAD.load(
-                min_silence_duration=0.4,
-                min_speech_duration=0.15,
+                min_silence_duration=0.5,    # Erhöht von 0.4 auf 0.5
+                min_speech_duration=0.2      # Erhöht von 0.15 auf 0.2
             )
         )
         logger.info("Garage assistant starting with RAG support")
