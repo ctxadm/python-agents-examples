@@ -7,7 +7,7 @@ import asyncio
 from typing import Optional, List, Dict
 from livekit import rtc
 from livekit.agents import JobContext, AutoSubscribe
-from livekit.agents.voice import Agent
+from livekit.agents.voice import Agent, AgentSession
 from livekit.agents import llm
 from livekit.plugins import deepgram, openai, silero
 
@@ -112,12 +112,18 @@ async def entrypoint(ctx: JobContext):
         except Exception as e:
             logger.error(f"Could not reach RAG service: {e}")
         
-        # Create and start the agent
+        # Create agent and session
         agent = MedicalAgent()
-        agent.start(ctx.room, ctx.local_participant)
+        session = AgentSession()
         
-        # Send initial greeting through the agent session
-        await agent.session.say(
+        # Start the session with the agent
+        await session.start(
+            agent=agent,
+            room=ctx.room
+        )
+        
+        # Send initial greeting through the session
+        await session.say(
             "Guten Tag Herr Doktor! Ich bin Ihre digitale Praxisassistentin. "
             "Ich kann Ihnen sofort alle relevanten Patientendaten aus unserer elektronischen Akte zur Verfügung stellen. "
             "Welchen Patienten möchten Sie besprechen?",
