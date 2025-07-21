@@ -45,14 +45,20 @@ class MedicalAgent(Agent):
                 model="nova-2",      # Besseres Modell für genauere Erkennung
                 language="de"        # Explizit Deutsch für deutsche Namen
             ),
-            llm=openai.LLM(model="gpt-4o-mini", temperature=0.7),
+            llm=openai.LLM(
+                model="llama3.2:latest",
+                base_url="http://172.16.0.146:11434/v1",
+                api_key="ollama",  # Ollama doesn't need a real API key
+                timeout=120.0,
+                temperature=0.7
+            ),
             tts=openai.TTS(model="tts-1", voice="shimmer"),
             vad=silero.VAD.load(
                 min_silence_duration=0.5,    # Erhöht von 0.4 auf 0.5
                 min_speech_duration=0.2      # Erhöht von 0.15 auf 0.2
             )
         )
-        logger.info("Medical assistant starting with RAG support")
+        logger.info("Medical assistant starting with RAG support and local Ollama LLM")
 
     async def on_enter(self):
         """Called when the agent enters the conversation"""
