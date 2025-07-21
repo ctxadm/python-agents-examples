@@ -54,8 +54,8 @@ class MedicalAgent(Agent):
         except Exception as e:
             logger.error(f"Failed to check RAG service health: {e}")
         
-        # Greet the user
-        await self.session.say("Hallo! Ich bin Ihr medizinischer Assistent. Ich habe Zugriff auf Patientendaten und kann Ihnen bei medizinischen Fragen helfen. Wie kann ich Ihnen heute behilflich sein?")
+        # Note: We cannot use self.session.say() here because session is not available yet
+        # The greeting will be handled by the LLM through the instructions
 
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
         """Called when user finishes speaking - here we can enhance with RAG"""
@@ -128,7 +128,6 @@ async def entrypoint(ctx: JobContext):
     # Create and start the agent session
     session = AgentSession()
     agent = MedicalAgent()
-    agent.session = session  # Store reference for say() method
     
     await session.start(
         agent=agent,
