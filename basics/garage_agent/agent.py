@@ -1,4 +1,4 @@
-# basics/garage_agent/agent.py
+# basics/medical_agent/agent.py
 import os
 import logging
 import httpx
@@ -16,32 +16,32 @@ from livekit.plugins import deepgram, openai, silero
 # Load environment variables
 load_dotenv()
 
-logger = logging.getLogger("garage-assistant")
+logger = logging.getLogger("medical-assistant")
 
-class GarageAgent(Agent):
+class MedicalAgent(Agent):
     def __init__(self):
         self.base_url = os.getenv("RAG_SERVICE_URL", "http://rag-service:8000")
         
         super().__init__(
-            instructions="""Du bist ein Autowerkstatt-Assistent mit Zugriff auf eine Kundendatenbank. 
-            Du kannst auf Fahrzeugdaten, Service-Historie und Kundentermine zugreifen.
+            instructions="""Du bist ein medizinischer Assistent mit Zugriff auf eine Patientendatenbank. 
+            Du kannst auf Patientendaten wie Behandlungen, Diagnosen und Medikationen zugreifen.
             
-            WICHTIG:
-            - Wenn nach einem Kunden oder Fahrzeug gefragt wird, suche IMMER in der Datenbank
+            WICHTIG: 
+            - Wenn nach einem Patienten gefragt wird, suche IMMER in der Datenbank nach den Informationen
             - Beantworte Fragen basierend auf den gefundenen Daten
             - Sei präzise und verwende die tatsächlichen Daten aus der Datenbank
             
             Stelle dich kurz vor und frage, wie du helfen kannst.""",
             stt=deepgram.STT(),
             llm=openai.LLM(model="gpt-4o-mini", temperature=0.7),
-            tts=openai.TTS(model="tts-1", voice="onyx"),
+            tts=openai.TTS(model="tts-1", voice="shimmer"),
             vad=silero.VAD.load()
         )
-        logger.info("Garage assistant starting with RAG support")
+        logger.info("Medical assistant starting with RAG support")
 
     async def on_enter(self):
         """Called when the agent enters the conversation"""
-        logger.info("Garage assistant ready with RAG support")
+        logger.info("Medical assistant ready with RAG support")
         
         # Check RAG service health
         try:
@@ -55,7 +55,7 @@ class GarageAgent(Agent):
             logger.error(f"Failed to check RAG service health: {e}")
         
         # Greet the user
-        await self.session.say("Guten Tag! Ich bin Ihr Autowerkstatt-Assistent. Ich habe Zugriff auf Fahrzeugdaten, Service-Historien und Termine. Wie kann ich Ihnen heute helfen?")
+        await self.session.say("Hallo! Ich bin Ihr medizinischer Assistent. Ich habe Zugriff auf Patientendaten und kann Ihnen bei medizinischen Fragen helfen. Wie kann ich Ihnen heute behilflich sein?")
 
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
         """Called when user finishes speaking - here we can enhance with RAG"""
@@ -87,9 +87,9 @@ class GarageAgent(Agent):
                     f"{self.base_url}/search",
                     json={
                         "query": query,
-                        "agent_type": "garage",
+                        "agent_type": "medical",
                         "top_k": 3,
-                        "collection": "garage_vehicle"
+                        "collection": "medical_nutrition"
                     }
                 )
                 
@@ -120,14 +120,14 @@ class GarageAgent(Agent):
 
 async def entrypoint(ctx: JobContext):
     """Main entry point for the agent"""
-    logger.info("Starting garage agent entrypoint")
+    logger.info("Starting medical agent entrypoint")
     
     # NOTE: ctx.connect() is already called in simple_multi_agent_fixed.py
     # Do NOT call it again here!
     
     # Create and start the agent session
     session = AgentSession()
-    agent = GarageAgent()
+    agent = MedicalAgent()
     agent.session = session  # Store reference for say() method
     
     await session.start(
@@ -135,7 +135,7 @@ async def entrypoint(ctx: JobContext):
         room=ctx.room
     )
     
-    logger.info("Garage agent session started")
+    logger.info("Medical agent session started")
 
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
