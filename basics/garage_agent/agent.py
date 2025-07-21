@@ -3,12 +3,9 @@ import os
 import logging
 import httpx
 import json
-import asyncio
 from typing import Optional, List, Dict
-from livekit import rtc
-from livekit.agents import JobContext, AutoSubscribe
-from livekit.agents.voice import Agent, AgentSession
-from livekit.agents import llm
+from livekit import agents
+from livekit.agents import Agent, AgentSession, JobContext, RoomInputOptions
 from livekit.plugins import deepgram, openai, silero
 
 logger = logging.getLogger("garage-assistant")
@@ -17,8 +14,8 @@ class GarageAgent(Agent):
     """Garage Agent with RAG integration"""
     
     def __init__(self):
-        # System prompt
-        system_prompt = """Du bist ein freundlicher und kompetenter Kundenservice-Mitarbeiter einer Autowerkstatt mit Zugriff auf die komplette Fahrzeugdatenbank.
+        # System instructions
+        instructions = """Du bist ein freundlicher und kompetenter Kundenservice-Mitarbeiter einer Autowerkstatt mit Zugriff auf die komplette Fahrzeugdatenbank.
 
 DEINE ROLLE:
 - Du hilfst Kunden bei allen Fragen zu ihren Fahrzeugen
@@ -53,20 +50,7 @@ KOMMUNIKATIONSSTIL:
 Hilf den Kunden, ihr Fahrzeug optimal zu warten und sicher zu fahren."""
         
         # Initialize the parent Agent
-        super().__init__(
-            instructions=system_prompt,
-            stt=deepgram.STT(),
-            llm=openai.LLM(
-                model="gpt-4o-mini",
-                temperature=0.7,
-            ),
-            tts=openai.TTS(
-                model="tts-1",
-                voice="nova"  # Männliche, freundliche Stimme
-            ),
-            vad=silero.VAD.load(),
-            allow_interruptions=True
-        )
+        super().__init__(instructions=instructions)
         
         self.rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
         self.rag_collection = os.getenv("RAG_COLLECTION", "automotive_docs")
@@ -105,7 +89,7 @@ async def entrypoint(ctx: JobContext):
     
     try:
         # Connect to the room
-        await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+        await ctx.connect()
         logger.info(f"Connected to room: {ctx.room.name}")
         
         # Test RAG connection
@@ -120,9 +104,22 @@ async def entrypoint(ctx: JobContext):
         except Exception as e:
             logger.error(f"Could not reach RAG service: {e}")
         
-        # Create agent and session
+        # Create agent
         agent = GarageAgent()
-        session = AgentSession()
+        
+        # Create session with voice pipeline
+        session = AgentSession(
+            stt=deepgram.STT(),
+            llm=openai.LLM(
+                model="gpt-4o-mini",
+                temperature=0.7,
+            ),
+            tts=openai.TTS(
+                model="tts-1",
+                voice="nova"  # Männliche, freundliche Stimme
+            ),
+            vad=silero.VAD.load()
+        )
         
         # Start the session with the agent
         await session.start(
@@ -130,12 +127,9 @@ async def entrypoint(ctx: JobContext):
             room=ctx.room
         )
         
-        # Send initial greeting through the session
-        await session.say(
-            "Guten Tag! Willkommen beim Kundenservice Ihrer Autowerkstatt. "
-            "Ich kann Ihnen alle Informationen zu Ihrem Fahrzeug geben - von der Service-Historie "
-            "bis zu anstehenden Wartungen. Wie kann ich Ihnen heute helfen?",
-            allow_interruptions=True
+        # Send initial greeting
+        await session.generate_reply(
+            instructions="Begrüße den Kunden freundlich als Kundenservice der Autowerkstatt und biete deine Hilfe bei Fahrzeugfragen an."
         )
         
         logger.info("Garage assistant ready with RAG support")
