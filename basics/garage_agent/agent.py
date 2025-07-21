@@ -54,18 +54,13 @@ class GarageAgent(Agent):
                 timeout=120.0,
                 temperature=0.3
             ),
-            tts=openai.TTS(
-                model="tts-1",
-                voice="onyx",
-                base_url="http://172.16.0.146:11434/v1",  # Lokaler TTS Endpoint
-                api_key="ollama"  # Ollama API key
-            ),
+            tts=openai.TTS(model="tts-1", voice="onyx"),  # OpenAI TTS
             vad=silero.VAD.load(
                 min_silence_duration=0.5,    # Erhöht von 0.4 auf 0.5
                 min_speech_duration=0.2      # Erhöht von 0.15 auf 0.2
             )
         )
-        logger.info("Garage assistant starting with RAG support and FULLY LOCAL (LLM + TTS)")
+        logger.info("Garage assistant starting with RAG support and local Ollama LLM")
 
     async def on_enter(self):
         """Called when the agent enters the conversation"""
