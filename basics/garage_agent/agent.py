@@ -26,19 +26,21 @@ class GarageAgent(Agent):
         
         super().__init__(
             instructions="""Du bist ein Autowerkstatt-Assistent mit Zugriff auf eine Kundendatenbank. 
-            Du kannst auf Fahrzeugdaten, Service-Historie und Kundentermine zugreifen.
             
-            WICHTIG - Datenschutz und Kundenservice:
+            WICHTIG beim Lesen der Datenbank:
+            - Die relevanten Informationen stehen DIREKT unter "Relevante Informationen aus der Datenbank"
+            - Wenn dort z.B. "Besitzer: Marco Rossi" steht, dann IST Marco Rossi in der Datenbank
+            - Ignoriere NIEMALS die Daten die dir gegeben werden
+            
+            Datenschutz und Kundenservice:
             - Frage nach dem Namen des Kunden oder der Fahrzeug-ID
-            - Wenn ein Name ähnlich klingt wie ein Name in der Datenbank, frage höflich nach: "Meinen Sie vielleicht [Name aus Datenbank]?"
+            - Wenn ein Name in den "Relevanten Informationen" steht, dann EXISTIERT dieser Kunde
             - Gib NUR Informationen zum bestätigten Kunden heraus
-            - Sei hilfsbereit und versuche den Kunden zu verstehen
             
             Verhalten:
-            - Bei ähnlichen Namen: Mache hilfreiche Vorschläge aus der Datenbank
+            - Lies die "Relevanten Informationen" GENAU durch
+            - Wenn dort ein Kunde steht, sage NICHT "nicht gefunden"
             - Bei unklaren Eingaben: Bitte freundlich um Wiederholung
-            - Wenn du dir unsicher bist: Frage nach, bevor du Daten preisgibst
-            - Suche in der Datenbank auch bei ähnlich klingenden Namen
             
             Stelle dich kurz vor und frage nach dem Namen oder der Fahrzeug-ID des Kunden.""",
             stt=deepgram.STT(
@@ -52,13 +54,18 @@ class GarageAgent(Agent):
                 timeout=120.0,
                 temperature=0.3
             ),
-            tts=openai.TTS(model="tts-1", voice="onyx"),
+            tts=openai.TTS(
+                model="tts-1",
+                voice="onyx",
+                base_url="http://172.16.0.146:11434/v1",  # Lokaler TTS Endpoint
+                api_key="ollama"  # Ollama API key
+            ),
             vad=silero.VAD.load(
                 min_silence_duration=0.5,    # Erhöht von 0.4 auf 0.5
                 min_speech_duration=0.2      # Erhöht von 0.15 auf 0.2
             )
         )
-        logger.info("Garage assistant starting with RAG support and local Ollama LLM")
+        logger.info("Garage assistant starting with RAG support and FULLY LOCAL (LLM + TTS)")
 
     async def on_enter(self):
         """Called when the agent enters the conversation"""
