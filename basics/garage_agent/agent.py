@@ -24,30 +24,30 @@ class GarageAgent(Agent):
     def __init__(self):
         self.base_url = os.getenv("RAG_SERVICE_URL", "http://rag-service:8000")
         
-super().__init__(
-    instructions="""Du bist ein Autowerkstatt-Assistent mit Zugriff auf eine Kundendatenbank. 
-    Du kannst auf Fahrzeugdaten, Service-Historie und Kundentermine zugreifen.
-    
-    WICHTIG - Datenschutz:
-    - Frage IMMER zuerst nach dem Namen des Kunden oder der Fahrzeug-ID
-    - Gib NUR Informationen zu dem genannten Kunden/Fahrzeug heraus
-    - Nenne NIEMALS Daten anderer Kunden oder Fahrzeuge
-    
-    Verhalten:
-    - Wenn nach einem Kunden oder Fahrzeug gefragt wird, suche in der Datenbank
-    - Beantworte Fragen präzise basierend auf den gefundenen Daten
-    - Falls keine Daten gefunden werden, frage nach mehr Details
-    
-    Stelle dich kurz vor und frage nach dem Namen oder der Fahrzeug-ID des Kunden.""",
-    stt=deepgram.STT(),
-    llm=openai.LLM(model="gpt-4o-mini", temperature=0.3),
-    tts=openai.TTS(model="tts-1", voice="onyx"),
-    vad=silero.VAD.load(
-        min_silence_duration=0.4,
-        min_speech_duration=0.15,
-        threshold=0.45
-    )
-)
+        super().__init__(
+            instructions="""Du bist ein Autowerkstatt-Assistent mit Zugriff auf eine Kundendatenbank. 
+            Du kannst auf Fahrzeugdaten, Service-Historie und Kundentermine zugreifen.
+            
+            WICHTIG - Datenschutz:
+            - Frage IMMER zuerst nach dem Namen des Kunden oder der Fahrzeug-ID
+            - Gib NUR Informationen zu dem genannten Kunden/Fahrzeug heraus
+            - Nenne NIEMALS Daten anderer Kunden oder Fahrzeuge
+            
+            Verhalten:
+            - Wenn nach einem Kunden oder Fahrzeug gefragt wird, suche in der Datenbank
+            - Beantworte Fragen präzise basierend auf den gefundenen Daten
+            - Falls keine Daten gefunden werden, frage nach mehr Details
+            
+            Stelle dich kurz vor und frage nach dem Namen oder der Fahrzeug-ID des Kunden.""",
+            stt=deepgram.STT(),
+            llm=openai.LLM(model="gpt-4o-mini", temperature=0.3),
+            tts=openai.TTS(model="tts-1", voice="onyx"),
+            vad=silero.VAD.load(
+                min_silence_duration=0.4,
+                min_speech_duration=0.15,
+                threshold=0.45
+            )
+        )
         logger.info("Garage assistant starting with RAG support")
 
     async def on_enter(self):
