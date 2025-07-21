@@ -91,7 +91,7 @@ class GarageAgent(Agent):
                         "query": query,
                         "agent_type": "garage",
                         "top_k": 3,
-                        "collection": "garage_vehicle"
+                        "collection": "automotive_docs"
                     }
                 )
                 
