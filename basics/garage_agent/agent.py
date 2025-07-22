@@ -25,27 +25,45 @@ class GarageAgent(Agent):
         self.base_url = os.getenv("RAG_SERVICE_URL", "http://rag-service:8000")
         
         super().__init__(
-            instructions="""Du bist ein Autowerkstatt-Assistent mit Zugriff auf eine Kundendatenbank. 
+            instructions="""Du bist der Garage Agent der Firma AutoService Müller.
             
-            WICHTIG beim Lesen der Datenbank:
-            - Die relevanten Informationen stehen DIREKT unter "Relevante Informationen aus der Datenbank"
-            - Wenn dort z.B. "Besitzer: Marco Rossi" steht, dann IST Marco Rossi in der Datenbank
-            - Ignoriere NIEMALS die Daten die dir gegeben werden
+            ERSTE ANTWORT (IMMER):
+            "Guten Tag, hier ist der Garage Agent der AutoService Müller. Bitte nennen Sie mir Ihren Namen, damit ich Ihnen weiterhelfen kann."
             
-            Datenschutz und Kundenservice:
-            - Frage nach dem Namen des Kunden oder der Fahrzeug-ID
-            - Wenn ein Name in den "Relevanten Informationen" steht, dann EXISTIERT dieser Kunde
+            EXTREM WICHTIG - So liest du die Datenbank:
+            1. Die Daten stehen IMMER unter "Relevante Informationen aus der Datenbank"
+            2. Wenn dort "Besitzer: Marco Rossi" steht, dann IST Marco Rossi zu 100% Kunde!
+            3. Wenn dort "fahrzeug_id": "F003" steht, dann ist F003 eine GÜLTIGE ID!
+            4. Du MUSST die Daten die du bekommst als WAHR akzeptieren!
+            
+            Fahrzeug-IDs verstehen:
+            - "f null null drei" bedeutet wahrscheinlich "F003" 
+            - "f null null fünf" bedeutet wahrscheinlich "F005"
+            - Buchstabe "F" gefolgt von Zahlen ist eine Fahrzeug-ID
+            
+            REGEL: Wenn ein Kunde in den "Relevanten Informationen" steht, dann:
+            - Sage NIEMALS "nicht gefunden" oder "keine Daten"
+            - Der Kunde IST in der Datenbank
+            - Gib NUR die relevanten Fahrzeugdaten aus
+            
+            Antwortverhalten - KURZ UND PRÄZISE:
+            - Nenne nur die angefragten Informationen
+            - Keine langen Erklärungen oder Geschichten
+            - Fokus auf: Fahrzeugdaten, Probleme, anstehende Arbeiten
+            - Beispiel: "Ihr Audi A4, Kennzeichen LU 234567, hat folgende Probleme: ..."
+            
+            Datenschutz:
             - Gib NUR Informationen zum bestätigten Kunden heraus
+            - Bei Unklarheiten nachfragen
             
-            Verhalten:
-            - Lies die "Relevanten Informationen" GENAU durch
-            - Wenn dort ein Kunde steht, sage NICHT "nicht gefunden"
-            - Bei unklaren Eingaben: Bitte freundlich um Wiederholung
+            Bei unklaren Eingaben:
+            - "f null null X" → interpretiere als "F00X" 
+            - Frage nach: "Meinen Sie die Fahrzeug-ID F00X?"
             
-            Stelle dich kurz vor und frage nach dem Namen oder der Fahrzeug-ID des Kunden.""",
-            stt=deepgram.STT(
-                model="nova-2",      # Besseres Modell für genauere Erkennung
-                language="de"        # Explizit Deutsch für deutsche Namen
+            KEINE unnötigen Floskeln, KEINE langen Sätze, NUR relevante Informationen!""",
+            stt=openai.STT(  # Wechsel zu Whisper für bessere Erkennung
+                model="whisper-1",
+                language="de"
             ),
             llm=openai.LLM(
                 model="llama3.1:8b",
@@ -56,11 +74,11 @@ class GarageAgent(Agent):
             ),
             tts=openai.TTS(model="tts-1", voice="onyx"),  # OpenAI TTS
             vad=silero.VAD.load(
-                min_silence_duration=0.5,    # Erhöht von 0.4 auf 0.5
-                min_speech_duration=0.2      # Erhöht von 0.15 auf 0.2
+                min_silence_duration=0.6,    # Höher für bessere Trennung
+                min_speech_duration=0.3      # Länger für vollständige Wörter
             )
         )
-        logger.info("Garage assistant starting with RAG support and local Ollama LLM")
+        logger.info("Garage assistant starting with RAG support, Whisper STT and local Ollama LLM")
 
     async def on_enter(self):
         """Called when the agent enters the conversation"""
@@ -76,9 +94,6 @@ class GarageAgent(Agent):
                     logger.warning(f"RAG service health check failed: {response.status_code}")
         except Exception as e:
             logger.error(f"Failed to check RAG service health: {e}")
-        
-        # Note: We cannot use self.session.say() here because session is not available yet
-        # The greeting will be handled by the LLM through the instructions
 
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
         """Called when user finishes speaking - here we can enhance with RAG"""
@@ -88,7 +103,27 @@ class GarageAgent(Agent):
             # Extract text content from the message
             query_text = str(user_query[0]) if hasattr(user_query[0], '__str__') else ""
             
+            # Spezielle Behandlung für Fahrzeug-IDs
             if query_text:
+                # Konvertiere "f null null X" zu "F00X"
+                import re
+                pattern = r'f\s*null\s*null\s*(\w+)'
+                match = re.search(pattern, query_text.lower())
+                if match:
+                    number = match.group(1)
+                    # Konvertiere Wörter zu Zahlen wenn nötig
+                    number_map = {
+                        'eins': '1', 'zwei': '2', 'drei': '3', 'vier': '4', 
+                        'fünf': '5', 'sechs': '6', 'sieben': '7', 'acht': '8', 
+                        'neun': '9', 'null': '0'
+                    }
+                    if number in number_map:
+                        number = number_map[number]
+                    
+                    corrected_id = f"F00{number}"
+                    query_text = f"Fahrzeug-ID {corrected_id}"
+                    logger.info(f"Corrected vehicle ID from '{match.group(0)}' to '{corrected_id}'")
+                
                 # Search RAG for relevant information
                 rag_results = await self.search_knowledge(query_text)
                 
@@ -97,7 +132,6 @@ class GarageAgent(Agent):
                     enhanced_content = f"{query_text}\n\nRelevante Informationen aus der Datenbank:\n{rag_results}"
                     
                     # Update the message content directly
-                    # In LiveKit 1.2.1, we modify the content directly instead of using append
                     new_message.content = [enhanced_content]
                     
                     logger.info(f"Enhanced query with RAG results for: {query_text}")
