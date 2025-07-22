@@ -163,9 +163,11 @@ async def entrypoint(ctx: JobContext):
             tts=openai.TTS(model="tts-1", voice="shimmer"),
             vad=silero.VAD.load(
                 min_silence_duration=0.8,    # Erhöht für Session-Kontinuität
-                min_speech_duration=0.3
+                min_speech_duration=0.3,
+                activation_threshold=0.5     # Existiert in deiner Version!
             ),
-            interrupt_min_words=2,  # Mindestens 2 Wörter für Unterbrechung
+            allow_interruptions=True,  # Hier ist es richtig!
+            min_consecutive_speech_delay=0.0
         )
         
         # Check RAG service health first
@@ -186,7 +188,8 @@ async def entrypoint(ctx: JobContext):
         # Create session with participant
         session = AgentSession(
             agent=agent,
-            participant=participant
+            participant=participant,
+            min_interruption_words=2  # Hier ist es richtig für AgentSession!
         )
         
         # Custom message handler for RAG enhancement
