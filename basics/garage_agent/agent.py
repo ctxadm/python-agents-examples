@@ -1,6 +1,8 @@
+# LiveKit Agents 1.0.x Version
 import logging
 import os
 import httpx
+import re
 from dotenv import load_dotenv
 from livekit import agents
 from livekit.agents import Agent, JobContext, WorkerOptions, cli
@@ -22,15 +24,18 @@ class GarageAgent(Agent):
             ERSTE ANTWORT: "Willkommen in der Werkstatt! Wie kann ich Ihnen helfen?"
             
             Du kannst:
-            - Fahrzeugdaten abrufen
+            - Fahrzeugdaten abrufen (Kennzeichen, Marke, Modell)
             - Wartungshistorie einsehen
             - Reparaturkosten kalkulieren
             - Termine vereinbaren
             
-            Nutze IMMER die search_vehicle_data Funktion für Fahrzeuganfragen.
+            WICHTIG:
+            - Nutze IMMER die search_vehicle_data Funktion für Fahrzeuganfragen
+            - Korrigiere Kennzeichen: "ZH 12345" oder "zh eins zwei drei vier fünf"
+            - Währungen: "850 Franken" statt "850.00"
             """,
             llm=openai.LLM(
-                model="llama3.2:latest",
+                model="llama3.1:8b",  # Gleiche Version wie Medical für Konsistenz
                 base_url="http://172.16.0.146:11434/v1",
                 api_key="ollama",
                 temperature=0.7,
@@ -66,13 +71,15 @@ class GarageAgent(Agent):
             Die gefundenen Fahrzeugdaten
         """
         try:
-            logger.info(f"Searching vehicles for: {query}")
+            # Korrigiere Kennzeichen
+            processed_query = self._process_license_plate(query)
+            logger.info(f"Searching vehicles for: {processed_query}")
             
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{self.rag_url}/search",
                     json={
-                        "query": query,
+                        "query": processed_query,
                         "agent_type": "garage",
                         "top_k": 3,
                         "collection": "vehicle_database"
@@ -101,6 +108,33 @@ class GarageAgent(Agent):
         except Exception as e:
             logger.error(f"Error searching RAG: {e}")
             return "Die Fahrzeugdatenbank ist momentan nicht erreichbar."
+    
+    def _process_license_plate(self, text: str) -> str:
+        """Korrigiert Sprache-zu-Text Fehler bei Kennzeichen"""
+        # Beispiel: "zh eins zwei drei vier fünf" -> "ZH 12345"
+        
+        # Deutsche Zahlwörter zu Ziffern
+        number_map = {
+            'null': '0', 'eins': '1', 'zwei': '2', 'drei': '3', 'vier': '4', 
+            'fünf': '5', 'sechs': '6', 'sieben': '7', 'acht': '8', 'neun': '9'
+        }
+        
+        # Ersetze Zahlwörter durch Ziffern
+        for word, digit in number_map.items():
+            text = text.replace(f" {word} ", f" {digit} ")
+            text = text.replace(f" {word}", f" {digit}")
+        
+        # Normalisiere Kennzeichen Format (z.B. "zh 1 2 3 4 5" -> "ZH 12345")
+        pattern = r'([a-zA-Z]{2})\s+(\d)\s+(\d)\s+(\d)\s+(\d)\s+(\d)'
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            canton = match.group(1).upper()
+            numbers = ''.join([match.group(i) for i in range(2, 7)])
+            corrected = f"{canton} {numbers}"
+            text = re.sub(pattern, corrected, text, flags=re.IGNORECASE)
+            logger.info(f"Corrected license plate to '{corrected}'")
+        
+        return text
 
 async def entrypoint(ctx: JobContext):
     """Entry point for garage agent"""
