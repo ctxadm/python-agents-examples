@@ -9,18 +9,13 @@ from livekit.agents import (
     AgentSession,
     Agent,
     RunContext,
-    APIConnectOptions,
     llm,
     stt,
     tts,
     vad,
-    UserInputTranscribedEvent,
-    CloseEvent,
-    ErrorEvent,
-    SessionConnectOptions,
 )
 from livekit.plugins import openai, silero
-from typing import AsyncIterable, Optional
+from typing import Optional
 import time
 
 load_dotenv()
@@ -96,73 +91,39 @@ class MedicalAssistant:
         
         return query_text
 
-# Create global assistant instance
-medical_assistant = MedicalAssistant()
-
-# Custom LLM Node for RAG integration
-class RAGLLMNode:
-    def __init__(self, original_llm: llm.LLM):
-        self.llm = original_llm
+# Custom Agent class that handles RAG
+class MedicalAgent(Agent):
+    def __init__(self, assistant: MedicalAssistant, **kwargs):
+        super().__init__(**kwargs)
+        self.assistant = assistant
+        self._processing_lock = asyncio.Lock()
         
-    async def __call__(self, ctx: RunContext, chat_ctx: llm.ChatContext) -> AsyncIterable[llm.ChatChunk]:
-        """Enhanced LLM node that integrates RAG"""
-        # Get the last user message
-        last_message = None
-        for msg in reversed(chat_ctx.items):
-            if isinstance(msg, llm.ChatMessage) and msg.role == "user":
-                last_message = msg
-                break
+    async def on_user_turn_completed(self, turn_ctx, user_message):
+        """This should be called when user finishes speaking"""
+        logger.info("=== on_user_turn_completed CALLED ===")
         
-        if last_message and last_message.text_content:
-            logger.info(f"=== LLM Node CALLED with user message: {last_message.text_content}")
+        if user_message and user_message.text:
+            logger.info(f"Processing user query: {user_message.text}")
             
             # Process patient IDs
-            processed_text = medical_assistant.process_patient_id(last_message.text_content)
+            processed_text = self.assistant.process_patient_id(user_message.text)
             
             # Search RAG
-            rag_results = await medical_assistant.search_knowledge(processed_text)
+            rag_results = await self.assistant.search_knowledge(processed_text)
             
             if rag_results:
-                # Create enhanced message
+                # Update the user message with RAG results
                 enhanced_text = f"{processed_text}\n\nRelevante Informationen aus der Datenbank:\n{rag_results}"
-                
-                # Create new chat context with enhanced message
-                enhanced_ctx = llm.ChatContext()
-                for msg in chat_ctx.items:
-                    if msg == last_message:
-                        # Replace with enhanced message
-                        enhanced_msg = llm.ChatMessage(
-                            role="user",
-                            content=[{"type": "text", "text": enhanced_text}]
-                        )
-                        enhanced_ctx.append(msg=enhanced_msg)
-                    else:
-                        if isinstance(msg, llm.ChatMessage):
-                            enhanced_ctx.append(msg=msg)
-                
+                user_message.text = enhanced_text
                 logger.info(f"Enhanced query with RAG results")
-                
-                # Call original LLM with enhanced context
-                stream = self.llm.chat(chat_ctx=enhanced_ctx)
-                async for chunk in stream:
-                    yield chunk
             else:
                 logger.warning(f"No RAG results found for: {processed_text}")
-                # No enhancement, use original context
-                stream = self.llm.chat(chat_ctx=chat_ctx)
-                async for chunk in stream:
-                    yield chunk
-        else:
-            # No user message to enhance, use original context
-            stream = self.llm.chat(chat_ctx=chat_ctx)
-            async for chunk in stream:
-                yield chunk
 
 async def entrypoint(ctx: agents.JobContext):
     logger.info("=== Medical Agent Starting ===")
     
-    # Connect to room
-    await ctx.connect()
+    # Initialize assistant
+    medical_assistant = MedicalAssistant()
     
     # Check RAG service health
     try:
@@ -175,16 +136,9 @@ async def entrypoint(ctx: agents.JobContext):
     except Exception as e:
         logger.error(f"Failed to check RAG service health: {e}")
     
-    # Create base components with Ollama
-    base_llm = openai.LLM(
-        model="llama3.1:8b",
-        base_url="http://172.16.0.146:11434/v1",
-        api_key="ollama",
-        temperature=0.7,
-    )
-    
-    # Create agent with custom instructions
-    agent = Agent(
+    # Create agent
+    agent = MedicalAgent(
+        assistant=medical_assistant,
         instructions="""Du bist ein Agent mit Zugriff auf die Patientendatenbank.
             
             ERSTE ANTWORT (IMMER):
@@ -227,7 +181,12 @@ async def entrypoint(ctx: agents.JobContext):
               - "5ml" → "fünf Milliliter"
             - Telefonnummern mit Pausen:
               - "+41 79 123 4567" → "plus 41... 79... 123... 45... 67" """,
-        llm=base_llm,
+        llm=openai.LLM(
+            model="llama3.1:8b",
+            base_url="http://172.16.0.146:11434/v1",
+            api_key="ollama",
+            temperature=0.7,
+        ),
         stt=openai.STT(model="whisper-1", language="de"),
         tts=openai.TTS(model="tts-1", voice="shimmer"),
         vad=silero.VAD.load(
@@ -237,39 +196,29 @@ async def entrypoint(ctx: agents.JobContext):
         ),
     )
     
-    # Create session with custom LLM node
+    # Create session
     session = AgentSession(
-        llm_node=RAGLLMNode(base_llm),  # Custom LLM node for RAG
-        stt=agent.stt,
-        tts=agent.tts,
-        vad=agent.vad,
-        input_audio_options=SessionConnectOptions(
-            room_input_options=rtc.RoomInputOptions(
-                auto_subscribe=rtc.AutoSubscribe.ALL,
-                subscribe_all=True,
-            ),
-        ),
+        agent=agent,
     )
     
-    # Event handlers for debugging
-    @session.on("user_input_transcribed")
-    def on_user_input(event: UserInputTranscribedEvent):
-        logger.info(f"=== User Input Event: {event.transcript} (final: {event.is_final})")
-    
-    @session.on("error")
-    def on_error(event: ErrorEvent):
-        logger.error(f"Session error: {event.error}")
-    
-    @session.on("close")
-    def on_close(event: CloseEvent):
-        logger.info(f"Session closed: {event.reason}")
+    # Connect to room
+    await ctx.connect()
     
     # Start session
-    await session.start(agent=agent, room=ctx.room)
+    await session.start(room=ctx.room)
     
     # Initial greeting
     await session.say("Guten Tag Herr Doktor, welche Patientendaten benötigen Sie?", allow_interruptions=True)
     logger.info("Medical agent started successfully")
+    
+    # Log for debugging
+    @ctx.room.on("track_published")
+    def on_track_published(publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+        logger.info(f"Track published: {publication.sid} from {participant.identity}")
+    
+    @ctx.room.on("track_subscribed")
+    def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+        logger.info(f"Track subscribed: {track.sid} from {participant.identity}")
 
 if __name__ == "__main__":
     agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint))
