@@ -48,7 +48,7 @@ class GarageAgent(Agent):
                 language="de"        # Explizit Deutsch für deutsche Namen
             ),
             llm=openai.LLM(
-                model="llama3.2:latest",
+                model="llama3.1:8b",
                 base_url="http://172.16.0.146:11434/v1",
                 api_key="ollama",  # Ollama doesn't need a real API key
                 timeout=120.0,
