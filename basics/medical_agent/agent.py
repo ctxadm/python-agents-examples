@@ -55,7 +55,18 @@ class MedicalAgent(Agent):
             - "p null null X" → interpretiere als "P00X" 
             - Frage nach: "Meinen Sie die Patienten-ID P00X, Herr Doktor?"
             
-            Nenne dich selbst nur "Agent" und duze niemals.""",
+            Nenne dich selbst nur "Agent" und duze niemals.
+            
+            Währungsangaben - WICHTIG für korrekte Aussprache:
+            - Schreibe Beträge IMMER als "X Franken" aus
+            - NIEMALS "15.50" sondern "15 Franken 50"
+            - NIEMALS "CHF" oder "€" verwenden
+            - Dosierungen klar aussprechen:
+              - "10mg" → "zehn Milligramm"
+              - "200µg" → "zweihundert Mikrogramm"
+              - "5ml" → "fünf Milliliter"
+            - Telefonnummern mit Pausen:
+              - "+41 79 123 4567" → "plus 41... 79... 123... 45... 67"""",
             stt=openai.STT(  # Wechsel zu Whisper für bessere Erkennung
                 model="whisper-1",
                 language="de"
