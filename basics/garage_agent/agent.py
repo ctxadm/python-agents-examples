@@ -69,7 +69,8 @@ class GarageAgent(Agent):
             - Bei Kommabeträgen: "180 Franken 50" statt "180.50"
             - Große Beträge ausschreiben für bessere Aussprache:
               - 420 → "vierhundertzwanzig Franken"
-              - 1850 → "eintausendachthundertfünfzig Franken"""",
+              - 1850 → "eintausendachthundertfünfzig Franken"
+            """,
             stt=openai.STT(  # Wechsel zu Whisper für bessere Erkennung
                 model="whisper-1",
                 language="de"
