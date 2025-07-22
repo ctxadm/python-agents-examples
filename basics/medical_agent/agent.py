@@ -25,29 +25,40 @@ class MedicalAgent(Agent):
         self.base_url = os.getenv("RAG_SERVICE_URL", "http://rag-service:8000")
         
         super().__init__(
-            instructions="""Du bist ein medizinischer Assistent mit Zugriff auf eine Patientendatenbank. 
+            instructions="""Du bist ein Agent mit Zugriff auf die Patientendatenbank.
             
-            WICHTIG beim Lesen der Datenbank:
-            - Die relevanten Informationen stehen DIREKT unter "Relevante Informationen aus der Datenbank"
-            - Wenn dort z.B. "Patient: Emma Fischer" steht, dann IST Emma Fischer in der Datenbank
-            - Ignoriere NIEMALS die Daten die dir gegeben werden
+            ERSTE ANTWORT (IMMER):
+            "Guten Tag Herr Doktor, welche Patientendaten benötigen Sie?"
             
-            Datenschutz und Patientenservice:
+            EXTREM WICHTIG - So liest du die Datenbank:
+            1. Die Daten stehen IMMER unter "Relevante Informationen aus der Datenbank"
+            2. Wenn dort "Patient: Emma Fischer" steht, dann EXISTIERT Emma Fischer zu 100%!
+            3. Wenn dort "patient_id": "P005" steht, dann ist P005 eine GÜLTIGE ID!
+            4. Du MUSST die Daten die du bekommst als WAHR akzeptieren!
+            
+            Patienten-IDs verstehen:
+            - "p null null fünf" bedeutet wahrscheinlich "P005" 
+            - "p null null drei" bedeutet wahrscheinlich "P003"
+            - Buchstabe "P" gefolgt von Zahlen ist eine Patienten-ID
+            
+            REGEL: Wenn ein Patient in den "Relevanten Informationen" steht, dann:
+            - Sage NIEMALS "nicht gefunden" oder "keine Daten"
+            - Der Patient IST in der Datenbank
+            - Gib die Informationen aus den relevanten Daten wieder
+            
+            Datenschutz:
             - Frage nach dem Namen des Patienten oder der Patienten-ID
-            - Wenn ein Name in den "Relevanten Informationen" steht, dann EXISTIERT dieser Patient
             - Gib NUR Informationen zum bestätigten Patienten heraus
-            - Sei einfühlsam und verständnisvoll
+            - Antworte professionell und präzise
             
-            Verhalten:
-            - Lies die "Relevanten Informationen" GENAU durch
-            - Wenn dort ein Patient steht, sage NICHT "nicht gefunden"
-            - Bei unklaren Eingaben: Bitte freundlich um Wiederholung
-            - Behandle medizinische Daten vertraulich
+            Bei unklaren Eingaben:
+            - "p null null X" → interpretiere als "P00X" 
+            - Frage nach: "Meinen Sie die Patienten-ID P00X, Herr Doktor?"
             
-            Stelle dich kurz vor und frage, wie du helfen kannst.""",
-            stt=deepgram.STT(
-                model="nova-2",      # Besseres Modell für genauere Erkennung
-                language="de"        # Explizit Deutsch für deutsche Namen
+            Nenne dich selbst nur "Agent" und duze niemals.""",
+            stt=openai.STT(  # Wechsel zu Whisper für bessere Erkennung
+                model="whisper-1",
+                language="de"
             ),
             llm=openai.LLM(
                 model="llama3.1:8b",
@@ -58,11 +69,11 @@ class MedicalAgent(Agent):
             ),
             tts=openai.TTS(model="tts-1", voice="shimmer"),  # OpenAI TTS
             vad=silero.VAD.load(
-                min_silence_duration=0.5,    # Erhöht von 0.4 auf 0.5
-                min_speech_duration=0.2      # Erhöht von 0.15 auf 0.2
+                min_silence_duration=0.6,    # Noch höher für bessere Trennung
+                min_speech_duration=0.3      # Länger für vollständige Wörter
             )
         )
-        logger.info("Medical assistant starting with RAG support and local Ollama LLM")
+        logger.info("Medical assistant starting with RAG support, Whisper STT and local Ollama LLM")
 
     async def on_enter(self):
         """Called when the agent enters the conversation"""
@@ -78,9 +89,6 @@ class MedicalAgent(Agent):
                     logger.warning(f"RAG service health check failed: {response.status_code}")
         except Exception as e:
             logger.error(f"Failed to check RAG service health: {e}")
-        
-        # Note: We cannot use self.session.say() here because session is not available yet
-        # The greeting will be handled by the LLM through the instructions
 
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
         """Called when user finishes speaking - here we can enhance with RAG"""
@@ -90,7 +98,27 @@ class MedicalAgent(Agent):
             # Extract text content from the message
             query_text = str(user_query[0]) if hasattr(user_query[0], '__str__') else ""
             
+            # Spezielle Behandlung für Patienten-IDs
             if query_text:
+                # Konvertiere "p null null X" zu "P00X"
+                import re
+                pattern = r'p\s*null\s*null\s*(\w+)'
+                match = re.search(pattern, query_text.lower())
+                if match:
+                    number = match.group(1)
+                    # Konvertiere Wörter zu Zahlen wenn nötig
+                    number_map = {
+                        'eins': '1', 'zwei': '2', 'drei': '3', 'vier': '4', 
+                        'fünf': '5', 'sechs': '6', 'sieben': '7', 'acht': '8', 
+                        'neun': '9', 'null': '0'
+                    }
+                    if number in number_map:
+                        number = number_map[number]
+                    
+                    corrected_id = f"P00{number}"
+                    query_text = f"Patienten-ID {corrected_id}"
+                    logger.info(f"Corrected patient ID from '{match.group(0)}' to '{corrected_id}'")
+                
                 # Search RAG for relevant information
                 rag_results = await self.search_knowledge(query_text)
                 
@@ -99,7 +127,6 @@ class MedicalAgent(Agent):
                     enhanced_content = f"{query_text}\n\nRelevante Informationen aus der Datenbank:\n{rag_results}"
                     
                     # Update the message content directly
-                    # In LiveKit 1.2.1, we modify the content directly instead of using append
                     new_message.content = [enhanced_content]
                     
                     logger.info(f"Enhanced query with RAG results for: {query_text}")
