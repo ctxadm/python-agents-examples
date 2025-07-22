@@ -166,9 +166,7 @@ async def entrypoint(ctx: JobContext):
             tts=openai.TTS(model="tts-1", voice="onyx"),
             vad=silero.VAD.load(
                 min_silence_duration=0.8,    # Erhöht für Session-Kontinuität
-                min_speech_duration=0.3,
-                activation_threshold=0.5,    # NEU
-                deactivation_threshold=0.3   # NEU
+                min_speech_duration=0.3
             ),
             interrupt_min_words=2,  # Mindestens 2 Wörter für Unterbrechung
         )
