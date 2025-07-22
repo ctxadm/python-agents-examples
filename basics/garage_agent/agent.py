@@ -9,17 +9,13 @@ from livekit.agents import (
     AgentSession,
     Agent,
     RunContext,
-    APIConnectOptions,
     llm,
     stt,
     tts,
     vad,
-    UserInputTranscribedEvent,
-    CloseEvent,
-    ErrorEvent,
 )
 from livekit.plugins import openai, silero
-from typing import AsyncIterable, Optional
+from typing import Optional
 import time
 
 load_dotenv()
@@ -95,73 +91,39 @@ class GarageAssistant:
         
         return query_text
 
-# Create global assistant instance
-garage_assistant = GarageAssistant()
-
-# Custom LLM Node for RAG integration
-class RAGLLMNode:
-    def __init__(self, original_llm: llm.LLM):
-        self.llm = original_llm
+# Custom Agent class that handles RAG
+class GarageAgent(Agent):
+    def __init__(self, assistant: GarageAssistant, **kwargs):
+        super().__init__(**kwargs)
+        self.assistant = assistant
+        self._processing_lock = asyncio.Lock()
         
-    async def __call__(self, ctx: RunContext, chat_ctx: llm.ChatContext) -> AsyncIterable[llm.ChatChunk]:
-        """Enhanced LLM node that integrates RAG"""
-        # Get the last user message
-        last_message = None
-        for msg in reversed(chat_ctx.items):
-            if isinstance(msg, llm.ChatMessage) and msg.role == "user":
-                last_message = msg
-                break
+    async def on_user_turn_completed(self, turn_ctx, user_message):
+        """This should be called when user finishes speaking"""
+        logger.info("=== on_user_turn_completed CALLED ===")
         
-        if last_message and last_message.text_content:
-            logger.info(f"=== LLM Node CALLED with user message: {last_message.text_content}")
+        if user_message and user_message.text:
+            logger.info(f"Processing user query: {user_message.text}")
             
             # Process vehicle IDs
-            processed_text = garage_assistant.process_vehicle_id(last_message.text_content)
+            processed_text = self.assistant.process_vehicle_id(user_message.text)
             
             # Search RAG
-            rag_results = await garage_assistant.search_knowledge(processed_text)
+            rag_results = await self.assistant.search_knowledge(processed_text)
             
             if rag_results:
-                # Create enhanced message
+                # Update the user message with RAG results
                 enhanced_text = f"{processed_text}\n\nRelevante Informationen aus der Datenbank:\n{rag_results}"
-                
-                # Create new chat context with enhanced message
-                enhanced_ctx = llm.ChatContext()
-                for msg in chat_ctx.items:
-                    if msg == last_message:
-                        # Replace with enhanced message
-                        enhanced_msg = llm.ChatMessage(
-                            role="user",
-                            content=[{"type": "text", "text": enhanced_text}]
-                        )
-                        enhanced_ctx.append(msg=enhanced_msg)
-                    else:
-                        if isinstance(msg, llm.ChatMessage):
-                            enhanced_ctx.append(msg=msg)
-                
+                user_message.text = enhanced_text
                 logger.info(f"Enhanced query with RAG results")
-                
-                # Call original LLM with enhanced context
-                stream = self.llm.chat(chat_ctx=enhanced_ctx)
-                async for chunk in stream:
-                    yield chunk
             else:
                 logger.warning(f"No RAG results found for: {processed_text}")
-                # No enhancement, use original context
-                stream = self.llm.chat(chat_ctx=chat_ctx)
-                async for chunk in stream:
-                    yield chunk
-        else:
-            # No user message to enhance, use original context
-            stream = self.llm.chat(chat_ctx=chat_ctx)
-            async for chunk in stream:
-                yield chunk
 
 async def entrypoint(ctx: agents.JobContext):
     logger.info("=== Garage Agent Starting ===")
     
-    # Connect to room
-    await ctx.connect()
+    # Initialize assistant
+    garage_assistant = GarageAssistant()
     
     # Check RAG service health
     try:
@@ -174,16 +136,9 @@ async def entrypoint(ctx: agents.JobContext):
     except Exception as e:
         logger.error(f"Failed to check RAG service health: {e}")
     
-    # Create base components with Ollama
-    base_llm = openai.LLM(
-        model="llama3.1:8b",
-        base_url="http://172.16.0.146:11434/v1",
-        api_key="ollama",
-        temperature=0.3,
-    )
-    
-    # Create agent with custom instructions
-    agent = Agent(
+    # Create agent
+    agent = GarageAgent(
+        assistant=garage_assistant,
         instructions="""Du bist der Garage Agent der Firma AutoService Müller.
             
             ERSTE ANTWORT (IMMER):
@@ -229,7 +184,12 @@ async def entrypoint(ctx: agents.JobContext):
             - Große Beträge ausschreiben für bessere Aussprache:
               - 420 → "vierhundertzwanzig Franken"
               - 1850 → "eintausendachthundertfünfzig Franken" """,
-        llm=base_llm,
+        llm=openai.LLM(
+            model="llama3.1:8b",
+            base_url="http://172.16.0.146:11434/v1",
+            api_key="ollama",
+            temperature=0.3,
+        ),
         stt=openai.STT(model="whisper-1", language="de"),
         tts=openai.TTS(model="tts-1", voice="onyx"),
         vad=silero.VAD.load(
@@ -239,33 +199,29 @@ async def entrypoint(ctx: agents.JobContext):
         ),
     )
     
-    # Create session with custom LLM node
+    # Create session
     session = AgentSession(
-        llm_node=RAGLLMNode(base_llm),  # Custom LLM node for RAG
-        stt=agent.stt,
-        tts=agent.tts,
-        vad=agent.vad,
+        agent=agent,
     )
     
-    # Event handlers for debugging
-    @session.on("user_input_transcribed")
-    def on_user_input(event: UserInputTranscribedEvent):
-        logger.info(f"=== User Input Event: {event.transcript} (final: {event.is_final})")
-    
-    @session.on("error")
-    def on_error(event: ErrorEvent):
-        logger.error(f"Session error: {event.error}")
-    
-    @session.on("close")
-    def on_close(event: CloseEvent):
-        logger.info(f"Session closed: {event.reason}")
+    # Connect to room
+    await ctx.connect()
     
     # Start session
-    await session.start(agent=agent, room=ctx.room)
+    await session.start(room=ctx.room)
     
     # Initial greeting
     await session.say("Guten Tag, hier ist der Garage Agent der AutoService Müller. Bitte nennen Sie mir Ihren Namen, damit ich Ihnen weiterhelfen kann.", allow_interruptions=True)
     logger.info("Garage agent started successfully")
+    
+    # Log for debugging
+    @ctx.room.on("track_published")
+    def on_track_published(publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+        logger.info(f"Track published: {publication.sid} from {participant.identity}")
+    
+    @ctx.room.on("track_subscribed")
+    def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+        logger.info(f"Track subscribed: {track.sid} from {participant.identity}")
 
 if __name__ == "__main__":
     agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint))
