@@ -1,6 +1,8 @@
+# LiveKit Agents 1.0.x Version
 import logging
 import os
 import httpx
+import re
 from dotenv import load_dotenv
 from livekit import agents
 from livekit.agents import Agent, JobContext, WorkerOptions, cli
@@ -105,9 +107,6 @@ class MedicalAgent(Agent):
     
     def _process_patient_id(self, text: str) -> str:
         """Korrigiert Sprache-zu-Text Fehler bei Patienten-IDs"""
-        import re
-        
-        # Pattern für "p null null X"
         pattern = r'p\s*null\s*null\s*(\w+)'
         match = re.search(pattern, text.lower())
         
