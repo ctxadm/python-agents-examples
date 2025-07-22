@@ -1,30 +1,39 @@
-# ========================================
-# GARAGE AGENT mit VoicePipelineAgent - FINAL
-# ========================================
-import os
-import logging
-import httpx
-import json
 import asyncio
+import logging
+import os
+import httpx
 import re
-from typing import Optional, List, Dict
-from pathlib import Path
 from dotenv import load_dotenv
-from livekit import rtc
-from livekit.agents import JobContext, WorkerOptions, cli, llm
-from livekit.agents.pipeline import VoicePipelineAgent
-from livekit.plugins import deepgram, openai, silero
+from livekit import agents, rtc
+from livekit.agents import (
+    AgentSession,
+    Agent,
+    RunContext,
+    APIConnectOptions,
+    llm,
+    stt,
+    tts,
+    vad,
+    UserInputTranscribedEvent,
+    CloseEvent,
+    ErrorEvent,
+    SessionConnectOptions,
+)
+from livekit.plugins import openai, silero
+from typing import AsyncIterable, Optional
+import time
 
-# Load environment variables
 load_dotenv()
 
+# Logging
 logger = logging.getLogger("garage-assistant")
+logger.setLevel(logging.INFO)
 
+# Garage Assistant with RAG
 class GarageAssistant:
-    """Garage Assistant with RAG integration"""
-    
     def __init__(self):
         self.base_url = os.getenv("RAG_SERVICE_URL", "http://rag-service:8000")
+        logger.info("Garage Assistant initialized with RAG service")
         
     async def search_knowledge(self, query: str) -> Optional[str]:
         """Search the RAG service for relevant knowledge"""
@@ -87,13 +96,73 @@ class GarageAssistant:
         
         return query_text
 
+# Create global assistant instance
+garage_assistant = GarageAssistant()
 
-async def entrypoint(ctx: JobContext):
-    """Main entry point for the agent"""
-    logger.info("Starting garage agent entrypoint with VoicePipelineAgent")
+# Custom LLM Node for RAG integration
+class RAGLLMNode:
+    def __init__(self, original_llm: llm.LLM):
+        self.llm = original_llm
+        
+    async def __call__(self, ctx: RunContext, chat_ctx: llm.ChatContext) -> AsyncIterable[llm.ChatChunk]:
+        """Enhanced LLM node that integrates RAG"""
+        # Get the last user message
+        last_message = None
+        for msg in reversed(chat_ctx.items):
+            if isinstance(msg, llm.ChatMessage) and msg.role == "user":
+                last_message = msg
+                break
+        
+        if last_message and last_message.text_content:
+            logger.info(f"=== LLM Node CALLED with user message: {last_message.text_content}")
+            
+            # Process vehicle IDs
+            processed_text = garage_assistant.process_vehicle_id(last_message.text_content)
+            
+            # Search RAG
+            rag_results = await garage_assistant.search_knowledge(processed_text)
+            
+            if rag_results:
+                # Create enhanced message
+                enhanced_text = f"{processed_text}\n\nRelevante Informationen aus der Datenbank:\n{rag_results}"
+                
+                # Create new chat context with enhanced message
+                enhanced_ctx = llm.ChatContext()
+                for msg in chat_ctx.items:
+                    if msg == last_message:
+                        # Replace with enhanced message
+                        enhanced_msg = llm.ChatMessage(
+                            role="user",
+                            content=[{"type": "text", "text": enhanced_text}]
+                        )
+                        enhanced_ctx.append(msg=enhanced_msg)
+                    else:
+                        if isinstance(msg, llm.ChatMessage):
+                            enhanced_ctx.append(msg=msg)
+                
+                logger.info(f"Enhanced query with RAG results")
+                
+                # Call original LLM with enhanced context
+                stream = self.llm.chat(chat_ctx=enhanced_ctx)
+                async for chunk in stream:
+                    yield chunk
+            else:
+                logger.warning(f"No RAG results found for: {processed_text}")
+                # No enhancement, use original context
+                stream = self.llm.chat(chat_ctx=chat_ctx)
+                async for chunk in stream:
+                    yield chunk
+        else:
+            # No user message to enhance, use original context
+            stream = self.llm.chat(chat_ctx=chat_ctx)
+            async for chunk in stream:
+                yield chunk
+
+async def entrypoint(ctx: agents.JobContext):
+    logger.info("=== Garage Agent Starting ===")
     
-    # Initialize assistant
-    garage_assistant = GarageAssistant()
+    # Connect to room
+    await ctx.connect()
     
     # Check RAG service health
     try:
@@ -106,12 +175,17 @@ async def entrypoint(ctx: JobContext):
     except Exception as e:
         logger.error(f"Failed to check RAG service health: {e}")
     
-    # Create initial chat context
-    initial_ctx = llm.ChatContext()
-    initial_ctx.messages.append(
-        llm.ChatMessage(
-            role="system",
-            content="""Du bist der Garage Agent der Firma AutoService Müller.
+    # Create base components with Ollama
+    base_llm = openai.LLM(
+        model="llama3.1:8b",
+        base_url="http://172.16.0.146:11434/v1",
+        api_key="ollama",
+        temperature=0.3,
+    )
+    
+    # Create agent with custom instructions
+    agent = Agent(
+        instructions="""Du bist der Garage Agent der Firma AutoService Müller.
             
             ERSTE ANTWORT (IMMER):
             "Guten Tag, hier ist der Garage Agent der AutoService Müller. Bitte nennen Sie mir Ihren Namen, damit ich Ihnen weiterhelfen kann."
@@ -155,74 +229,50 @@ async def entrypoint(ctx: JobContext):
             - Bei Kommabeträgen: "180 Franken 50" statt "180.50"
             - Große Beträge ausschreiben für bessere Aussprache:
               - 420 → "vierhundertzwanzig Franken"
-              - 1850 → "eintausendachthundertfünfzig Franken"
-            """
-        )
-    )
-    
-    # Custom callback für RAG-Enhancement - WIRD BEI JEDER USER NACHRICHT AUFGERUFEN!
-    async def before_llm_cb(assistant, chat_ctx):
-        """Called before LLM processing to enhance with RAG"""
-        logger.info("=== before_llm_cb CALLED ===")
-        
-        # Get last user message
-        user_messages = [msg for msg in chat_ctx.messages if msg.role == "user"]
-        if user_messages:
-            last_message = user_messages[-1]
-            query_text = last_message.content
-            logger.info(f"Processing user query: {query_text}")
-            
-            # Process vehicle IDs
-            query_text = garage_assistant.process_vehicle_id(query_text)
-            
-            # Search RAG
-            rag_results = await garage_assistant.search_knowledge(query_text)
-            
-            if rag_results:
-                # Enhance the last message with RAG results
-                enhanced_content = f"{query_text}\n\nRelevante Informationen aus der Datenbank:\n{rag_results}"
-                last_message.content = enhanced_content
-                logger.info(f"Enhanced query with RAG results")
-            else:
-                logger.warning(f"No RAG results found for: {query_text}")
-        else:
-            logger.warning("No user messages found in chat context")
-        
-        return None  # Let default LLM processing continue
-    
-    # Create the VoicePipelineAgent
-    assistant = VoicePipelineAgent(
+              - 1850 → "eintausendachthundertfünfzig Franken" """,
+        llm=base_llm,
+        stt=openai.STT(model="whisper-1", language="de"),
+        tts=openai.TTS(model="tts-1", voice="onyx"),
         vad=silero.VAD.load(
             min_silence_duration=0.8,
             min_speech_duration=0.3,
             activation_threshold=0.5
         ),
-        stt=openai.STT(
-            model="whisper-1",
-            language="de"
-        ),
-        llm=openai.LLM(
-            model="llama3.1:8b",
-            base_url="http://172.16.0.146:11434/v1",
-            api_key="ollama",
-            timeout=120.0,
-            temperature=0.3  # Niedriger für präzisere Antworten
-        ),
-        tts=openai.TTS(
-            model="tts-1",
-            voice="onyx"
-        ),
-        chat_ctx=initial_ctx,
-        before_llm_cb=before_llm_cb  # DIESER CALLBACK WIRD BEI JEDER USER-NACHRICHT AUFGERUFEN!
     )
     
-    # Start the assistant
-    assistant.start(ctx.room)
+    # Create session with custom LLM node
+    session = AgentSession(
+        llm_node=RAGLLMNode(base_llm),  # Custom LLM node for RAG
+        stt=agent.stt,
+        tts=agent.tts,
+        vad=agent.vad,
+        input_audio_options=SessionConnectOptions(
+            room_input_options=rtc.RoomInputOptions(
+                auto_subscribe=rtc.AutoSubscribe.ALL,
+                subscribe_all=True,
+            ),
+        ),
+    )
+    
+    # Event handlers for debugging
+    @session.on("user_input_transcribed")
+    def on_user_input(event: UserInputTranscribedEvent):
+        logger.info(f"=== User Input Event: {event.transcript} (final: {event.is_final})")
+    
+    @session.on("error")
+    def on_error(event: ErrorEvent):
+        logger.error(f"Session error: {event.error}")
+    
+    @session.on("close")
+    def on_close(event: CloseEvent):
+        logger.info(f"Session closed: {event.reason}")
+    
+    # Start session
+    await session.start(agent=agent, room=ctx.room)
     
     # Initial greeting
-    await assistant.say("Guten Tag, hier ist der Garage Agent der AutoService Müller. Bitte nennen Sie mir Ihren Namen, damit ich Ihnen weiterhelfen kann.", allow_interruptions=True)
-    
-    logger.info("Garage agent with VoicePipelineAgent started successfully")
+    await session.say("Guten Tag, hier ist der Garage Agent der AutoService Müller. Bitte nennen Sie mir Ihren Namen, damit ich Ihnen weiterhelfen kann.", allow_interruptions=True)
+    logger.info("Garage agent started successfully")
 
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+    agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint))
