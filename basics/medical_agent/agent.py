@@ -66,7 +66,8 @@ class MedicalAgent(Agent):
               - "200µg" → "zweihundert Mikrogramm"
               - "5ml" → "fünf Milliliter"
             - Telefonnummern mit Pausen:
-              - "+41 79 123 4567" → "plus 41... 79... 123... 45... 67"""",
+              - "+41 79 123 4567" → "plus 41... 79... 123... 45... 67"
+            """,
             stt=openai.STT(  # Wechsel zu Whisper für bessere Erkennung
                 model="whisper-1",
                 language="de"
