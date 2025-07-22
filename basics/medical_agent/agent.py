@@ -5,10 +5,11 @@ import httpx
 import re
 from dotenv import load_dotenv
 from livekit import agents, rtc
-from livekit.agents.voice import Agent, AgentSession
+from livekit.agents import JobContext, WorkerOptions, cli
+from livekit.agents.voice import AgentSession
 from livekit.plugins import openai, silero
 from typing import Optional
-import time
+import json
 
 load_dotenv()
 
@@ -16,13 +17,17 @@ load_dotenv()
 logger = logging.getLogger("medical-assistant")
 logger.setLevel(logging.INFO)
 
+# Global variables for workaround
+medical_assistant = None
+current_session = None
+monitor_task = None
+
 # Medical Assistant with RAG
 class MedicalAssistant:
     def __init__(self):
         self.base_url = os.getenv("RAG_SERVICE_URL", "http://rag-service:8000")
         logger.info("Medical Assistant initialized with RAG service")
-        self.last_processed_message = None
-        self.message_count = 0
+        self.processed_count = 0
         
     async def search_knowledge(self, query: str) -> Optional[str]:
         """Search the RAG service for relevant knowledge"""
@@ -51,9 +56,6 @@ class MedicalAssistant:
                                 formatted_results.append(f"[{i+1}] {content}")
                         
                         return "\n\n".join(formatted_results)
-                    else:
-                        logger.info(f"No RAG results found")
-                        return None
                 else:
                     logger.error(f"RAG search failed with status {response.status_code}")
                     return None
@@ -77,63 +79,83 @@ class MedicalAssistant:
                 number = number_map[number]
             
             corrected_id = f"P00{number}"
-            query_text = f"Patienten-ID {corrected_id}"
             logger.info(f"Corrected patient ID to '{corrected_id}'")
+            return f"Patienten-ID {corrected_id}"
         
         return query_text
 
-# Global assistant instance
-medical_assistant = None
-
-# WORKAROUND: Monitor chat context periodically
-async def monitor_chat_context(session: AgentSession, agent: Agent):
-    """Workaround: Monitor chat context for new messages"""
-    last_message_count = 0
+# Workaround: Listen to room events for transcriptions
+async def monitor_transcriptions(ctx: JobContext, session: AgentSession):
+    """Monitor room for transcriptions and inject RAG results"""
+    global medical_assistant
     
-    while True:
+    processed_transcripts = set()
+    
+    @ctx.room.on("data_received")
+    def on_data_received(data: rtc.DataPacket, participant: rtc.RemoteParticipant):
+        """Handle transcription data"""
         try:
-            # Check chat context every 0.5 seconds
-            await asyncio.sleep(0.5)
-            
-            if hasattr(agent, 'chat_ctx') and agent.chat_ctx:
-                messages = agent.chat_ctx.messages
-                current_count = len(messages)
+            if data.topic == "transcription":
+                transcript_data = json.loads(data.data.decode())
+                transcript_text = transcript_data.get("text", "")
+                transcript_id = transcript_data.get("id", "")
                 
-                # New message detected
-                if current_count > last_message_count:
-                    last_message = messages[-1]
+                if transcript_id not in processed_transcripts and transcript_text:
+                    processed_transcripts.add(transcript_id)
+                    logger.info(f"=== WORKAROUND: Detected transcript: {transcript_text}")
                     
-                    # Check if it's a user message
-                    if last_message.role == "user" and last_message.content:
-                        user_text = last_message.content
-                        logger.info(f"=== WORKAROUND: Detected new user message: {user_text}")
-                        
-                        # Process with RAG
-                        processed_text = medical_assistant.process_patient_id(user_text)
-                        rag_results = await medical_assistant.search_knowledge(processed_text)
-                        
-                        if rag_results:
-                            # Create enhanced response
-                            enhanced_prompt = f"""Basierend auf der Anfrage: {processed_text}
+                    # Schedule RAG processing
+                    asyncio.create_task(process_with_rag(transcript_text, session))
+                    
+        except Exception as e:
+            logger.error(f"Error processing data: {e}")
+    
+    # Alternative: Monitor participant speaking events
+    @ctx.room.on("track_subscribed")
+    def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+        if track.kind == rtc.TrackKind.KIND_AUDIO:
+            logger.info(f"Audio track subscribed from {participant.identity}")
+    
+    logger.info("Transcription monitor started")
 
-Relevante Informationen aus der Datenbank:
+async def process_with_rag(text: str, session: AgentSession):
+    """Process text with RAG and respond"""
+    global medical_assistant
+    
+    try:
+        # Skip if it's likely an agent response
+        if any(phrase in text.lower() for phrase in ["guten tag", "herr doktor", "agent"]):
+            return
+            
+        logger.info(f"Processing with RAG: {text}")
+        
+        # Process patient IDs
+        processed_text = medical_assistant.process_patient_id(text)
+        
+        # Search RAG
+        rag_results = await medical_assistant.search_knowledge(processed_text)
+        
+        if rag_results:
+            # Create response with RAG context
+            response = f"""Basierend auf Ihrer Anfrage zu '{processed_text}' habe ich folgende Informationen gefunden:
+
 {rag_results}
 
-Bitte antworte auf die Anfrage unter Berücksichtigung der Datenbankinformationen."""
-                            
-                            # Use session.say to respond with RAG context
-                            await session.say(enhanced_prompt, allow_interruptions=True)
-                            logger.info("WORKAROUND: Enhanced response sent")
-                        
-                last_message_count = current_count
-                
-        except Exception as e:
-            logger.error(f"Error in monitor_chat_context: {e}")
-            await asyncio.sleep(1)
+Diese Daten stammen aus unserer Patientendatenbank."""
+            
+            # Send response
+            await session.say(response, allow_interruptions=True)
+            logger.info("RAG-enhanced response sent")
+        else:
+            logger.info("No RAG results found, letting normal flow handle it")
+            
+    except Exception as e:
+        logger.error(f"Error in process_with_rag: {e}")
 
-async def entrypoint(ctx: agents.JobContext):
-    global medical_assistant
-    logger.info("=== Medical Agent Starting (1.2.1 Workaround) ===")
+async def entrypoint(ctx: JobContext):
+    global medical_assistant, current_session
+    
+    logger.info("=== Medical Agent Starting (1.2.1 Fixed) ===")
     
     # Initialize assistant
     medical_assistant = MedicalAssistant()
@@ -145,39 +167,26 @@ async def entrypoint(ctx: agents.JobContext):
             if response.status_code == 200:
                 logger.info("RAG service is healthy")
             else:
-                logger.warning(f"RAG service health check failed: {response.status_code}")
+                logger.warning(f"RAG service health check failed")
     except Exception as e:
         logger.error(f"Failed to check RAG service health: {e}")
     
-    # Create agent with enhanced instructions
-    instructions = """Du bist ein Agent mit Zugriff auf die Patientendatenbank.
-            
-ERSTE ANTWORT (IMMER):
-"Guten Tag Herr Doktor, welche Patientendaten benötigen Sie?"
-
-EXTREM WICHTIG - So liest du die Datenbank:
-1. Die Daten stehen IMMER unter "Relevante Informationen aus der Datenbank"
-2. Wenn dort "Patient: Emma Fischer" steht, dann EXISTIERT Emma Fischer zu 100%!
-3. Wenn dort "patient_id": "P005" steht, dann ist P005 eine GÜLTIGE ID!
-4. Du MUSST die Daten die du bekommst als WAHR akzeptieren!
-
-Patienten-IDs verstehen:
-- "p null null fünf" bedeutet wahrscheinlich "P005" 
-- "p null null drei" bedeutet wahrscheinlich "P003"
-
-REGEL: Wenn ein Patient in den "Relevanten Informationen" steht, dann:
-- Sage NIEMALS "nicht gefunden" oder "keine Daten"
-- Der Patient IST in der Datenbank
-- Gib die Informationen aus den relevanten Daten wieder
-
-Währungsangaben:
-- Schreibe Beträge IMMER als "X Franken" aus
-- NIEMALS "15.50" sondern "15 Franken 50"
-- Dosierungen klar aussprechen: "10mg" → "zehn Milligramm" """
+    # Connect to room first
+    await ctx.connect()
+    logger.info("Connected to room")
     
-    # Create agent
-    agent = Agent(
-        instructions=instructions,
+    # Create session with 1.2.1 API
+    session = AgentSession(
+        instructions="""Du bist ein Agent mit Zugriff auf die Patientendatenbank.
+            
+ERSTE ANTWORT: "Guten Tag Herr Doktor, welche Patientendaten benötigen Sie?"
+
+WICHTIG - Datenbank:
+- Wenn Informationen aus der Datenbank kommen, nutze sie IMMER
+- Sage NIE "nicht gefunden" wenn Daten vorhanden sind
+- Patienten-IDs: "p null null fünf" = "P005"
+
+Währungen: "15 Franken 50" statt "15.50" """,
         llm=openai.LLM(
             model="llama3.1:8b",
             base_url="http://172.16.0.146:11434/v1",
@@ -193,28 +202,45 @@ Währungsangaben:
         ),
     )
     
-    # Create session
-    session = AgentSession(agent=agent)
+    current_session = session
     
-    # Connect to room
-    await ctx.connect()
+    # Start the transcription monitor
+    await monitor_transcriptions(ctx, session)
     
-    # Start session
-    await session.start(room=ctx.room)
-    
-    # Start the chat context monitor (WORKAROUND)
-    monitor_task = asyncio.create_task(monitor_chat_context(session, agent))
-    logger.info("Started chat context monitor workaround")
+    # Start session  
+    await session.start(ctx.room)
+    logger.info("Session started")
     
     # Initial greeting
     await session.say("Guten Tag Herr Doktor, welche Patientendaten benötigen Sie?", allow_interruptions=True)
-    logger.info("Medical agent started successfully with workaround")
     
-    # Keep the agent running
-    try:
-        await monitor_task
-    except asyncio.CancelledError:
-        logger.info("Monitor task cancelled")
+    # Alternative workaround: Periodic check for new messages
+    async def periodic_check():
+        last_check = ""
+        while True:
+            try:
+                await asyncio.sleep(1.0)  # Check every second
+                
+                # Try to access session state if available
+                if hasattr(session, '_chat_ctx') or hasattr(session, 'chat_ctx'):
+                    chat_ctx = getattr(session, '_chat_ctx', None) or getattr(session, 'chat_ctx', None)
+                    if chat_ctx and hasattr(chat_ctx, 'messages'):
+                        messages = chat_ctx.messages
+                        if messages:
+                            last_msg = messages[-1]
+                            msg_text = getattr(last_msg, 'content', '') or getattr(last_msg, 'text', '')
+                            if msg_text and msg_text != last_check:
+                                last_check = msg_text
+                                if last_msg.role == "user":
+                                    logger.info(f"=== Periodic check found: {msg_text}")
+                                    await process_with_rag(msg_text, session)
+                                    
+            except Exception as e:
+                logger.debug(f"Periodic check error (expected): {e}")
+                
+    # Start periodic checker
+    check_task = asyncio.create_task(periodic_check())
+    logger.info("Started periodic message checker")
 
 if __name__ == "__main__":
-    agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint))
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
