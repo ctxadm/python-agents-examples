@@ -1,5 +1,5 @@
 # ========================================
-# MEDICAL AGENT (basics/medical_agent/agent.py) - FIXED
+# MEDICAL AGENT (basics/medical_agent/agent.py) - FIXED für LiveKit 1.2.x
 # ========================================
 import os
 import logging
@@ -11,7 +11,7 @@ from typing import Optional, List, Dict
 from pathlib import Path
 from dotenv import load_dotenv
 from livekit import rtc
-from livekit.agents import JobContext, WorkerOptions, cli, llm
+from livekit.agents import JobContext, WorkerOptions, cli, llm, get_job_context
 from livekit.agents.voice import Agent, AgentSession
 from livekit.agents.llm import ChatContext, ChatMessage, ChatContent
 from livekit.plugins import deepgram, openai, silero
@@ -21,91 +21,13 @@ load_dotenv()
 
 logger = logging.getLogger("medical-assistant")
 
-class MedicalAssistant:
-    """Medical Assistant with RAG integration"""
+class MedicalAgent(Agent):
+    """Medical Agent with RAG integration - using correct LiveKit 1.2.x pattern"""
     
     def __init__(self):
         self.base_url = os.getenv("RAG_SERVICE_URL", "http://rag-service:8000")
-        self.http_client = None
         
-    async def __aenter__(self):
-        self.http_client = httpx.AsyncClient(timeout=30.0)
-        return self
-        
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self.http_client:
-            await self.http_client.aclose()
-
-    async def search_knowledge(self, query: str) -> Optional[str]:
-        """Search the RAG service for relevant knowledge"""
-        try:
-            response = await self.http_client.post(
-                f"{self.base_url}/search",
-                json={
-                    "query": query,
-                    "agent_type": "medical",
-                    "top_k": 3,
-                    "collection": "medical_nutrition"
-                }
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                results = data.get("results", [])
-                
-                if results:
-                    logger.info(f"RAG search successful: {len(results)} results for query: {query}")
-                    # Format results for LLM context
-                    formatted_results = []
-                    for i, result in enumerate(results):
-                        content = result.get("content", "").strip()
-                        if content:
-                            formatted_results.append(f"[{i+1}] {content}")
-                    
-                    return "\n\n".join(formatted_results)
-                else:
-                    logger.info(f"No RAG results found for query: {query}")
-                    return None
-            else:
-                logger.error(f"RAG search failed with status {response.status_code}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error searching RAG: {e}")
-            return None
-
-    def process_patient_id(self, query_text: str) -> str:
-        """Process patient ID from speech to text"""
-        # Konvertiere "p null null X" zu "P00X"
-        pattern = r'p\s*null\s*null\s*(\w+)'
-        match = re.search(pattern, query_text.lower())
-        if match:
-            number = match.group(1)
-            # Konvertiere Wörter zu Zahlen wenn nötig
-            number_map = {
-                'eins': '1', 'zwei': '2', 'drei': '3', 'vier': '4', 
-                'fünf': '5', 'sechs': '6', 'sieben': '7', 'acht': '8', 
-                'neun': '9', 'null': '0'
-            }
-            if number in number_map:
-                number = number_map[number]
-            
-            corrected_id = f"P00{number}"
-            query_text = f"Patienten-ID {corrected_id}"
-            logger.info(f"Corrected patient ID from '{match.group(0)}' to '{corrected_id}'")
-        
-        return query_text
-
-
-async def entrypoint(ctx: JobContext):
-    """Main entry point for the agent"""
-    logger.info("Starting medical agent entrypoint")
-    
-    # Initialize the medical assistant
-    async with MedicalAssistant() as medical_assistant:
-        
-        # Create the agent (NOT inheriting from Agent)
-        agent = Agent(
+        super().__init__(
             instructions="""Du bist ein Agent mit Zugriff auf die Patientendatenbank.
             
             ERSTE ANTWORT (IMMER):
@@ -162,72 +84,125 @@ async def entrypoint(ctx: JobContext):
             ),
             tts=openai.TTS(model="tts-1", voice="shimmer"),
             vad=silero.VAD.load(
-                min_silence_duration=0.8,    # Erhöht für Session-Kontinuität
+                min_silence_duration=0.8,
                 min_speech_duration=0.3,
-                activation_threshold=0.5     # Existiert in deiner Version!
+                activation_threshold=0.5
             ),
-            allow_interruptions=True,  # Hier ist es richtig!
+            allow_interruptions=True,
             min_consecutive_speech_delay=0.0
         )
+        logger.info("Medical assistant initialized with RAG support")
+
+    async def on_enter(self):
+        """Called when the agent enters the conversation"""
+        logger.info("Medical assistant ready with RAG support")
         
-        # Check RAG service health first
+        # Check RAG service health
         try:
-            response = await medical_assistant.http_client.get(f"{medical_assistant.base_url}/health")
-            if response.status_code == 200:
-                logger.info("RAG service is healthy")
-            else:
-                logger.warning(f"RAG service health check failed: {response.status_code}")
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{self.base_url}/health")
+                if response.status_code == 200:
+                    logger.info("RAG service is healthy")
+                else:
+                    logger.warning(f"RAG service health check failed: {response.status_code}")
         except Exception as e:
             logger.error(f"Failed to check RAG service health: {e}")
+
+    async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
+        """Called when user finishes speaking - here we can enhance with RAG"""
+        user_query = new_message.content
         
-        # WICHTIG: Warte auf den Participant
-        logger.info("Waiting for participant...")
-        participant = await ctx.wait_for_participant()
-        logger.info(f"Participant joined: {participant.identity}")
-        
-        # Create session with participant
-        session = AgentSession(
-            agent=agent,
-            participant=participant,
-            min_interruption_words=2  # Hier ist es richtig für AgentSession!
-        )
-        
-        # Custom message handler for RAG enhancement
-        original_on_message = session._on_participant_message if hasattr(session, '_on_participant_message') else None
-        
-        async def enhanced_message_handler(message: ChatMessage):
-            """Enhance messages with RAG before processing"""
-            if message.content:
-                query_text = str(message.content[0]) if isinstance(message.content, list) and len(message.content) > 0 else str(message.content)
+        if user_query and isinstance(user_query, list) and len(user_query) > 0:
+            # Extract text content from the message
+            query_text = str(user_query[0]) if hasattr(user_query[0], '__str__') else ""
+            
+            # Spezielle Behandlung für Patienten-IDs
+            if query_text:
+                # Konvertiere "p null null X" zu "P00X"
+                pattern = r'p\s*null\s*null\s*(\w+)'
+                match = re.search(pattern, query_text.lower())
+                if match:
+                    number = match.group(1)
+                    # Konvertiere Wörter zu Zahlen wenn nötig
+                    number_map = {
+                        'eins': '1', 'zwei': '2', 'drei': '3', 'vier': '4', 
+                        'fünf': '5', 'sechs': '6', 'sieben': '7', 'acht': '8', 
+                        'neun': '9', 'null': '0'
+                    }
+                    if number in number_map:
+                        number = number_map[number]
+                    
+                    corrected_id = f"P00{number}"
+                    query_text = f"Patienten-ID {corrected_id}"
+                    logger.info(f"Corrected patient ID from '{match.group(0)}' to '{corrected_id}'")
                 
-                # Process patient IDs
-                query_text = medical_assistant.process_patient_id(query_text)
-                
-                # Search RAG
-                rag_results = await medical_assistant.search_knowledge(query_text)
+                # Search RAG for relevant information
+                rag_results = await self.search_knowledge(query_text)
                 
                 if rag_results:
+                    # Create enhanced content with RAG results
                     enhanced_content = f"{query_text}\n\nRelevante Informationen aus der Datenbank:\n{rag_results}"
-                    message.content = [enhanced_content]
-                    logger.info(f"Enhanced query with RAG results")
-            
-            # Call original handler if exists
-            if original_on_message:
-                await original_on_message(message)
-        
-        # Override message handler if possible
-        if hasattr(session, '_on_participant_message'):
-            session._on_participant_message = enhanced_message_handler
-        
-        # Start the session
-        logger.info("Starting agent session...")
-        await session.start()
-        
-        # Initial greeting
-        await session.say("Guten Tag Herr Doktor, welche Patientendaten benötigen Sie?", 
-                         allow_interruptions=True)
-        
-        logger.info("Medical agent session started successfully")
+                    
+                    # Update the message content directly
+                    new_message.content = [enhanced_content]
+                    
+                    logger.info(f"Enhanced query with RAG results for: {query_text}")
+
+    async def search_knowledge(self, query: str) -> Optional[str]:
+        """Search the RAG service for relevant knowledge"""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.base_url}/search",
+                    json={
+                        "query": query,
+                        "agent_type": "medical",
+                        "top_k": 3,
+                        "collection": "medical_nutrition"
+                    }
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    results = data.get("results", [])
+                    
+                    if results:
+                        logger.info(f"RAG search successful: {len(results)} results for query: {query}")
+                        # Format results for LLM context
+                        formatted_results = []
+                        for i, result in enumerate(results):
+                            content = result.get("content", "").strip()
+                            if content:
+                                formatted_results.append(f"[{i+1}] {content}")
+                        
+                        return "\n\n".join(formatted_results)
+                    else:
+                        logger.info(f"No RAG results found for query: {query}")
+                        return None
+                else:
+                    logger.error(f"RAG search failed with status {response.status_code}")
+                    return None
+                    
+        except Exception as e:
+            logger.error(f"Error searching RAG: {e}")
+            return None
+
+
+async def entrypoint(ctx: JobContext):
+    """Main entry point for the agent - following the correct pattern"""
+    logger.info("Starting medical agent entrypoint")
+    
+    # Create and start the agent session - KORREKTE API!
+    session = AgentSession()
+    agent = MedicalAgent()
+    
+    await session.start(
+        agent=agent,
+        room=ctx.room
+    )
+    
+    logger.info("Medical agent session started")
+
 
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
