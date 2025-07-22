@@ -60,7 +60,16 @@ class GarageAgent(Agent):
             - "f null null X" → interpretiere als "F00X" 
             - Frage nach: "Meinen Sie die Fahrzeug-ID F00X?"
             
-            KEINE unnötigen Floskeln, KEINE langen Sätze, NUR relevante Informationen!""",
+            KEINE unnötigen Floskeln, KEINE langen Sätze, NUR relevante Informationen!
+            
+            Währungsangaben - WICHTIG für korrekte Aussprache:
+            - Schreibe Beträge IMMER als "X Franken" aus
+            - NIEMALS "420.00" sondern "420 Franken"
+            - NIEMALS "CHF" oder "€" verwenden
+            - Bei Kommabeträgen: "180 Franken 50" statt "180.50"
+            - Große Beträge ausschreiben für bessere Aussprache:
+              - 420 → "vierhundertzwanzig Franken"
+              - 1850 → "eintausendachthundertfünfzig Franken"""",
             stt=openai.STT(  # Wechsel zu Whisper für bessere Erkennung
                 model="whisper-1",
                 language="de"
