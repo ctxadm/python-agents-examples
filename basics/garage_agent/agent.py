@@ -17,7 +17,6 @@ from livekit.agents import (
     UserInputTranscribedEvent,
     CloseEvent,
     ErrorEvent,
-    SessionConnectOptions,
 )
 from livekit.plugins import openai, silero
 from typing import AsyncIterable, Optional
@@ -246,12 +245,6 @@ async def entrypoint(ctx: agents.JobContext):
         stt=agent.stt,
         tts=agent.tts,
         vad=agent.vad,
-        input_audio_options=SessionConnectOptions(
-            room_input_options=rtc.RoomInputOptions(
-                auto_subscribe=rtc.AutoSubscribe.ALL,
-                subscribe_all=True,
-            ),
-        ),
     )
     
     # Event handlers for debugging
