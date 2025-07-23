@@ -1,0 +1,10 @@
+# LiveKit Agents - EXAKTE Version für 1.0.x!
+livekit-agents[openai,silero,deepgram]==1.0.23
+
+# Zusätzliche Dependencies
+httpx>=0.24.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+redis>=4.0.0
+tenacity>=8.0.0
+typing_extensions
