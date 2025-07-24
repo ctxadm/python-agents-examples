@@ -1,4 +1,4 @@
-# LiveKit Agents 1.0.x Version - Secure Garage Agent
+# LiveKit Agents 1.0.x Version - Secure Garage Agent with Fuzzy Search
 import logging
 import os
 import httpx
@@ -12,6 +12,7 @@ from livekit.agents.voice import AgentSession
 from livekit.agents.llm import function_tool
 from livekit.plugins import openai, silero
 from typing import Optional, Dict, Any
+from difflib import get_close_matches, SequenceMatcher  # NEU: Fuzzy Search imports
 
 load_dotenv()
 
@@ -28,6 +29,7 @@ class GarageAgent(Agent):
 2. Nach Namensnennung: Validiere IMMER mit authenticate_customer("{Kundenname}")
 3. Wenn Kunde nicht gefunden: "Entschuldigung, ich konnte Sie nicht in unserem System finden. Bitte wenden Sie sich an unsere Rezeption."
 4. Wenn Kunde gefunden: "Guten Tag Herr/Frau {Name}, wie kann ich Ihnen heute helfen?"
+5. Bei Fuzzy Match Vorschlag: Wenn gefragt "Meinten Sie {Name}?" und der Kunde mit "Ja" antwortet, authentifiziere mit dem vorgeschlagenen Namen.
 
 ## DATENSCHUTZ-REGELN (STRIKT EINHALTEN)
 - NUR Informationen über den authentifizierten Kunden und SEINE Fahrzeuge
@@ -90,6 +92,9 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
         self.max_failed_attempts = 3
         self.session_timeout_minutes = 30
         
+        # NEU: Fuzzy Match tracking
+        self.pending_fuzzy_match = None
+        
         # Security Logging
         self.access_log = []
         
@@ -109,7 +114,7 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
     
     @function_tool
     async def authenticate_customer(self, customer_name: str) -> str:
-        """Authentifiziert einen Kunden anhand des Namens.
+        """Authentifiziert einen Kunden anhand des Namens mit Fuzzy Search Support.
         
         Args:
             customer_name: Der Name des Kunden
@@ -125,13 +130,14 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
             
             logger.info(f"Authenticating customer: {customer_name}")
             
+            # Erste Suche mit dem Namen
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{self.rag_url}/search",
                     json={
-                        "query": customer_name,
+                        "query": customer_name,  # Nur der Name, kein Präfix
                         "agent_type": "garage",
-                        "top_k": 1,
+                        "top_k": 10,  # Mehr Ergebnisse für besseres Fuzzy Matching
                         "collection": "automotive_docs"
                     }
                 )
@@ -140,27 +146,110 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
                     data = response.json()
                     results = data.get("results", [])
                     
-                    if results and any(customer_name.lower() in str(r).lower() for r in results):
-                        # Successful authentication
-                        self.authenticated_customer = customer_name
-                        self.failed_auth_attempts = 0
-                        self.last_activity_time = datetime.now()
+                    # Sammle alle Besitzer-Namen aus den Ergebnissen
+                    found_names = []
+                    for result in results:
+                        content = result.get("content", "")
+                        # Extrahiere Namen aus dem Content (suche nach "besitzer" Feld)
+                        besitzer_matches = re.findall(r'"besitzer":\s*"([^"]+)"', content)
+                        found_names.extend(besitzer_matches)
+                    
+                    # Entferne Duplikate
+                    found_names = list(set(found_names))
+                    logger.info(f"Found {len(found_names)} unique customer names in database")
+                    
+                    # 1. Prüfe exakte Übereinstimmung (case-insensitive)
+                    for name in found_names:
+                        if customer_name.lower() == name.lower():
+                            # Exakte Übereinstimmung gefunden
+                            self.authenticated_customer = name
+                            self.failed_auth_attempts = 0
+                            self.last_activity_time = datetime.now()
+                            self._log_access("authentication", "success", {"customer": name, "match_type": "exact"})
+                            logger.info(f"Customer {name} successfully authenticated (exact match)")
+                            return f"Vielen Dank für die Identifikation, {name}. Wie kann ich Ihnen heute helfen?"
+                    
+                    # 2. Keine exakte Übereinstimmung - versuche Fuzzy Matching
+                    if found_names:
+                        # Finde die ähnlichsten Namen
+                        close_matches = get_close_matches(customer_name, found_names, n=3, cutoff=0.7)
                         
-                        # Log successful authentication
-                        self._log_access("authentication", "success", {"customer": customer_name})
+                        if close_matches:
+                            best_match = close_matches[0]
+                            similarity = SequenceMatcher(None, customer_name.lower(), best_match.lower()).ratio()
+                            
+                            if similarity >= 0.85:
+                                # Sehr ähnlich - automatisch akzeptieren
+                                self.authenticated_customer = best_match
+                                self.failed_auth_attempts = 0
+                                self.last_activity_time = datetime.now()
+                                self._log_access("authentication", "success", {
+                                    "customer": best_match, 
+                                    "match_type": "fuzzy_auto",
+                                    "similarity": f"{similarity:.2%}"
+                                })
+                                logger.info(f"Customer {best_match} authenticated via fuzzy match (similarity: {similarity:.2%})")
+                                return f"Vielen Dank für die Identifikation, {best_match}. Wie kann ich Ihnen heute helfen?"
+                            
+                            elif similarity >= 0.7:
+                                # Ähnlich genug zum Nachfragen
+                                self.pending_fuzzy_match = best_match  # Speichere für spätere Bestätigung
+                                self._log_access("authentication", "fuzzy_suggestion", {
+                                    "suggested": best_match,
+                                    "similarity": f"{similarity:.2%}"
+                                })
+                                return f"Meinten Sie {best_match}? Bitte bestätigen Sie mit 'Ja' oder nennen Sie Ihren Namen erneut."
+                    
+                    # 3. Versuche Nachnamen-Suche
+                    if " " in customer_name:
+                        last_name = customer_name.split()[-1]
+                        # Suche alle Namen mit diesem Nachnamen
+                        matching_lastnames = [name for name in found_names if last_name.lower() in name.lower()]
                         
-                        logger.info(f"Customer {customer_name} successfully authenticated")
-                        return f"Vielen Dank für die Identifikation, {customer_name}. Wie kann ich Ihnen heute helfen?"
-                    else:
-                        # Failed authentication
-                        self.failed_auth_attempts += 1
-                        self._log_access("authentication", "failed", {"attempt": self.failed_auth_attempts})
+                        if len(matching_lastnames) == 1:
+                            # Nur eine Person mit diesem Nachnamen
+                            matched_name = matching_lastnames[0]
+                            self.authenticated_customer = matched_name
+                            self.failed_auth_attempts = 0
+                            self.last_activity_time = datetime.now()
+                            self._log_access("authentication", "success", {
+                                "customer": matched_name,
+                                "match_type": "lastname"
+                            })
+                            logger.info(f"Customer {matched_name} authenticated via lastname match")
+                            return f"Vielen Dank für die Identifikation, {matched_name}. Wie kann ich Ihnen heute helfen?"
                         
-                        remaining_attempts = self.max_failed_attempts - self.failed_auth_attempts
-                        if remaining_attempts > 0:
-                            return f"Kunde nicht gefunden. Sie haben noch {remaining_attempts} Versuche."
+                        elif len(matching_lastnames) > 1:
+                            # Mehrere Personen mit diesem Nachnamen
+                            self._log_access("authentication", "multiple_matches", {
+                                "lastname": last_name,
+                                "matches": matching_lastnames
+                            })
+                            names_list = ", ".join(matching_lastnames[:3])  # Zeige max 3 Namen
+                            return f"Ich habe mehrere Kunden mit dem Nachnamen {last_name} gefunden: {names_list}. Bitte nennen Sie Ihren vollständigen Namen."
+                    
+                    # 4. Keine Übereinstimmung gefunden
+                    self.failed_auth_attempts += 1
+                    self._log_access("authentication", "failed", {
+                        "attempt": self.failed_auth_attempts,
+                        "searched_for": customer_name
+                    })
+                    
+                    remaining_attempts = self.max_failed_attempts - self.failed_auth_attempts
+                    if remaining_attempts > 0:
+                        # Gebe hilfreichen Hinweis
+                        if found_names and len(found_names) < 20:
+                            # Zeige ähnliche Namen als Hilfe
+                            similar_initials = [n for n in found_names if n[0].lower() == customer_name[0].lower()][:3]
+                            if similar_initials:
+                                hint = f" Ähnliche Namen beginnen mit '{customer_name[0].upper()}'."
+                            else:
+                                hint = ""
                         else:
-                            return "Kunde nicht gefunden. Maximale Anzahl von Versuchen erreicht."
+                            hint = ""
+                        return f"Kunde nicht gefunden. Sie haben noch {remaining_attempts} Versuche.{hint}"
+                    else:
+                        return "Kunde nicht gefunden. Maximale Anzahl von Versuchen erreicht."
                 else:
                     logger.error(f"Authentication API error: {response.status_code}")
                     return "Authentifizierungssystem momentan nicht verfügbar."
@@ -193,7 +282,7 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
             self.last_activity_time = datetime.now()
             
             # Add customer filter to query for security
-            customer_filtered_query = f"{query} Kunde:{self.authenticated_customer}"
+            customer_filtered_query = f"{query} besitzer:{self.authenticated_customer}"  # Verwende "besitzer" statt "Kunde"
             processed_query = self._process_license_plate(customer_filtered_query)
             
             logger.info(f"Searching vehicles for authenticated customer {self.authenticated_customer}: {processed_query}")
@@ -270,6 +359,7 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
         self.authenticated_customer = None
         self.failed_auth_attempts = 0
         self.last_activity_time = None
+        self.pending_fuzzy_match = None  # NEU: Reset auch pending fuzzy match
         self._log_access("session_reset", "timeout", {})
     
     def _log_access(self, action: str, status: str, details: Dict[str, Any]):
