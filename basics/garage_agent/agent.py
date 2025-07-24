@@ -27,6 +27,9 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
+# Enable LiveKit debug logs
+logging.getLogger("livekit").setLevel(logging.DEBUG)
+
 class GarageAgent(Agent):
     def __init__(self):
         logger.info("Initializing GarageAgent...")
@@ -489,7 +492,7 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
         return text
 
 async def entrypoint(ctx: JobContext):
-    """Entry point for garage agent"""
+    """Entry point for garage agent - CORRECTED VERSION"""
     logger.info("="*50)
     logger.info("🚀 Secure Garage Agent Starting (1.0.x)")
     logger.info("="*50)
@@ -499,29 +502,38 @@ async def entrypoint(ctx: JobContext):
     logger.debug(f"Room ID: {ctx.room.sid}")
     logger.debug(f"Participant count: {len(ctx.room.remote_participants)}")
     
-    # Connect to room with audio subscription ✅ WICHTIG!
+    # WICHTIG: Session und Agent VOR connect erstellen!
+    logger.info("🎯 Creating agent and session BEFORE connecting...")
+    agent = GarageAgent()
+    session = AgentSession()
+    
+    # Session starten BEVOR wir connecten (um pre-connect audio zu ermöglichen)
+    logger.info("🏁 Starting agent session...")
+    await session.start(
+        room=ctx.room,
+        agent=agent
+    )
+    
+    # DANN erst connecten mit Audio-Subscription
     logger.info("📡 Connecting to room with audio subscription...")
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
     logger.info("✅ Connected to room with audio subscription enabled")
     
-    # Log participants
+    # Log participants and their tracks
     for participant in ctx.room.remote_participants.values():
         logger.debug(f"Participant: {participant.identity} (SID: {participant.sid})")
         for track_pub in participant.track_publications.values():
             logger.debug(f"  - Track: {track_pub.track.kind} (Subscribed: {track_pub.subscribed})")
     
-    # Create session with new 1.0.x API
-    logger.info("🎯 Creating agent session...")
-    session = AgentSession()
+    # Check if we need to manually subscribe to any audio tracks
+    logger.info("🎧 Checking for unsubscribed audio tracks...")
+    for participant in ctx.room.remote_participants.values():
+        for publication in participant.track_publications.values():
+            if publication.kind == agents.TrackKind.AUDIO and not publication.subscribed:
+                logger.info(f"📻 Manually subscribing to audio track from {participant.identity}")
+                await publication.set_subscribed(True)
     
-    # Start session with agent instance
-    logger.info("🏁 Starting agent session...")
-    await session.start(
-        room=ctx.room,
-        agent=GarageAgent()
-    )
-    
-    logger.info("✅ Secure Garage Agent session started successfully")
+    logger.info("✅ Secure Garage Agent ready and listening!")
     logger.info("="*50)
 
 if __name__ == "__main__":
