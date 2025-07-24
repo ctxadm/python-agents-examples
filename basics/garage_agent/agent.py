@@ -87,7 +87,7 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
                 model="llama3.1:8b",
                 base_url="http://172.16.0.146:11434/v1",
                 api_key="ollama",
-                temperature=0.7,
+                temperature=0.5,
             ),
             stt=openai.STT(model="whisper-1", language="de"),
             tts=openai.TTS(model="tts-1", voice="onyx"),
