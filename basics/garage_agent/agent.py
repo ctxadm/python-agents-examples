@@ -7,20 +7,30 @@ import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from livekit import agents
-from livekit.agents import Agent, JobContext, WorkerOptions, cli
+from livekit.agents import Agent, JobContext, WorkerOptions, cli, AutoSubscribe
 from livekit.agents.voice import AgentSession
 from livekit.agents.llm import function_tool
 from livekit.plugins import openai, silero
 from typing import Optional, Dict, Any
-from difflib import get_close_matches, SequenceMatcher  # NEU: Fuzzy Search imports
+from difflib import get_close_matches, SequenceMatcher
 
 load_dotenv()
 
+# Enhanced logging
 logger = logging.getLogger("garage-assistant")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)  # Changed to DEBUG for more info
+
+# Add console handler with formatting
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
 
 class GarageAgent(Agent):
     def __init__(self):
+        logger.info("Initializing GarageAgent...")
+        
         super().__init__(
             instructions="""Du bist ein professioneller Werkstatt-Assistent mit strikten Datenschutz-Richtlinien.
 
@@ -30,6 +40,10 @@ class GarageAgent(Agent):
 3. Wenn Kunde nicht gefunden: "Entschuldigung, ich konnte Sie nicht in unserem System finden. Bitte wenden Sie sich an unsere Rezeption."
 4. Wenn Kunde gefunden: "Guten Tag Herr/Frau {Name}, wie kann ich Ihnen heute helfen?"
 5. Bei Fuzzy Match Vorschlag: Wenn gefragt "Meinten Sie {Name}?" und der Kunde mit "Ja" antwortet, authentifiziere mit dem vorgeschlagenen Namen.
+
+## FUZZY MATCH HANDLING
+- Wenn pending_fuzzy_match gesetzt ist und Kunde "Ja" sagt, authentifiziere mit dem vorgeschlagenen Namen
+- Bei "Ja"-Antwort nach Fuzzy-Vorschlag: Nutze authenticate_customer mit dem vorgeschlagenen Namen
 
 ## DATENSCHUTZ-REGELN (STRIKT EINHALTEN)
 - NUR Informationen über den authentifizierten Kunden und SEINE Fahrzeuge
@@ -67,7 +81,7 @@ class GarageAgent(Agent):
 WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kundennamen keine Datenweitergabe!
 """,
             llm=openai.LLM(
-                model="llama3.1:8b",  # Gleiche Version wie Medical für Konsistenz
+                model="llama3.1:8b",
                 base_url="http://172.16.0.146:11434/v1",
                 api_key="ollama",
                 temperature=0.7,
@@ -92,25 +106,68 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
         self.max_failed_attempts = 3
         self.session_timeout_minutes = 30
         
-        # NEU: Fuzzy Match tracking
+        # Fuzzy Match tracking
         self.pending_fuzzy_match = None
         
         # Security Logging
         self.access_log = []
         
-        logger.info(f"Secure Garage Agent initialized with RAG service at {self.rag_url}")
+        # Debug tracking
+        self.transcription_count = 0
+        self.vad_event_count = 0
+        
+        logger.info(f"✅ Secure Garage Agent initialized with RAG service at {self.rag_url}")
         
     async def on_enter(self):
         """Called when agent enters session"""
-        logger.info("Garage Agent entering session")
+        logger.info("🎤 Garage Agent entering session")
         self.session_id = f"session_{int(time.time())}"
         self.session_start_time = datetime.now()
         self.last_activity_time = datetime.now()
+        
+        logger.debug(f"Session ID: {self.session_id}")
+        logger.debug(f"Session start time: {self.session_start_time}")
         
         await self.session.say(
             "Willkommen in der Werkstatt! Bitte nennen Sie mir Ihren Namen zur Identifikation.",
             allow_interruptions=True
         )
+        logger.info("✅ Initial greeting sent")
+    
+    # Debug: Override message handling to log transcriptions
+    async def on_message_received(self, message: str):
+        """Debug: Log when message is received"""
+        self.transcription_count += 1
+        logger.info(f"📝 Transcription #{self.transcription_count} received: '{message}'")
+        
+        # Check for fuzzy match confirmation
+        if self.pending_fuzzy_match and message.lower() in ["ja", "ja bitte", "genau", "richtig", "korrekt"]:
+            logger.info(f"✅ Fuzzy match confirmed for: {self.pending_fuzzy_match}")
+            # Authenticate with the pending fuzzy match
+            await self.authenticate_customer(self.pending_fuzzy_match)
+            self.pending_fuzzy_match = None
+            return
+            
+        await super().on_message_received(message)
+    
+    # Debug: Log VAD events
+    async def on_vad_event(self, speaking: bool):
+        """Debug: Log VAD events"""
+        self.vad_event_count += 1
+        logger.debug(f"🎙️ VAD Event #{self.vad_event_count}: Speaking = {speaking}")
+    
+    @function_tool
+    async def confirm_fuzzy_match(self, confirmed_name: str) -> str:
+        """Bestätigt einen Fuzzy Match Namen.
+        
+        Args:
+            confirmed_name: Der bestätigte Name
+            
+        Returns:
+            Bestätigung der Authentifizierung
+        """
+        logger.info(f"Confirming fuzzy match for: {confirmed_name}")
+        return await self.authenticate_customer(confirmed_name)
     
     @function_tool
     async def authenticate_customer(self, customer_name: str) -> str:
@@ -122,41 +179,51 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
         Returns:
             Authentifizierungsstatus und Kundendaten
         """
+        logger.info(f"🔐 Starting authentication for: '{customer_name}'")
+        
         try:
             # Check if already too many failed attempts
             if self.failed_auth_attempts >= self.max_failed_attempts:
-                logger.warning(f"Too many failed auth attempts for session {self.session_id}")
+                logger.warning(f"❌ Too many failed auth attempts for session {self.session_id}")
                 return "Zu viele fehlgeschlagene Anmeldeversuche. Bitte wenden Sie sich an die Rezeption."
             
-            logger.info(f"Authenticating customer: {customer_name}")
+            # Clear pending fuzzy match if authenticating with a new name
+            if self.pending_fuzzy_match and customer_name != self.pending_fuzzy_match:
+                logger.debug("Clearing pending fuzzy match due to new authentication attempt")
+                self.pending_fuzzy_match = None
             
             # Erste Suche mit dem Namen
+            logger.debug(f"Searching RAG for customer: {customer_name}")
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{self.rag_url}/search",
                     json={
-                        "query": f"besitzer: {customer_name}",  # Mit "besitzer:" Präfix für bessere Suche
+                        "query": f"besitzer: {customer_name}",
                         "agent_type": "garage",
-                        "top_k": 10,  # Mehr Ergebnisse für besseres Fuzzy Matching
+                        "top_k": 10,
                         "collection": "automotive_docs"
                     }
                 )
                 
+                logger.debug(f"RAG response status: {response.status_code}")
+                
                 if response.status_code == 200:
                     data = response.json()
                     results = data.get("results", [])
+                    logger.debug(f"Found {len(results)} results from RAG")
                     
                     # Sammle alle Besitzer-Namen aus den Ergebnissen
                     found_names = []
                     for result in results:
                         content = result.get("content", "")
-                        # Extrahiere Namen aus dem Content (suche nach "besitzer" Feld)
+                        # Extrahiere Namen aus dem Content
                         besitzer_matches = re.findall(r'"besitzer":\s*"([^"]+)"', content)
                         found_names.extend(besitzer_matches)
                     
                     # Entferne Duplikate
                     found_names = list(set(found_names))
-                    logger.info(f"Found {len(found_names)} unique customer names in database")
+                    logger.info(f"📋 Found {len(found_names)} unique customer names in database")
+                    logger.debug(f"Names found: {found_names[:5]}...")  # Show first 5 for debugging
                     
                     # 1. Prüfe exakte Übereinstimmung (case-insensitive)
                     for name in found_names:
@@ -165,67 +232,72 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
                             self.authenticated_customer = name
                             self.failed_auth_attempts = 0
                             self.last_activity_time = datetime.now()
+                            self.pending_fuzzy_match = None  # Clear any pending match
                             self._log_access("authentication", "success", {"customer": name, "match_type": "exact"})
-                            logger.info(f"Customer {name} successfully authenticated (exact match)")
+                            logger.info(f"✅ Customer {name} successfully authenticated (exact match)")
                             return f"Vielen Dank für die Identifikation, {name}. Wie kann ich Ihnen heute helfen?"
                     
                     # 2. Keine exakte Übereinstimmung - versuche Fuzzy Matching
                     if found_names:
-                        # Finde die ähnlichsten Namen
+                        logger.debug("No exact match found, trying fuzzy matching...")
                         close_matches = get_close_matches(customer_name, found_names, n=3, cutoff=0.7)
+                        logger.debug(f"Close matches: {close_matches}")
                         
                         if close_matches:
                             best_match = close_matches[0]
                             similarity = SequenceMatcher(None, customer_name.lower(), best_match.lower()).ratio()
+                            logger.debug(f"Best match: {best_match} (similarity: {similarity:.2%})")
                             
                             if similarity >= 0.85:
                                 # Sehr ähnlich - automatisch akzeptieren
                                 self.authenticated_customer = best_match
                                 self.failed_auth_attempts = 0
                                 self.last_activity_time = datetime.now()
+                                self.pending_fuzzy_match = None
                                 self._log_access("authentication", "success", {
                                     "customer": best_match, 
                                     "match_type": "fuzzy_auto",
                                     "similarity": f"{similarity:.2%}"
                                 })
-                                logger.info(f"Customer {best_match} authenticated via fuzzy match (similarity: {similarity:.2%})")
+                                logger.info(f"✅ Customer {best_match} authenticated via fuzzy match (similarity: {similarity:.2%})")
                                 return f"Vielen Dank für die Identifikation, {best_match}. Wie kann ich Ihnen heute helfen?"
                             
                             elif similarity >= 0.7:
                                 # Ähnlich genug zum Nachfragen
-                                self.pending_fuzzy_match = best_match  # Speichere für spätere Bestätigung
+                                self.pending_fuzzy_match = best_match
                                 self._log_access("authentication", "fuzzy_suggestion", {
                                     "suggested": best_match,
                                     "similarity": f"{similarity:.2%}"
                                 })
+                                logger.info(f"❓ Suggesting fuzzy match: {best_match}")
                                 return f"Meinten Sie {best_match}? Bitte bestätigen Sie mit 'Ja' oder nennen Sie Ihren Namen erneut."
                     
                     # 3. Versuche Nachnamen-Suche
                     if " " in customer_name:
                         last_name = customer_name.split()[-1]
-                        # Suche alle Namen mit diesem Nachnamen
+                        logger.debug(f"Trying lastname search for: {last_name}")
                         matching_lastnames = [name for name in found_names if last_name.lower() in name.lower()]
                         
                         if len(matching_lastnames) == 1:
-                            # Nur eine Person mit diesem Nachnamen
                             matched_name = matching_lastnames[0]
                             self.authenticated_customer = matched_name
                             self.failed_auth_attempts = 0
                             self.last_activity_time = datetime.now()
+                            self.pending_fuzzy_match = None
                             self._log_access("authentication", "success", {
                                 "customer": matched_name,
                                 "match_type": "lastname"
                             })
-                            logger.info(f"Customer {matched_name} authenticated via lastname match")
+                            logger.info(f"✅ Customer {matched_name} authenticated via lastname match")
                             return f"Vielen Dank für die Identifikation, {matched_name}. Wie kann ich Ihnen heute helfen?"
                         
                         elif len(matching_lastnames) > 1:
-                            # Mehrere Personen mit diesem Nachnamen
                             self._log_access("authentication", "multiple_matches", {
                                 "lastname": last_name,
                                 "matches": matching_lastnames
                             })
-                            names_list = ", ".join(matching_lastnames[:3])  # Zeige max 3 Namen
+                            names_list = ", ".join(matching_lastnames[:3])
+                            logger.info(f"⚠️ Multiple matches for lastname {last_name}")
                             return f"Ich habe mehrere Kunden mit dem Nachnamen {last_name} gefunden: {names_list}. Bitte nennen Sie Ihren vollständigen Namen."
                     
                     # 4. Keine Übereinstimmung gefunden
@@ -236,10 +308,10 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
                     })
                     
                     remaining_attempts = self.max_failed_attempts - self.failed_auth_attempts
+                    logger.warning(f"❌ Authentication failed. Remaining attempts: {remaining_attempts}")
+                    
                     if remaining_attempts > 0:
-                        # Gebe hilfreichen Hinweis
                         if found_names and len(found_names) < 20:
-                            # Zeige ähnliche Namen als Hilfe
                             similar_initials = [n for n in found_names if n[0].lower() == customer_name[0].lower()][:3]
                             if similar_initials:
                                 hint = f" Ähnliche Namen beginnen mit '{customer_name[0].upper()}'."
@@ -251,11 +323,11 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
                     else:
                         return "Kunde nicht gefunden. Maximale Anzahl von Versuchen erreicht."
                 else:
-                    logger.error(f"Authentication API error: {response.status_code}")
+                    logger.error(f"❌ Authentication API error: {response.status_code}")
                     return "Authentifizierungssystem momentan nicht verfügbar."
                     
         except Exception as e:
-            logger.error(f"Authentication error: {e}")
+            logger.error(f"❌ Authentication error: {e}", exc_info=True)
             return "Fehler bei der Authentifizierung. Bitte versuchen Sie es erneut."
     
     @function_tool
@@ -268,12 +340,16 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
         Returns:
             Die gefundenen Fahrzeugdaten
         """
+        logger.info(f"🔍 Vehicle search requested: '{query}'")
+        
         # Security check - ensure customer is authenticated
         if not self._check_authentication():
+            logger.warning("⚠️ Unauthorized vehicle search attempt")
             return "Bitte authentifizieren Sie sich zuerst mit Ihrem Namen."
         
         # Check session timeout
         if self._is_session_expired():
+            logger.warning("⏰ Session expired")
             self._reset_session()
             return "Ihre Sitzung ist abgelaufen. Bitte authentifizieren Sie sich erneut."
         
@@ -282,10 +358,11 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
             self.last_activity_time = datetime.now()
             
             # Add customer filter to query for security
-            customer_filtered_query = f"{query} besitzer:{self.authenticated_customer}"  # Verwende "besitzer" statt "Kunde"
+            customer_filtered_query = f"{query} besitzer:{self.authenticated_customer}"
             processed_query = self._process_license_plate(customer_filtered_query)
             
-            logger.info(f"Searching vehicles for authenticated customer {self.authenticated_customer}: {processed_query}")
+            logger.info(f"🔐 Searching vehicles for authenticated customer {self.authenticated_customer}")
+            logger.debug(f"Processed query: {processed_query}")
             
             # Log data access
             self._log_access("vehicle_search", "attempt", {"query": query})
@@ -301,20 +378,22 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
                     }
                 )
                 
+                logger.debug(f"RAG search response status: {response.status_code}")
+                
                 if response.status_code == 200:
                     data = response.json()
                     results = data.get("results", [])
+                    logger.debug(f"RAG returned {len(results)} results")
                     
                     # Filter results to ensure they belong to authenticated customer
                     filtered_results = []
                     for result in results:
                         content = result.get("content", "")
-                        # Only include results that seem to belong to the authenticated customer
                         if self.authenticated_customer.lower() in content.lower():
                             filtered_results.append(result)
                     
                     if filtered_results:
-                        logger.info(f"Found {len(filtered_results)} vehicle results for {self.authenticated_customer}")
+                        logger.info(f"✅ Found {len(filtered_results)} vehicle results for {self.authenticated_customer}")
                         self._log_access("vehicle_search", "success", {"results_count": len(filtered_results)})
                         
                         formatted = []
@@ -326,21 +405,22 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
                         return "\n\n".join(formatted)
                     else:
                         self._log_access("vehicle_search", "no_results", {"query": query})
+                        logger.info("ℹ️ No results found for customer")
                         return "Keine Fahrzeugdaten zu dieser Anfrage für Ihr Konto gefunden."
                 else:
-                    logger.error(f"RAG search failed: {response.status_code}")
+                    logger.error(f"❌ RAG search failed: {response.status_code}")
                     self._log_access("vehicle_search", "error", {"status_code": response.status_code})
                     return "Fehler beim Zugriff auf die Fahrzeugdatenbank."
                     
         except Exception as e:
-            logger.error(f"Error searching RAG: {e}")
+            logger.error(f"❌ Error searching RAG: {e}", exc_info=True)
             self._log_access("vehicle_search", "exception", {"error": str(e)})
             return "Die Fahrzeugdatenbank ist momentan nicht erreichbar."
     
     def _check_authentication(self) -> bool:
         """Prüft ob ein Kunde authentifiziert ist"""
         if not self.authenticated_customer:
-            logger.warning(f"Unauthenticated access attempt in session {self.session_id}")
+            logger.warning(f"🚫 Unauthenticated access attempt in session {self.session_id}")
             self._log_access("unauthorized_access", "blocked", {})
             return False
         return True
@@ -351,15 +431,20 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
             return True
         
         time_since_activity = datetime.now() - self.last_activity_time
-        return time_since_activity > timedelta(minutes=self.session_timeout_minutes)
+        is_expired = time_since_activity > timedelta(minutes=self.session_timeout_minutes)
+        
+        if is_expired:
+            logger.debug(f"Session expired. Time since last activity: {time_since_activity}")
+        
+        return is_expired
     
     def _reset_session(self):
         """Setzt die Session zurück"""
-        logger.info(f"Resetting session {self.session_id}")
+        logger.info(f"🔄 Resetting session {self.session_id}")
         self.authenticated_customer = None
         self.failed_auth_attempts = 0
         self.last_activity_time = None
-        self.pending_fuzzy_match = None  # NEU: Reset auch pending fuzzy match
+        self.pending_fuzzy_match = None
         self._log_access("session_reset", "timeout", {})
     
     def _log_access(self, action: str, status: str, details: Dict[str, Any]):
@@ -373,11 +458,12 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
             "details": details
         }
         self.access_log.append(log_entry)
-        logger.info(f"Access log: {log_entry}")
+        logger.info(f"📝 Access log: {action} - {status}")
+        logger.debug(f"Access log details: {log_entry}")
     
     def _process_license_plate(self, text: str) -> str:
         """Korrigiert Sprache-zu-Text Fehler bei Kennzeichen"""
-        # Beispiel: "zh eins zwei drei vier fünf" -> "ZH 12345"
+        original_text = text
         
         # Deutsche Zahlwörter zu Ziffern
         number_map = {
@@ -390,7 +476,7 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
             text = text.replace(f" {word} ", f" {digit} ")
             text = text.replace(f" {word}", f" {digit}")
         
-        # Normalisiere Kennzeichen Format (z.B. "zh 1 2 3 4 5" -> "ZH 12345")
+        # Normalisiere Kennzeichen Format
         pattern = r'([a-zA-Z]{2})\s+(\d)\s+(\d)\s+(\d)\s+(\d)\s+(\d)'
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
@@ -398,28 +484,46 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
             numbers = ''.join([match.group(i) for i in range(2, 7)])
             corrected = f"{canton} {numbers}"
             text = re.sub(pattern, corrected, text, flags=re.IGNORECASE)
-            logger.info(f"Corrected license plate to '{corrected}'")
+            logger.info(f"🚗 Corrected license plate: '{original_text}' -> '{corrected}'")
         
         return text
 
 async def entrypoint(ctx: JobContext):
     """Entry point for garage agent"""
-    logger.info("=== Secure Garage Agent Starting (1.0.x) ===")
+    logger.info("="*50)
+    logger.info("🚀 Secure Garage Agent Starting (1.0.x)")
+    logger.info("="*50)
     
-    # Connect to room
-    await ctx.connect()
-    logger.info("Connected to room")
+    # Log configuration
+    logger.debug(f"Room name: {ctx.room.name}")
+    logger.debug(f"Room ID: {ctx.room.sid}")
+    logger.debug(f"Participant count: {len(ctx.room.remote_participants)}")
+    
+    # Connect to room with audio subscription ✅ WICHTIG!
+    logger.info("📡 Connecting to room with audio subscription...")
+    await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+    logger.info("✅ Connected to room with audio subscription enabled")
+    
+    # Log participants
+    for participant in ctx.room.remote_participants.values():
+        logger.debug(f"Participant: {participant.identity} (SID: {participant.sid})")
+        for track_pub in participant.track_publications.values():
+            logger.debug(f"  - Track: {track_pub.track.kind} (Subscribed: {track_pub.subscribed})")
     
     # Create session with new 1.0.x API
+    logger.info("🎯 Creating agent session...")
     session = AgentSession()
     
     # Start session with agent instance
+    logger.info("🏁 Starting agent session...")
     await session.start(
         room=ctx.room,
         agent=GarageAgent()
     )
     
-    logger.info("Secure Garage Agent session started")
+    logger.info("✅ Secure Garage Agent session started successfully")
+    logger.info("="*50)
 
 if __name__ == "__main__":
+    logger.info("🚀 Starting Garage Agent Worker...")
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
