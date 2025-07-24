@@ -220,7 +220,7 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
                     for result in results:
                         content = result.get("content", "")
                         # Extrahiere Namen aus dem Content
-                        besitzer_matches = re.findall(r'"besitzer":\s*"([^"]+)"', content)
+                        besitzer_matches = re.findall(r'Besitzer:\s*([^\n]+)', content)
                         found_names.extend(besitzer_matches)
                     
                     # Entferne Duplikate
