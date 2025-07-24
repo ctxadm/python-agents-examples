@@ -129,7 +129,7 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
                 response = await client.post(
                     f"{self.rag_url}/search",
                     json={
-                        "query": f"Kunde: {customer_name}",
+                        "query": customer_name,
                         "agent_type": "garage",
                         "top_k": 1,
                         "collection": "automotive_docs"
