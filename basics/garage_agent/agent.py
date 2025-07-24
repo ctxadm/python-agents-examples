@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from livekit import agents
-from livekit.agents import Agent, JobContext, WorkerOptions, cli, AutoSubscribe
+from livekit.agents import Agent, JobContext, WorkerOptions, cli
 from livekit.agents.voice import AgentSession
 from livekit.agents.llm import function_tool
 from livekit.plugins import openai, silero
@@ -491,6 +491,7 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
         
         return text
 
+
 async def entrypoint(ctx: JobContext):
     """Entry point for garage agent - CORRECTED VERSION"""
     logger.info("="*50)
@@ -500,41 +501,37 @@ async def entrypoint(ctx: JobContext):
     # Log configuration
     logger.debug(f"Room name: {ctx.room.name}")
     logger.debug(f"Room ID: {ctx.room.sid}")
-    logger.debug(f"Participant count: {len(ctx.room.remote_participants)}")
     
-    # WICHTIG: Session und Agent VOR connect erstellen!
-    logger.info("🎯 Creating agent and session BEFORE connecting...")
+    # SCHRITT 1: ZUERST connecten (OHNE AutoSubscribe!)
+    logger.info("📡 Connecting to room...")
+    await ctx.connect()  # Keine Parameter - nutzt die Defaults
+    logger.info("✅ Connected to room")
+    
+    # SCHRITT 2: Auf Participant warten
+    logger.info("👤 Waiting for participant...")
+    participant = await ctx.wait_for_participant()
+    logger.info(f"✅ Participant joined: {participant.identity}")
+    
+    # Log participant details
+    logger.debug(f"Participant SID: {participant.sid}")
+    logger.debug(f"Participant name: {participant.name}")
+    logger.debug(f"Number of tracks: {len(participant.track_publications)}")
+    
+    # SCHRITT 3: DANN Agent und Session erstellen
+    logger.info("🎯 Creating agent and session...")
     agent = GarageAgent()
     session = AgentSession()
     
-    # Session starten BEVOR wir connecten (um pre-connect audio zu ermöglichen)
+    # SCHRITT 4: ZULETZT Session starten
     logger.info("🏁 Starting agent session...")
     await session.start(
         room=ctx.room,
         agent=agent
     )
     
-    # DANN erst connecten mit Audio-Subscription
-    logger.info("📡 Connecting to room with audio subscription...")
-    await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
-    logger.info("✅ Connected to room with audio subscription enabled")
-    
-    # Log participants and their tracks
-    for participant in ctx.room.remote_participants.values():
-        logger.debug(f"Participant: {participant.identity} (SID: {participant.sid})")
-        for track_pub in participant.track_publications.values():
-            logger.debug(f"  - Track: {track_pub.track.kind} (Subscribed: {track_pub.subscribed})")
-    
-    # Check if we need to manually subscribe to any audio tracks
-    logger.info("🎧 Checking for unsubscribed audio tracks...")
-    for participant in ctx.room.remote_participants.values():
-        for publication in participant.track_publications.values():
-            if publication.kind == agents.TrackKind.AUDIO and not publication.subscribed:
-                logger.info(f"📻 Manually subscribing to audio track from {participant.identity}")
-                await publication.set_subscribed(True)
-    
     logger.info("✅ Secure Garage Agent ready and listening!")
     logger.info("="*50)
+
 
 if __name__ == "__main__":
     logger.info("🚀 Starting Garage Agent Worker...")
