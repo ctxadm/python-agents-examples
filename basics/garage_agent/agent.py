@@ -663,7 +663,7 @@ async def entrypoint(ctx: JobContext):
     
     # Log configuration
     logger.debug(f"Room name: {ctx.room.name}")
-    logger.debug(f"Room ID: {await ctx.room.sid()}")  # Await hinzugefügt
+    logger.debug(f"Room ID: {await ctx.room.sid}")  # Ohne Klammern!
     logger.debug(f"Using Mistral v0.3 model")
     
     # SCHRITT 1: ZUERST connecten (OHNE AutoSubscribe!)
