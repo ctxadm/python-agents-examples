@@ -161,85 +161,129 @@ async def request_handler(ctx: JobContext):
 
 async def entrypoint(ctx: JobContext):
     """Entry point mit moderner API wie im Nutrition-Agent"""
+    room_name = ctx.room.name if ctx.room else "unknown"
+    session_id = f"{room_name}_{int(asyncio.get_event_loop().time())}"
+    
     logger.info("="*50)
-    logger.info("🚀 Starting Garage Agent (Modern API)")
+    logger.info(f"🚀 Starting Garage Agent Session: {session_id}")
     logger.info("="*50)
     
-    # 1. Connect FIRST (wie im Nutrition-Agent!)
-    await ctx.connect()
-    logger.info("✅ Connected to room")
+    session = None  # Session Variable für Cleanup
     
-    # 2. Wait for participant
-    participant = await ctx.wait_for_participant()
-    logger.info(f"✅ Participant joined: {participant.identity}")
-    
-    # 3. LLM-Konfiguration - NUR LLAMA 3.2!
-    rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
-    
-    # Immer Llama 3.2 verwenden
-    llm = openai.LLM(
-        model="llama3.2:latest",
-        base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
-        api_key="ollama",
-        temperature=0.3
-    )
-    logger.info("🤖 Using Llama 3.2 via Ollama")
-    
-    # 4. Create session with userdata (wie im Nutrition-Agent!)
-    session = AgentSession[GarageUserData](
-        userdata=GarageUserData(
-            authenticated_customer=None,
-            rag_url=rag_url
-        ),
-        llm=llm,
-        vad=silero.VAD.load(
-            min_silence_duration=0.5,  # Erhöht von default 0.3
-            min_speech_duration=0.2    # Erhöht von default 0.1
-        ),
-        stt=openai.STT(
-            model="whisper-1",
-            language="de"
-        ),
-        tts=openai.TTS(
-            model="tts-1",
-            voice="onyx"
-        )
-    )
-    
-    # 5. Create agent instance
-    agent = GarageAssistant()
-    
-    # 6. WICHTIG: Kurze Pause vor Session-Start
-    await asyncio.sleep(0.5)
-    
-    # 7. Start session
-    logger.info("🏁 Starting session...")
-    await session.start(
-        room=ctx.room,
-        agent=agent
-    )
-    
-    # 8. Initiale Begrüßung erzwingen
-    await asyncio.sleep(1.0)  # Warte bis Session vollständig initialisiert
-    
-    # Sende Begrüßung direkt über die Session
-    initial_greeting = "Willkommen in der Werkstatt! Bitte nennen Sie mir Ihren Namen."
-    logger.info(f"📢 Sending initial greeting: {initial_greeting}")
-    
-    # Nutze die Session's TTS direkt
     try:
-        # Option 1: Wenn session.say verfügbar ist
-        if hasattr(session, 'say'):
-            await session.say(initial_greeting)
-        else:
-            # Option 2: Direkte TTS-Synthese und Audio-Ausgabe
-            tts_audio = await session.tts.synthesize(initial_greeting)
-            # LiveKit sendet das Audio automatisch an den Room
-            logger.info("✅ Initial greeting sent via TTS")
+        # 1. Connect FIRST (wie im Nutrition-Agent!)
+        await ctx.connect()
+        logger.info(f"✅ [{session_id}] Connected to room")
+        
+        # 2. Wait for participant
+        participant = await ctx.wait_for_participant()
+        logger.info(f"✅ [{session_id}] Participant joined: {participant.identity}")
+        
+        # 3. LLM-Konfiguration - NUR LLAMA 3.2!
+        rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
+        
+        # Immer Llama 3.2 verwenden
+        llm = openai.LLM(
+            model="llama3.2:latest",
+            base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
+            api_key="ollama",
+            temperature=0.3
+        )
+        logger.info(f"🤖 [{session_id}] Using Llama 3.2 via Ollama")
+        
+        # 4. Create session with userdata (wie im Nutrition-Agent!)
+        session = AgentSession[GarageUserData](
+            userdata=GarageUserData(
+                authenticated_customer=None,
+                rag_url=rag_url
+            ),
+            llm=llm,
+            vad=silero.VAD.load(
+                min_silence_duration=0.5,  # Erhöht von default 0.3
+                min_speech_duration=0.2    # Erhöht von default 0.1
+            ),
+            stt=openai.STT(
+                model="whisper-1",
+                language="de"
+            ),
+            tts=openai.TTS(
+                model="tts-1",
+                voice="onyx"
+            )
+        )
+        
+        # 5. Create agent instance
+        agent = GarageAssistant()
+        
+        # 6. WICHTIG: Kurze Pause vor Session-Start
+        await asyncio.sleep(0.5)
+        
+        # 7. Start session
+        logger.info(f"🏁 [{session_id}] Starting session...")
+        await session.start(
+            room=ctx.room,
+            agent=agent
+        )
+        
+        # 8. Initiale Begrüßung erzwingen
+        await asyncio.sleep(1.0)  # Warte bis Session vollständig initialisiert
+        
+        # Sende Begrüßung direkt über die Session
+        initial_greeting = "Willkommen in der Werkstatt! Bitte nennen Sie mir Ihren Namen."
+        logger.info(f"📢 [{session_id}] Sending initial greeting: {initial_greeting}")
+        
+        # Nutze die Session's TTS direkt
+        try:
+            # Option 1: Wenn session.say verfügbar ist
+            if hasattr(session, 'say'):
+                await session.say(initial_greeting)
+            else:
+                # Option 2: Direkte TTS-Synthese und Audio-Ausgabe
+                tts_audio = await session.tts.synthesize(initial_greeting)
+                # LiveKit sendet das Audio automatisch an den Room
+                logger.info(f"✅ [{session_id}] Initial greeting sent via TTS")
+        except Exception as e:
+            logger.warning(f"[{session_id}] Could not send initial greeting: {e}")
+        
+        logger.info(f"✅ [{session_id}] Garage Agent ready and listening!")
+        
     except Exception as e:
-        logger.warning(f"Could not send initial greeting: {e}")
-    
-    logger.info("✅ Garage Agent ready and listening!")
+        logger.error(f"❌ [{session_id}] Error in garage agent: {e}", exc_info=True)
+        raise
+        
+    finally:
+        # WICHTIGES CLEANUP - Wird IMMER ausgeführt
+        logger.info(f"🧹 [{session_id}] Starting session cleanup...")
+        
+        if session is not None:
+            try:
+                # Session ordentlich schließen
+                if hasattr(session, '_activity') and session._activity:
+                    logger.info(f"🛑 [{session_id}] Draining session activity...")
+                    await session.drain()
+                
+                # Session beenden
+                await session.aclose()
+                logger.info(f"✅ [{session_id}] Session closed successfully")
+                
+            except Exception as e:
+                logger.warning(f"⚠️ [{session_id}] Error closing session: {e}")
+        
+        # Disconnect vom Room wenn noch verbunden
+        try:
+            if ctx.room and ctx.room.connection_state == "connected":
+                await ctx.room.disconnect()
+                logger.info(f"✅ [{session_id}] Disconnected from room")
+        except Exception as e:
+            logger.warning(f"⚠️ [{session_id}] Error disconnecting from room: {e}")
+        
+        # Explizit Garbage Collection erzwingen
+        import gc
+        gc.collect()
+        logger.info(f"♻️ [{session_id}] Forced garbage collection")
+        
+        logger.info(f"✅ [{session_id}] Session cleanup complete")
+        logger.info("="*50)
 
 
 if __name__ == "__main__":
