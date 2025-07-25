@@ -169,6 +169,16 @@ async def entrypoint(ctx: JobContext):
     logger.info("="*50)
     
     session = None  # Session Variable für Cleanup
+    session_closed = False  # Flag um doppeltes Cleanup zu vermeiden
+    
+    # Register disconnect handler FIRST
+    def on_disconnect():
+        nonlocal session_closed
+        logger.info(f"[{session_id}] Room disconnected event received")
+        session_closed = True
+    
+    if ctx.room:
+        ctx.room.on("disconnected", on_disconnect)
     
     try:
         # 1. Connect FIRST (wie im Nutrition-Agent!)
@@ -255,12 +265,19 @@ async def entrypoint(ctx: JobContext):
         # WICHTIGES CLEANUP - Wird IMMER ausgeführt
         logger.info(f"🧹 [{session_id}] Starting session cleanup...")
         
-        if session is not None:
+        if session is not None and not session_closed:
             try:
-                # Session ordentlich schließen
+                # NUR drain wenn Session noch aktiv ist
                 if hasattr(session, '_activity') and session._activity:
-                    logger.info(f"🛑 [{session_id}] Draining session activity...")
-                    await session.drain()
+                    logger.info(f"🛑 [{session_id}] Session still active, attempting drain...")
+                    try:
+                        # Mit Timeout um Hängen zu vermeiden
+                        await asyncio.wait_for(session.drain(), timeout=2.0)
+                        logger.info(f"✅ [{session_id}] Session drained")
+                    except asyncio.TimeoutError:
+                        logger.warning(f"⚠️ [{session_id}] Session drain timed out after 2s")
+                    except Exception as e:
+                        logger.warning(f"⚠️ [{session_id}] Session drain failed: {e}")
                 
                 # Session beenden
                 await session.aclose()
@@ -268,10 +285,12 @@ async def entrypoint(ctx: JobContext):
                 
             except Exception as e:
                 logger.warning(f"⚠️ [{session_id}] Error closing session: {e}")
+        elif session_closed:
+            logger.info(f"ℹ️ [{session_id}] Session already closed by disconnect event")
         
         # Disconnect vom Room wenn noch verbunden
         try:
-            if ctx.room and ctx.room.connection_state == "connected":
+            if ctx.room and hasattr(ctx.room, 'connection_state') and ctx.room.connection_state == "connected":
                 await ctx.room.disconnect()
                 logger.info(f"✅ [{session_id}] Disconnected from room")
         except Exception as e:
