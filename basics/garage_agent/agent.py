@@ -19,25 +19,25 @@ logger.setLevel(logging.INFO)
 
 class GarageAgent(Agent):
     """Garage Agent - nur Business Logic (moderne API)"""
-    
+
     def __init__(self):
         # NUR Instructions, keine Komponenten!
         super().__init__(
-            instructions="""Du bist ein Werkstatt-Assistent. 
+            instructions="""Du bist ein Werkstatt-Assistent.
 WICHTIG: Frage ZUERST nach dem Namen des Kunden zur Authentifizierung.
 Erste Antwort: "Willkommen in der Werkstatt! Bitte nennen Sie mir Ihren Namen."
 Nach Authentifizierung: Hilf mit Fahrzeugdaten und Service-Informationen."""
         )
-        
+
         self.rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
         self.authenticated_customer = None
         logger.info(f"✅ Garage Agent initialized (RAG: {self.rag_url})")
-    
+
     @function_tool
     async def authenticate_customer(self, customer_name: str) -> str:
         """Authentifiziert einen Kunden"""
         logger.info(f"🔐 Authenticating: {customer_name}")
-        
+
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -49,10 +49,10 @@ Nach Authentifizierung: Hilf mit Fahrzeugdaten und Service-Informationen."""
                         "collection": "automotive_docs"
                     }
                 )
-                
+
                 if response.status_code == 200:
                     results = response.json().get("results", [])
-                    
+
                     # Einfache Namenssuche
                     for result in results:
                         content = result.get("content", "")
@@ -60,21 +60,21 @@ Nach Authentifizierung: Hilf mit Fahrzeugdaten und Service-Informationen."""
                             self.authenticated_customer = customer_name
                             logger.info(f"✅ Customer authenticated: {customer_name}")
                             return f"Willkommen {customer_name}! Wie kann ich Ihnen helfen?"
-                    
+
                     return "Kunde nicht gefunden. Bitte versuchen Sie es erneut."
-                    
+
         except Exception as e:
             logger.error(f"Auth error: {e}")
             return "Authentifizierung fehlgeschlagen."
-    
+
     @function_tool
     async def search_vehicle_data(self, query: str) -> str:
         """Sucht Fahrzeugdaten"""
         logger.info(f"🔍 Searching: {query}")
-        
+
         if not self.authenticated_customer:
             return "Bitte authentifizieren Sie sich zuerst."
-        
+
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -86,7 +86,7 @@ Nach Authentifizierung: Hilf mit Fahrzeugdaten und Service-Informationen."""
                         "collection": "automotive_docs"
                     }
                 )
-                
+
                 if response.status_code == 200:
                     results = response.json().get("results", [])
                     if results:
@@ -96,12 +96,12 @@ Nach Authentifizierung: Hilf mit Fahrzeugdaten und Service-Informationen."""
                             content = r.get("content", "")
                             if self.authenticated_customer.lower() in content.lower():
                                 relevant.append(content)
-                        
+
                         if relevant:
                             return "\n\n".join(relevant[:2])  # Max 2 Ergebnisse
-                    
+
                     return "Keine Daten gefunden."
-                    
+
         except Exception as e:
             logger.error(f"Search error: {e}")
             return "Suche fehlgeschlagen."
@@ -112,22 +112,22 @@ async def entrypoint(ctx: JobContext):
     logger.info("="*50)
     logger.info("🚀 Starting Garage Agent (Modern API)")
     logger.info("="*50)
-    
+
     # 1. Connect
     await ctx.connect()
     logger.info("✅ Connected to room")
-    
+
     # 2. Wait for participant
     participant = await ctx.wait_for_participant()
     logger.info(f"✅ Participant joined: {participant.identity}")
-    
+
     # 3. Create agent
     agent = GarageAgent()
-    
+
     # 4. Create session mit ALLEN Komponenten (moderne API!)
     session = AgentSession(
         stt=openai.STT(
-            model="whisper-1", 
+            model="whisper-1",
             language="de"
         ),
         llm=openai.LLM(
@@ -137,19 +137,16 @@ async def entrypoint(ctx: JobContext):
             temperature=0.3
         ),
         tts=openai.TTS(
-            model="tts-1", 
+            model="tts-1",
             voice="onyx"
         ),
         vad=silero.VAD.load()
     )
-    
+
     # 5. Start session
     logger.info("🏁 Starting session...")
-    await session.start(
-        room=ctx.room,
-        agent=agent
-    )
-    
+    await session.start(agent, room=ctx.room)
+
     logger.info("✅ Garage Agent ready and listening!")
 
 
