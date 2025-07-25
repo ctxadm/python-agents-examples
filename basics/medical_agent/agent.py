@@ -235,13 +235,8 @@ async def entrypoint(ctx: JobContext):
             logger.error(f"❌ [{session_id}] No audio track received from user after {max_wait_time}s!")
             # Trotzdem fortfahren, aber mit Warnung
         
-        # Track published event handler für späte Audio Tracks
-        @participant.on("track_published")
-        def on_participant_track_published(publication: rtc.TrackPublication):
-            logger.info(f"📢 [{session_id}] Participant track published: {publication.kind}")
-            if publication.kind == rtc.TrackKind.KIND_AUDIO:
-                logger.info(f"🎤 [{session_id}] Audio track now available!")
         # === ENDE AUDIO TRACK WAIT ===
+        # WICHTIG: Kein participant.on() hier - RemoteParticipant hat diese Methode nicht!
         
         # 3. LLM-Konfiguration - NUR LLAMA 3.2!
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
