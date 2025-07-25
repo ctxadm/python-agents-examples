@@ -663,13 +663,16 @@ async def entrypoint(ctx: JobContext):
     
     # Log configuration
     logger.debug(f"Room name: {ctx.room.name}")
-    logger.debug(f"Room ID: {await ctx.room.sid}")  # Ohne Klammern!
+    # Room ID erst NACH connect() verfügbar
     logger.debug(f"Using Mistral v0.3 model")
     
     # SCHRITT 1: ZUERST connecten (OHNE AutoSubscribe!)
     logger.info("📡 Connecting to room...")
     await ctx.connect()  # Keine Parameter - nutzt die Defaults
     logger.info("✅ Connected to room")
+    
+    # Jetzt können wir die Room ID loggen
+    logger.debug(f"Room SID: {await ctx.room.sid}")
     
     # SCHRITT 2: Auf Participant warten
     logger.info("👤 Waiting for participant...")
