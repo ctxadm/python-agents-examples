@@ -158,7 +158,7 @@ async def entrypoint(ctx: JobContext):
     else:
         # Mistral mit Custom-Settings
         llm = openai.LLM(
-            model="mistral:v0.3",
+            model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
             api_key="ollama",
             temperature=0.3
