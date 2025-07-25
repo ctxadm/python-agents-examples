@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime
 from dotenv import load_dotenv
-from livekit import agents
+from livekit import agents, rtc
 from livekit.agents import JobContext, WorkerOptions, cli
 from livekit.agents.voice import AgentSession, Agent, RunContext
 from livekit.agents.llm import function_tool
@@ -192,9 +192,56 @@ async def entrypoint(ctx: JobContext):
         await ctx.connect()
         logger.info(f"✅ [{session_id}] Connected to room")
         
+        # Debug: Room Status
+        logger.info(f"Room participants: {len(ctx.room.remote_participants)}")
+        logger.info(f"Local participant: {ctx.room.local_participant.identity}")
+        
+        # Debug: Track Event Handler
+        @ctx.room.on("track_published")
+        def on_track_published(publication, participant):
+            logger.info(f"[{session_id}] Track published: {publication.kind} from {participant.identity}")
+        
+        @ctx.room.on("track_subscribed")
+        def on_track_subscribed(track, publication, participant):
+            logger.info(f"[{session_id}] Track subscribed: {track.kind} from {participant.identity}")
+        
         # 2. Wait for participant
         participant = await ctx.wait_for_participant()
         logger.info(f"✅ [{session_id}] Participant joined: {participant.identity}")
+        
+        # === KRITISCH: AUF AUDIO TRACK WARTEN ===
+        audio_track_received = False
+        max_wait_time = 10  # 10 Sekunden maximal warten
+        
+        for i in range(max_wait_time):
+            # Check ob Audio Track da ist
+            for track_pub in participant.track_publications.values():
+                if track_pub.kind == rtc.TrackKind.KIND_AUDIO:
+                    logger.info(f"✅ [{session_id}] Audio track found: {track_pub.sid}")
+                    audio_track_received = True
+                    
+                    # Log track status
+                    logger.info(f"📡 [{session_id}] Audio track - subscribed: {track_pub.subscribed}, muted: {track_pub.muted}")
+                    
+                    break
+            
+            if audio_track_received:
+                break
+                
+            logger.info(f"⏳ [{session_id}] Waiting for audio track... ({i+1}/{max_wait_time})")
+            await asyncio.sleep(1)
+        
+        if not audio_track_received:
+            logger.error(f"❌ [{session_id}] No audio track received from user after {max_wait_time}s!")
+            # Trotzdem fortfahren, aber mit Warnung
+        
+        # Track published event handler für späte Audio Tracks
+        @participant.on("track_published")
+        def on_participant_track_published(publication: rtc.TrackPublication):
+            logger.info(f"📢 [{session_id}] Participant track published: {publication.kind}")
+            if publication.kind == rtc.TrackKind.KIND_AUDIO:
+                logger.info(f"🎤 [{session_id}] Audio track now available!")
+        # === ENDE AUDIO TRACK WAIT ===
         
         # 3. LLM-Konfiguration - NUR LLAMA 3.2!
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
@@ -242,6 +289,19 @@ async def entrypoint(ctx: JobContext):
             room=ctx.room,
             agent=agent
         )
+        
+        # Debug Event Handler für Session
+        @session.on("user_input_transcribed")
+        def on_user_input(event):
+            logger.info(f"[{session_id}] 🎤 User input transcribed: {event.transcript} (final: {event.is_final})")
+        
+        @session.on("agent_state_changed")
+        def on_state_changed(event):
+            logger.info(f"[{session_id}] 🤖 Agent state changed to: {event.state}")
+        
+        @session.on("user_state_changed")
+        def on_user_state(event):
+            logger.info(f"[{session_id}] 👤 User state changed to: {event.state}")
         
         # 8. Initiale Begrüßung erzwingen
         await asyncio.sleep(1.0)  # Warte bis Session vollständig initialisiert
