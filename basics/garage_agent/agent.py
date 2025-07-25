@@ -107,13 +107,22 @@ IMPORTANT RULES:
             return "Bitte nennen Sie zuerst Ihren Namen zur Authentifizierung."
         
         try:
+            # Erweitere die Query für bessere Suchergebnisse
+            enhanced_query = f"{query} {context.userdata.authenticated_customer}"
+            
+            # Spezielle Keywords für bessere Suche
+            if any(word in query.lower() for word in ["anstehend", "arbeiten", "reparatur", "service"]):
+                enhanced_query += " anstehende_arbeiten priorität kosten"
+            
+            logger.info(f"🔎 Enhanced query: {enhanced_query}")
+            
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{context.userdata.rag_url}/search",
                     json={
-                        "query": f"{query} {context.userdata.authenticated_customer}",
+                        "query": enhanced_query,
                         "agent_type": "garage",
-                        "top_k": 3,
+                        "top_k": 5,  # Mehr Ergebnisse für bessere Trefferquote
                         "collection": "automotive_docs"
                     }
                 )
@@ -124,13 +133,17 @@ IMPORTANT RULES:
                         relevant = []
                         for r in results:
                             content = r.get("content", "")
+                            # Prüfe ob es zum authentifizierten Kunden gehört
                             if context.userdata.authenticated_customer.lower() in content.lower():
                                 relevant.append(content)
                         
                         if relevant:
-                            return "\n\n".join(relevant[:2])
+                            # Formatiere die Daten schön
+                            response = "Hier sind die Informationen zu Ihrem Fahrzeug:\n\n"
+                            response += "\n\n".join(relevant[:3])  # Bis zu 3 Ergebnisse
+                            return response
                     
-                    return "Zu Ihrer Anfrage konnte ich leider keine Daten finden."
+                    return "Zu Ihrer Anfrage konnte ich leider keine spezifischen Daten finden."
                     
         except Exception as e:
             logger.error(f"Search error: {e}")
