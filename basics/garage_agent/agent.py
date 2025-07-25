@@ -39,6 +39,9 @@ KRITISCH - NIEMALS AUSSPRECHEN:
 - Sage NIEMALS Dinge wie "Wartet auf Antwort" oder ähnliche Meta-Kommentare
 - Antworte NUR mit natürlicher, menschlicher Sprache
 
+WICHTIG: Wenn du eine Funktion aufrufst, sage NICHTS dazu. Warte auf das Ergebnis und 
+formuliere dann eine natürliche Antwort basierend auf dem Ergebnis.
+
 Denke daran: Du bist ein freundlicher Werkstatt-Mitarbeiter, kein Computer!"""
         )
         
@@ -72,13 +75,14 @@ Denke daran: Du bist ein freundlicher Werkstatt-Mitarbeiter, kein Computer!"""
                         if customer_name.lower() in content.lower():
                             self.authenticated_customer = customer_name
                             logger.info(f"✅ Customer authenticated: {customer_name}")
-                            return f"Willkommen {customer_name}! Wie kann ich Ihnen helfen?"
+                            # WICHTIG: Keine technischen Details zurückgeben!
+                            return f"Guten Tag Herr {customer_name}! Schön Sie in unserer Werkstatt begrüßen zu dürfen. Wie kann ich Ihnen heute helfen?"
                     
-                    return "Kunde nicht gefunden. Bitte versuchen Sie es erneut."
+                    return "Entschuldigung, ich konnte Sie in unserem System nicht finden. Könnten Sie Ihren Namen bitte noch einmal nennen?"
                     
         except Exception as e:
             logger.error(f"Auth error: {e}")
-            return "Authentifizierung fehlgeschlagen."
+            return "Es tut mir leid, es gab ein technisches Problem. Bitte versuchen Sie es noch einmal."
     
     @function_tool
     async def search_vehicle_data(self, query: str) -> str:
@@ -154,7 +158,9 @@ async def entrypoint(ctx: JobContext):
         # GPT-3.5 Konfiguration (funktioniert garantiert)
         llm = openai.LLM(
             model="gpt-3.5-turbo",
-            temperature=0.3
+            temperature=0.3,
+            # System-Prompt um technische Ausgaben zu verhindern
+            system="Du bist ein Werkstatt-Assistent. WICHTIG: Sprich NIEMALS technische Details, JSON, Function-Calls oder Meta-Kommentare aus. Antworte NUR in natürlicher Sprache."
         )
         logger.info("🤖 Using GPT-3.5-turbo")
     else:
