@@ -1,8 +1,9 @@
-# LiveKit Agents - Garage Agent (Moderne API wie Nutrition-Agent)
+# LiveKit Agents - Medical Agent (Moderne API wie Garage Agent)
 import logging
 import os
 import httpx
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime
@@ -16,138 +17,146 @@ from livekit.plugins import openai, silero
 load_dotenv()
 
 # Logging
-logger = logging.getLogger("garage-agent")
+logger = logging.getLogger("medical-agent")
 logger.setLevel(logging.INFO)
 
 # Agent Name für Multi-Worker Setup
-AGENT_NAME = os.getenv("AGENT_NAME", "agent-garage-3")
+AGENT_NAME = os.getenv("AGENT_NAME", "agent-medical-3")
 
 @dataclass
-class GarageUserData:
-    """User data context für den Garage Agent"""
-    authenticated_customer: Optional[str] = None
+class MedicalUserData:
+    """User data context für den Medical Agent"""
+    authenticated_doctor: Optional[str] = None
     rag_url: str = "http://localhost:8000"
+    active_patient: Optional[str] = None
 
 
-class GarageAssistant(Agent):
-    """Garage Assistant mit korrekter API-Nutzung"""
+class MedicalAssistant(Agent):
+    """Medical Assistant mit korrekter API-Nutzung"""
     
     def __init__(self) -> None:
         # Instructions klar und präzise für Llama 3.2
-        super().__init__(instructions="""You are a garage assistant AI system. You help customers by providing information about their vehicles.
+        super().__init__(instructions="""Du bist ein medizinischer Assistent mit Zugriff auf die Patientendatenbank.
 
 WORKFLOW:
-1. Your first greeting is sent automatically. Do NOT greet again.
-2. When customer says their name, use authenticate_customer function to check if they exist in database.
-3. If authenticated successfully, the customer now has access to their vehicle data.
-4. When customer asks about their vehicle, use search_vehicle_data to find information about THEIR car.
-5. Provide the information found in the database about their vehicle (model, service dates, mileage, etc).
+1. Deine erste Begrüßung wird automatisch gesendet. NICHT nochmal begrüßen.
+2. Warte auf Anfragen des Arztes zu Patientendaten.
+3. Nutze IMMER die search_patient_data Funktion für Patientenanfragen.
+4. Sage NIE "nicht gefunden" wenn die Funktion Daten zurückgibt.
+5. Korrigiere Patienten-IDs automatisch: "p null null fünf" = "P005"
 
-IMPORTANT RULES:
-- Always respond in German
-- You are an AI assistant, not a physical person - don't ask for keys or cards
-- Only provide vehicle data for authenticated customers
-- The database contains: vehicle model, year, license plate, mileage, service history
-- Never mention technical details or functions to the customer""")
-        logger.info("✅ GarageAssistant initialized")
-
-    @function_tool
-    async def authenticate_customer(self, 
-                                  context: RunContext[GarageUserData],
-                                  customer_name: str) -> str:
-        """
-        Authentifiziert einen Kunden in der Werkstattdatenbank.
-        
-        Args:
-            customer_name: Der Name des Kunden
-        """
-        logger.info(f"🔐 Authenticating: {customer_name}")
-        
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{context.userdata.rag_url}/search",
-                    json={
-                        "query": f"besitzer: {customer_name}",
-                        "agent_type": "garage",
-                        "top_k": 5,
-                        "collection": "automotive_docs"
-                    }
-                )
-                
-                if response.status_code == 200:
-                    results = response.json().get("results", [])
-                    
-                    for result in results:
-                        content = result.get("content", "")
-                        if customer_name.lower() in content.lower():
-                            context.userdata.authenticated_customer = customer_name
-                            logger.info(f"✅ Customer authenticated: {customer_name}")
-                            return f"Guten Tag {customer_name}! Schön Sie wieder bei uns zu sehen. Wie kann ich Ihnen heute helfen?"
-                    
-                    return "Entschuldigung, ich konnte Sie in unserem System nicht finden. Könnten Sie Ihren Namen bitte noch einmal nennen?"
-                    
-        except Exception as e:
-            logger.error(f"Auth error: {e}")
-            return "Es tut mir leid, es gab ein technisches Problem. Bitte versuchen Sie es noch einmal."
+WICHTIGE REGELN:
+- Immer auf Deutsch antworten
+- Währungen als "15 Franken 50" statt "15.50"
+- Präzise medizinische Informationen aus der Datenbank wiedergeben
+- Niemals eigene medizinische Diagnosen stellen
+- Die Datenbank enthält: Patienten-IDs, Diagnosen, Behandlungen, Medikation
+- Keine technischen Details oder Funktionen erwähnen""")
+        logger.info("✅ MedicalAssistant initialized")
 
     @function_tool
-    async def search_vehicle_data(self,
-                                context: RunContext[GarageUserData],
-                                query: str) -> str:
+    async def search_patient_data(self, 
+                                 context: RunContext[MedicalUserData],
+                                 query: str) -> str:
         """
-        Sucht nach Fahrzeugdaten in der Werkstattdatenbank.
+        Sucht in der Patientendatenbank nach Informationen.
         
         Args:
-            query: Die Suchanfrage (z.B. "Tesla", "Service", "Kilometerstand")
+            query: Die Suchanfrage (z.B. Patienten-ID oder Symptome)
         """
-        logger.info(f"🔍 Searching: {query}")
-        
-        if not context.userdata.authenticated_customer:
-            return "Bitte nennen Sie zuerst Ihren Namen zur Authentifizierung."
+        logger.info(f"🔍 Searching for: {query}")
         
         try:
-            # Erweitere die Query für bessere Suchergebnisse
-            enhanced_query = f"{query} {context.userdata.authenticated_customer}"
-            
-            # Spezielle Keywords für bessere Suche
-            if any(word in query.lower() for word in ["anstehend", "arbeiten", "reparatur", "service"]):
-                enhanced_query += " anstehende_arbeiten priorität kosten"
-            
-            logger.info(f"🔎 Enhanced query: {enhanced_query}")
+            # Korrigiere Patienten-IDs
+            processed_query = self._process_patient_id(query)
+            logger.info(f"🔎 Processed query: {processed_query}")
             
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{context.userdata.rag_url}/search",
                     json={
-                        "query": enhanced_query,
-                        "agent_type": "garage",
+                        "query": processed_query,
+                        "agent_type": "medical",
                         "top_k": 5,  # Mehr Ergebnisse für bessere Trefferquote
-                        "collection": "automotive_docs"
+                        "collection": "medical_nutrition"
                     }
                 )
                 
                 if response.status_code == 200:
                     results = response.json().get("results", [])
-                    if results:
-                        relevant = []
-                        for r in results:
-                            content = r.get("content", "")
-                            # Prüfe ob es zum authentifizierten Kunden gehört
-                            if context.userdata.authenticated_customer.lower() in content.lower():
-                                relevant.append(content)
-                        
-                        if relevant:
-                            # Formatiere die Daten schön
-                            response = "Hier sind die Informationen zu Ihrem Fahrzeug:\n\n"
-                            response += "\n\n".join(relevant[:3])  # Bis zu 3 Ergebnisse
-                            return response
                     
-                    return "Zu Ihrer Anfrage konnte ich leider keine spezifischen Daten finden."
+                    if results:
+                        logger.info(f"✅ Found {len(results)} results")
+                        
+                        # Speichere aktuelle Patienten-ID wenn gefunden
+                        patient_match = re.search(r'P\d{3}', processed_query)
+                        if patient_match:
+                            context.userdata.active_patient = patient_match.group()
+                        
+                        # Formatiere die Ergebnisse
+                        formatted = []
+                        for i, result in enumerate(results[:3]):  # Max 3 Ergebnisse
+                            content = result.get("content", "").strip()
+                            if content:
+                                # Formatiere für bessere Lesbarkeit
+                                content = self._format_medical_data(content)
+                                formatted.append(f"[{i+1}] {content}")
+                        
+                        response_text = "Hier sind die Patientendaten:\n\n"
+                        response_text += "\n\n".join(formatted)
+                        return response_text
+                    
+                    return "Zu dieser Anfrage konnte ich keine Daten in der Patientendatenbank finden."
+                    
+                else:
+                    logger.error(f"RAG search failed: {response.status_code}")
+                    return "Es gab einen Fehler beim Zugriff auf die Datenbank. Bitte versuchen Sie es erneut."
                     
         except Exception as e:
             logger.error(f"Search error: {e}")
-            return "Die Suche ist momentan nicht verfügbar. Bitte versuchen Sie es später noch einmal."
+            return "Die Patientendatenbank ist momentan nicht erreichbar. Bitte versuchen Sie es später noch einmal."
+    
+    def _process_patient_id(self, text: str) -> str:
+        """Korrigiert Sprache-zu-Text Fehler bei Patienten-IDs"""
+        # Pattern für verschiedene Varianten
+        patterns = [
+            r'p\s*null\s*null\s*(\w+)',
+            r'patient\s*null\s*null\s*(\w+)',
+            r'p\s*0\s*0\s*(\w+)'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, text.lower())
+            if match:
+                number = match.group(1)
+                
+                # Deutsche Zahlwörter zu Ziffern
+                number_map = {
+                    'eins': '1', 'zwei': '2', 'drei': '3', 'vier': '4', 
+                    'fünf': '5', 'sechs': '6', 'sieben': '7', 'acht': '8', 
+                    'neun': '9', 'null': '0', 'zehn': '10'
+                }
+                
+                if number in number_map:
+                    number = number_map[number]
+                
+                # Erstelle korrekte ID
+                corrected_id = f"P{number.zfill(3)}"
+                text = re.sub(pattern, corrected_id, text, flags=re.IGNORECASE)
+                logger.info(f"✅ Corrected patient ID to '{corrected_id}'")
+                break
+        
+        return text
+    
+    def _format_medical_data(self, content: str) -> str:
+        """Formatiert medizinische Daten für bessere Lesbarkeit"""
+        # Ersetze Unterstriche durch Leerzeichen
+        content = content.replace('_', ' ')
+        
+        # Formatiere Währungen
+        content = re.sub(r'(\d+)\.(\d{2})', r'\1 Franken \2', content)
+        
+        return content
 
 
 async def request_handler(ctx: JobContext):
@@ -158,12 +167,12 @@ async def request_handler(ctx: JobContext):
 
 
 async def entrypoint(ctx: JobContext):
-    """Entry point mit moderner API wie im Nutrition-Agent"""
+    """Entry point mit moderner API wie im Garage Agent"""
     logger.info("="*50)
-    logger.info("🚀 Starting Garage Agent (Modern API)")
+    logger.info("🚀 Starting Medical Agent (Modern API)")
     logger.info("="*50)
     
-    # 1. Connect FIRST (wie im Nutrition-Agent!)
+    # 1. Connect FIRST (wie im Garage Agent!)
     await ctx.connect()
     logger.info("✅ Connected to room")
     
@@ -171,36 +180,29 @@ async def entrypoint(ctx: JobContext):
     participant = await ctx.wait_for_participant()
     logger.info(f"✅ Participant joined: {participant.identity}")
     
-    # 3. LLM-Konfiguration
-    use_gpt = os.getenv("USE_GPT", "false").lower() == "true"
+    # 3. LLM-Konfiguration - NUR LLAMA 3.2!
     rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
     
-    if use_gpt:
-        llm = openai.LLM(
-            model="gpt-3.5-turbo",
-            temperature=0.3
-        )
-        logger.info("🤖 Using GPT-3.5-turbo")
-    else:
-        # Llama 3.2 Konfiguration
-        llm = openai.LLM(
-            model="llama3.2:latest",  # Geändert zu Llama 3.2
-            base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
-            api_key="ollama",
-            temperature=0.3
-        )
-        logger.info("🤖 Using Llama 3.2 via Ollama")
+    # Immer Llama 3.2 verwenden
+    llm = openai.LLM(
+        model="llama3.2:latest",
+        base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
+        api_key="ollama",
+        temperature=0.3
+    )
+    logger.info("🤖 Using Llama 3.2 via Ollama")
     
-    # 4. Create session with userdata (wie im Nutrition-Agent!)
-    session = AgentSession[GarageUserData](
-        userdata=GarageUserData(
-            authenticated_customer=None,
-            rag_url=rag_url
+    # 4. Create session with userdata (wie im Garage Agent!)
+    session = AgentSession[MedicalUserData](
+        userdata=MedicalUserData(
+            authenticated_doctor=None,
+            rag_url=rag_url,
+            active_patient=None
         ),
         llm=llm,
         vad=silero.VAD.load(
-            min_silence_duration=0.5,  # Erhöht von default 0.3
-            min_speech_duration=0.2    # Erhöht von default 0.1
+            min_silence_duration=0.8,  # Höher für medizinische Präzision
+            min_speech_duration=0.3    # Angepasst für klare Sprache
         ),
         stt=openai.STT(
             model="whisper-1",
@@ -208,12 +210,12 @@ async def entrypoint(ctx: JobContext):
         ),
         tts=openai.TTS(
             model="tts-1",
-            voice="onyx"
+            voice="shimmer"  # Professionelle Stimme für medizinischen Kontext
         )
     )
     
     # 5. Create agent instance
-    agent = GarageAssistant()
+    agent = MedicalAssistant()
     
     # 6. WICHTIG: Kurze Pause vor Session-Start
     await asyncio.sleep(0.5)
@@ -229,7 +231,7 @@ async def entrypoint(ctx: JobContext):
     await asyncio.sleep(1.0)  # Warte bis Session vollständig initialisiert
     
     # Sende Begrüßung direkt über die Session
-    initial_greeting = "Willkommen in der Werkstatt! Bitte nennen Sie mir Ihren Namen."
+    initial_greeting = "Guten Tag Herr Doktor, welche Patientendaten benötigen Sie?"
     logger.info(f"📢 Sending initial greeting: {initial_greeting}")
     
     # Nutze die Session's TTS direkt
@@ -245,7 +247,7 @@ async def entrypoint(ctx: JobContext):
     except Exception as e:
         logger.warning(f"Could not send initial greeting: {e}")
     
-    logger.info("✅ Garage Agent ready and listening!")
+    logger.info("✅ Medical Agent ready and listening!")
 
 
 if __name__ == "__main__":
