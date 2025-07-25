@@ -1,13 +1,15 @@
-# LiveKit Agents - Garage Agent (Moderne API wie Nutrition-Agent)
+# LiveKit Agents - Garage Management Agent
 import logging
 import os
 import httpx
 import asyncio
+import json
+import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from dotenv import load_dotenv
-from livekit import agents
+from livekit import agents, rtc
 from livekit.agents import JobContext, WorkerOptions, cli
 from livekit.agents.voice import AgentSession, Agent, RunContext
 from livekit.agents.llm import function_tool
@@ -20,136 +22,216 @@ logger = logging.getLogger("garage-agent")
 logger.setLevel(logging.INFO)
 
 # Agent Name für Multi-Worker Setup
-AGENT_NAME = os.getenv("AGENT_NAME", "agent-garage-3")
+AGENT_NAME = os.getenv("AGENT_NAME", "agent-garage-1")
 
 @dataclass
 class GarageUserData:
     """User data context für den Garage Agent"""
-    authenticated_customer: Optional[str] = None
+    authenticated_user: Optional[str] = None
     rag_url: str = "http://localhost:8000"
+    current_customer_id: Optional[str] = None
+    active_repair_id: Optional[str] = None
+    user_language: str = "de"
 
 
 class GarageAssistant(Agent):
-    """Garage Assistant mit korrekter API-Nutzung"""
+    """Garage Assistant für Kundenverwaltung und Reparaturen"""
     
     def __init__(self) -> None:
-        # Instructions klar und präzise für Llama 3.2
-        super().__init__(instructions="""You are a garage assistant AI system. You help customers by providing information about their vehicles.
+        # Instructions klar strukturiert
+        super().__init__(instructions="""Du bist Pia, der digitale Assistent der Garage Müller.
 
 WORKFLOW:
-1. Your first greeting is sent automatically. Do NOT greet again.
-2. When customer says their name, use authenticate_customer function to check if they exist in database.
-3. If authenticated successfully, the customer now has access to their vehicle data.
-4. When customer asks about their vehicle, use search_vehicle_data to find information about THEIR car.
-5. Provide the information found in the database about their vehicle (model, service dates, mileage, etc).
+1. Begrüße den Kunden freundlich
+2. Höre aufmerksam zu und identifiziere das Anliegen
+3. Nutze die Suchfunktionen für Kunden- und Reparaturdaten
+4. Gib präzise Auskünfte basierend auf den Datenbankdaten
 
-IMPORTANT RULES:
-- Always respond in German
-- You are an AI assistant, not a physical person - don't ask for keys or cards
-- Only provide vehicle data for authenticated customers
-- The database contains: vehicle model, year, license plate, mileage, service history
-- Never mention technical details, status codes, or functions to the customer
-- Never say "status code 200" or "authentication successful" - use natural language instead""")
+DEINE AUFGABEN:
+- Kundendaten abfragen (Name, Fahrzeug, Kontaktdaten)
+- Reparaturstatus mitteilen
+- Kostenvoranschläge erklären
+- Termine koordinieren
+- Rechnungsinformationen bereitstellen
+
+WICHTIGE REGELN:
+- Immer auf Deutsch antworten
+- Freundlich und professionell bleiben
+- Währungen als "250 Franken" aussprechen
+- Keine technischen Details der Datenbank erwähnen
+- Bei Unklarheiten höflich nachfragen""")
         logger.info("✅ GarageAssistant initialized")
 
     @function_tool
-    async def authenticate_customer(self, 
+    async def search_customer_data(self, 
                                   context: RunContext[GarageUserData],
-                                  customer_name: str) -> str:
+                                  query: str) -> str:
         """
-        Authentifiziert einen Kunden in der Werkstattdatenbank.
+        Sucht nach Kundendaten in der Garage-Datenbank.
         
         Args:
-            customer_name: Der Name des Kunden
+            query: Suchbegriff (Name, Telefonnummer oder Autonummer)
         """
-        logger.info(f"🔐 Authenticating: {customer_name}")
+        logger.info(f"🔍 Searching customer data for: {query}")
         
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{context.userdata.rag_url}/search",
                     json={
-                        "query": f"besitzer: {customer_name}",
+                        "query": query,
                         "agent_type": "garage",
-                        "top_k": 5,
-                        "collection": "automotive_docs"
+                        "top_k": 3,
+                        "collection": "garage_management"
                     }
                 )
                 
                 if response.status_code == 200:
                     results = response.json().get("results", [])
                     
-                    for result in results:
-                        content = result.get("content", "")
-                        if customer_name.lower() in content.lower():
-                            context.userdata.authenticated_customer = customer_name
-                            logger.info(f"✅ Customer authenticated: {customer_name}")
-                            # WICHTIG: Keine technischen Details erwähnen!
-                            return f"Guten Tag {customer_name}! Schön Sie wieder bei uns zu sehen. Ich habe Ihre Kundendaten gefunden. Wie kann ich Ihnen heute mit Ihrem Fahrzeug helfen?"
+                    if results:
+                        logger.info(f"✅ Found {len(results)} customer results")
+                        
+                        # Formatiere die Ergebnisse
+                        formatted = []
+                        for i, result in enumerate(results[:3]):
+                            content = result.get("content", "").strip()
+                            if content:
+                                # Bereinige und formatiere
+                                content = self._format_garage_data(content)
+                                formatted.append(f"{content}")
+                        
+                        response_text = "\n\n".join(formatted)
+                        return response_text
                     
-                    return "Entschuldigung, ich konnte Sie in unserem System nicht finden. Könnten Sie Ihren Namen bitte noch einmal nennen?"
+                    return "Ich konnte keine Kundendaten zu Ihrer Anfrage finden."
+                    
+                else:
+                    logger.error(f"Customer search failed: {response.status_code}")
+                    return "Es gab einen technischen Fehler. Bitte versuchen Sie es erneut."
                     
         except Exception as e:
-            logger.error(f"Auth error: {e}")
-            return "Es tut mir leid, es gab ein technisches Problem. Bitte versuchen Sie es noch einmal."
+            logger.error(f"Customer search error: {e}")
+            return "Die Kundendatenbank ist momentan nicht erreichbar."
 
     @function_tool
-    async def search_vehicle_data(self,
-                                context: RunContext[GarageUserData],
-                                query: str) -> str:
+    async def search_repair_status(self, 
+                                  context: RunContext[GarageUserData],
+                                  query: str) -> str:
         """
-        Sucht nach Fahrzeugdaten in der Werkstattdatenbank.
+        Sucht nach Reparaturstatus und Aufträgen.
         
         Args:
-            query: Die Suchanfrage (z.B. "Tesla", "Service", "Kilometerstand")
+            query: Kundenname, Autonummer oder Auftragsnummer
         """
-        logger.info(f"🔍 Searching: {query}")
-        
-        if not context.userdata.authenticated_customer:
-            return "Bitte nennen Sie zuerst Ihren Namen zur Authentifizierung."
+        logger.info(f"🔧 Searching repair status for: {query}")
         
         try:
-            # Erweitere die Query für bessere Suchergebnisse
-            enhanced_query = f"{query} {context.userdata.authenticated_customer}"
-            
-            # Spezielle Keywords für bessere Suche
-            if any(word in query.lower() for word in ["anstehend", "arbeiten", "reparatur", "service"]):
-                enhanced_query += " anstehende_arbeiten priorität kosten"
-            
-            logger.info(f"🔎 Enhanced query: {enhanced_query}")
-            
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{context.userdata.rag_url}/search",
                     json={
-                        "query": enhanced_query,
+                        "query": f"Reparatur Status {query}",
                         "agent_type": "garage",
-                        "top_k": 5,  # Mehr Ergebnisse für bessere Trefferquote
-                        "collection": "automotive_docs"
+                        "top_k": 5,
+                        "collection": "garage_management"
                     }
                 )
                 
                 if response.status_code == 200:
                     results = response.json().get("results", [])
+                    
                     if results:
-                        relevant = []
-                        for r in results:
-                            content = r.get("content", "")
-                            # Prüfe ob es zum authentifizierten Kunden gehört
-                            if context.userdata.authenticated_customer.lower() in content.lower():
-                                relevant.append(content)
+                        logger.info(f"✅ Found {len(results)} repair results")
                         
-                        if relevant:
-                            # Formatiere die Daten schön
-                            response_text = "Hier sind die Informationen zu Ihrem Fahrzeug:\n\n"
-                            response_text += "\n\n".join(relevant[:3])  # Bis zu 3 Ergebnisse
+                        # Sammle alle relevanten Reparaturen
+                        repairs = []
+                        for result in results:
+                            content = result.get("content", "").strip()
+                            if "Reparatur" in content or "Status" in content:
+                                content = self._format_garage_data(content)
+                                repairs.append(content)
+                        
+                        if repairs:
+                            response_text = "Hier sind die Reparaturinformationen:\n\n"
+                            response_text += "\n\n".join(repairs[:3])  # Max 3 Einträge
                             return response_text
                     
-                    return "Zu Ihrer Anfrage konnte ich leider keine spezifischen Daten finden."
+                    return "Ich konnte keine Reparaturaufträge zu Ihrer Anfrage finden."
+                    
+                else:
+                    logger.error(f"Repair search failed: {response.status_code}")
+                    return "Die Reparaturdatenbank ist momentan nicht verfügbar."
                     
         except Exception as e:
-            logger.error(f"Search error: {e}")
-            return "Die Suche ist momentan nicht verfügbar. Bitte versuchen Sie es später noch einmal."
+            logger.error(f"Repair search error: {e}")
+            return "Es gab einen Fehler beim Abrufen der Reparaturdaten."
+
+    @function_tool
+    async def search_invoice_data(self, 
+                                 context: RunContext[GarageUserData],
+                                 query: str) -> str:
+        """
+        Sucht nach Rechnungsinformationen.
+        
+        Args:
+            query: Kundenname, Rechnungsnummer oder Datum
+        """
+        logger.info(f"💰 Searching invoice data for: {query}")
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{context.userdata.rag_url}/search",
+                    json={
+                        "query": f"Rechnung Kosten {query}",
+                        "agent_type": "garage",
+                        "top_k": 3,
+                        "collection": "garage_management"
+                    }
+                )
+                
+                if response.status_code == 200:
+                    results = response.json().get("results", [])
+                    
+                    if results:
+                        logger.info(f"✅ Found {len(results)} invoice results")
+                        
+                        invoices = []
+                        for result in results:
+                            content = result.get("content", "").strip()
+                            if any(word in content for word in ["Rechnung", "Kosten", "CHF", "Franken"]):
+                                content = self._format_garage_data(content)
+                                invoices.append(content)
+                        
+                        if invoices:
+                            response_text = "Hier sind die Rechnungsinformationen:\n\n"
+                            response_text += "\n\n".join(invoices[:2])
+                            return response_text
+                    
+                    return "Ich konnte keine Rechnungsdaten zu Ihrer Anfrage finden."
+                    
+                else:
+                    logger.error(f"Invoice search failed: {response.status_code}")
+                    return "Die Rechnungsdatenbank ist momentan nicht verfügbar."
+                    
+        except Exception as e:
+            logger.error(f"Invoice search error: {e}")
+            return "Es gab einen Fehler beim Abrufen der Rechnungsdaten."
+
+    def _format_garage_data(self, content: str) -> str:
+        """Formatiert Garagendaten für bessere Lesbarkeit"""
+        # Ersetze Unterstriche
+        content = content.replace('_', ' ')
+        
+        # Formatiere Währungen für Sprachausgabe
+        content = re.sub(r'CHF\s*(\d+)\.(\d{2})', r'\1 Franken \2', content)
+        content = re.sub(r'(\d+)\.(\d{2})\s*CHF', r'\1 Franken \2', content)
+        
+        # Formatiere Datum
+        content = re.sub(r'(\d{4})-(\d{2})-(\d{2})', r'\3.\2.\1', content)
+        
+        return content
 
 
 async def request_handler(ctx: JobContext):
@@ -160,16 +242,16 @@ async def request_handler(ctx: JobContext):
 
 
 async def entrypoint(ctx: JobContext):
-    """Entry point mit moderner API wie im Nutrition-Agent"""
+    """Entry point für den Garage Agent"""
     room_name = ctx.room.name if ctx.room else "unknown"
     session_id = f"{room_name}_{int(asyncio.get_event_loop().time())}"
     
     logger.info("="*50)
-    logger.info(f"🚀 Starting Garage Agent Session: {session_id}")
+    logger.info(f"🚗 Starting Garage Agent Session: {session_id}")
     logger.info("="*50)
     
-    session = None  # Session Variable für Cleanup
-    session_closed = False  # Flag um doppeltes Cleanup zu vermeiden
+    session = None
+    session_closed = False
     
     # Register disconnect handler FIRST
     def on_disconnect():
@@ -181,18 +263,52 @@ async def entrypoint(ctx: JobContext):
         ctx.room.on("disconnected", on_disconnect)
     
     try:
-        # 1. Connect FIRST (wie im Nutrition-Agent!)
+        # 1. Connect to room
         await ctx.connect()
         logger.info(f"✅ [{session_id}] Connected to room")
+        
+        # Debug info
+        logger.info(f"Room participants: {len(ctx.room.remote_participants)}")
+        logger.info(f"Local participant: {ctx.room.local_participant.identity}")
+        
+        # Track event handlers
+        @ctx.room.on("track_published")
+        def on_track_published(publication, participant):
+            logger.info(f"[{session_id}] Track published: {publication.kind} from {participant.identity}")
+        
+        @ctx.room.on("track_subscribed")
+        def on_track_subscribed(track, publication, participant):
+            logger.info(f"[{session_id}] Track subscribed: {track.kind} from {participant.identity}")
         
         # 2. Wait for participant
         participant = await ctx.wait_for_participant()
         logger.info(f"✅ [{session_id}] Participant joined: {participant.identity}")
         
-        # 3. LLM-Konfiguration - NUR LLAMA 3.2!
+        # 3. Wait for audio track
+        audio_track_received = False
+        max_wait_time = 10
+        
+        for i in range(max_wait_time):
+            for track_pub in participant.track_publications.values():
+                if track_pub.kind == rtc.TrackKind.KIND_AUDIO:
+                    logger.info(f"✅ [{session_id}] Audio track found: {track_pub.sid}")
+                    audio_track_received = True
+                    logger.info(f"📡 [{session_id}] Audio track - subscribed: {track_pub.subscribed}, muted: {track_pub.muted}")
+                    break
+            
+            if audio_track_received:
+                break
+                
+            logger.info(f"⏳ [{session_id}] Waiting for audio track... ({i+1}/{max_wait_time})")
+            await asyncio.sleep(1)
+        
+        if not audio_track_received:
+            logger.error(f"❌ [{session_id}] No audio track received after {max_wait_time}s!")
+        
+        # 4. Configure LLM
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
         
-        # Immer Llama 3.2 verwenden
+        # Verwende Llama 3.2
         llm = openai.LLM(
             model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
@@ -201,16 +317,19 @@ async def entrypoint(ctx: JobContext):
         )
         logger.info(f"🤖 [{session_id}] Using Llama 3.2 via Ollama")
         
-        # 4. Create session with userdata (wie im Nutrition-Agent!)
+        # 5. Create session
         session = AgentSession[GarageUserData](
             userdata=GarageUserData(
-                authenticated_customer=None,
-                rag_url=rag_url
+                authenticated_user=None,
+                rag_url=rag_url,
+                current_customer_id=None,
+                active_repair_id=None,
+                user_language="de"
             ),
             llm=llm,
             vad=silero.VAD.load(
-                min_silence_duration=0.5,  # Erhöht von default 0.3
-                min_speech_duration=0.2    # Erhöht von default 0.1
+                min_silence_duration=0.6,  # Etwas schneller als Medical
+                min_speech_duration=0.2
             ),
             stt=openai.STT(
                 model="whisper-1",
@@ -218,77 +337,83 @@ async def entrypoint(ctx: JobContext):
             ),
             tts=openai.TTS(
                 model="tts-1",
-                voice="onyx"
+                voice="nova"  # Freundliche Stimme für Kundenkontakt
             )
         )
         
-        # 5. Create agent instance
+        # 6. Create agent
         agent = GarageAssistant()
         
-        # 6. WICHTIG: Kurze Pause vor Session-Start
-        await asyncio.sleep(0.5)
-        
         # 7. Start session
+        await asyncio.sleep(0.5)
         logger.info(f"🏁 [{session_id}] Starting session...")
         await session.start(
             room=ctx.room,
             agent=agent
         )
         
-        # 8. Initiale Begrüßung erzwingen
-        await asyncio.sleep(1.0)  # Warte bis Session vollständig initialisiert
+        # Event handlers (simplified)
+        @session.on("user_input_transcribed")
+        def on_user_input(event):
+            logger.info(f"[{session_id}] 🎤 User: {event.transcript} (final: {event.is_final})")
         
-        # Sende Begrüßung direkt über die Session
-        initial_greeting = "Willkommen in der Werkstatt! Bitte nennen Sie mir Ihren Namen."
-        logger.info(f"📢 [{session_id}] Sending initial greeting: {initial_greeting}")
+        @session.on("agent_state_changed")
+        def on_state_changed(event):
+            logger.info(f"[{session_id}] 🤖 Agent state changed")
         
-        # Nutze die Session's TTS direkt
+        @session.on("user_state_changed")
+        def on_user_state(event):
+            logger.info(f"[{session_id}] 👤 User state changed")
+        
+        # 8. Initial greeting
+        await asyncio.sleep(1.0)
+        
+        initial_instructions = """Begrüße den Kunden freundlich mit: 
+        'Guten Tag und willkommen bei der Garage Müller! Ich bin Pia, Ihr digitaler Assistent. 
+        Wie kann ich Ihnen heute helfen? Möchten Sie den Status einer Reparatur erfahren, 
+        Kundendaten abfragen oder haben Sie Fragen zu einer Rechnung?'"""
+        
+        logger.info(f"📢 [{session_id}] Generating initial greeting...")
+        
         try:
-            # Option 1: Wenn session.say verfügbar ist
-            if hasattr(session, 'say'):
-                await session.say(initial_greeting)
-            else:
-                # Option 2: Direkte TTS-Synthese und Audio-Ausgabe
-                tts_audio = await session.tts.synthesize(initial_greeting)
-                # LiveKit sendet das Audio automatisch an den Room
-                logger.info(f"✅ [{session_id}] Initial greeting sent via TTS")
+            await session.generate_reply(instructions=initial_instructions)
+            logger.info(f"✅ [{session_id}] Initial greeting sent")
         except Exception as e:
             logger.warning(f"[{session_id}] Could not send initial greeting: {e}")
         
         logger.info(f"✅ [{session_id}] Garage Agent ready and listening!")
+        
+        # Wait for disconnect
+        disconnect_event = asyncio.Event()
+        
+        def handle_disconnect():
+            nonlocal session_closed
+            session_closed = True
+            disconnect_event.set()
+        
+        ctx.room.on("disconnected", handle_disconnect)
+        
+        await disconnect_event.wait()
+        logger.info(f"[{session_id}] Room disconnected, ending session")
         
     except Exception as e:
         logger.error(f"❌ [{session_id}] Error in garage agent: {e}", exc_info=True)
         raise
         
     finally:
-        # WICHTIGES CLEANUP - Wird IMMER ausgeführt
+        # Cleanup
         logger.info(f"🧹 [{session_id}] Starting session cleanup...")
         
         if session is not None and not session_closed:
             try:
-                # NUR drain wenn Session noch aktiv ist
-                if hasattr(session, '_activity') and session._activity:
-                    logger.info(f"🛑 [{session_id}] Session still active, attempting drain...")
-                    try:
-                        # Mit Timeout um Hängen zu vermeiden
-                        await asyncio.wait_for(session.drain(), timeout=2.0)
-                        logger.info(f"✅ [{session_id}] Session drained")
-                    except asyncio.TimeoutError:
-                        logger.warning(f"⚠️ [{session_id}] Session drain timed out after 2s")
-                    except Exception as e:
-                        logger.warning(f"⚠️ [{session_id}] Session drain failed: {e}")
-                
-                # Session beenden
                 await session.aclose()
                 logger.info(f"✅ [{session_id}] Session closed successfully")
-                
             except Exception as e:
                 logger.warning(f"⚠️ [{session_id}] Error closing session: {e}")
         elif session_closed:
             logger.info(f"ℹ️ [{session_id}] Session already closed by disconnect event")
         
-        # Disconnect vom Room wenn noch verbunden
+        # Disconnect from room if still connected
         try:
             if ctx.room and hasattr(ctx.room, 'connection_state') and ctx.room.connection_state == "connected":
                 await ctx.room.disconnect()
@@ -296,7 +421,7 @@ async def entrypoint(ctx: JobContext):
         except Exception as e:
             logger.warning(f"⚠️ [{session_id}] Error disconnecting from room: {e}")
         
-        # Explizit Garbage Collection erzwingen
+        # Force garbage collection
         import gc
         gc.collect()
         logger.info(f"♻️ [{session_id}] Forced garbage collection")
