@@ -2,6 +2,7 @@
 import logging
 import os
 import httpx
+import asyncio
 from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime
@@ -35,7 +36,8 @@ class GarageAssistant(Agent):
         # Instructions optimiert für Llama 3.2
         super().__init__(instructions="""You are a helpful garage assistant at an auto repair shop.
 
-Your first response must be: "Willkommen in der Werkstatt! Bitte nennen Sie mir Ihren Namen."
+IMPORTANT: Your VERY FIRST response is already being sent automatically. Do NOT greet again.
+Just listen for the customer's name and then authenticate them.
 
 After the customer provides their name, use the authenticate_customer function silently.
 After authentication, help with vehicle data and service information.
@@ -178,7 +180,10 @@ async def entrypoint(ctx: JobContext):
             rag_url=rag_url
         ),
         llm=llm,
-        vad=silero.VAD.load(),
+        vad=silero.VAD.load(
+            min_silence_duration=0.5,  # Erhöht von default 0.3
+            min_speech_duration=0.2    # Erhöht von default 0.1
+        ),
         stt=openai.STT(
             model="whisper-1",
             language="de"
@@ -192,12 +197,35 @@ async def entrypoint(ctx: JobContext):
     # 5. Create agent instance
     agent = GarageAssistant()
     
-    # 6. Start session
+    # 6. WICHTIG: Kurze Pause vor Session-Start
+    await asyncio.sleep(0.5)
+    
+    # 7. Start session
     logger.info("🏁 Starting session...")
     await session.start(
         room=ctx.room,
         agent=agent
     )
+    
+    # 8. Initiale Begrüßung erzwingen
+    await asyncio.sleep(1.0)  # Warte bis Session vollständig initialisiert
+    
+    # Sende Begrüßung direkt über die Session
+    initial_greeting = "Willkommen in der Werkstatt! Bitte nennen Sie mir Ihren Namen."
+    logger.info(f"📢 Sending initial greeting: {initial_greeting}")
+    
+    # Nutze die Session's TTS direkt
+    try:
+        # Option 1: Wenn session.say verfügbar ist
+        if hasattr(session, 'say'):
+            await session.say(initial_greeting)
+        else:
+            # Option 2: Direkte TTS-Synthese und Audio-Ausgabe
+            tts_audio = await session.tts.synthesize(initial_greeting)
+            # LiveKit sendet das Audio automatisch an den Room
+            logger.info("✅ Initial greeting sent via TTS")
+    except Exception as e:
+        logger.warning(f"Could not send initial greeting: {e}")
     
     logger.info("✅ Garage Agent ready and listening!")
 
