@@ -1,9 +1,10 @@
-# LiveKit Agents 1.0.x Version - Secure Garage Agent with Fuzzy Search
+# LiveKit Agents 1.0.x Version - Secure Garage Agent with Fuzzy Search - MISTRAL v0.3
 import logging
 import os
 import httpx
 import re
 import time
+import json
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from livekit import agents
@@ -18,7 +19,7 @@ load_dotenv()
 
 # Enhanced logging
 logger = logging.getLogger("garage-assistant")
-logger.setLevel(logging.DEBUG)  # Changed to DEBUG for more info
+logger.setLevel(logging.DEBUG)
 
 # Add console handler with formatting
 console_handler = logging.StreamHandler()
@@ -30,12 +31,27 @@ logger.addHandler(console_handler)
 # Enable LiveKit debug logs
 logging.getLogger("livekit").setLevel(logging.DEBUG)
 
+# Enable Mistral debugging
+os.environ['MISTRAL_DEBUG'] = 'true'
+
 class GarageAgent(Agent):
     def __init__(self):
-        logger.info("Initializing GarageAgent...")
+        logger.info("Initializing GarageAgent with Mistral v0.3...")
         
         super().__init__(
             instructions="""Du bist ein professioneller Werkstatt-Assistent mit strikten Datenschutz-Richtlinien.
+
+## WICHTIG FÜR MISTRAL FUNCTION CALLING:
+- Bei Funktionsaufrufen IMMER das exakte Format verwenden
+- Funktionsparameter müssen EXAKT den definierten Namen entsprechen
+- search_vehicle_data benötigt Parameter "query" als String
+- authenticate_customer benötigt Parameter "customer_name" als String
+- confirm_fuzzy_match benötigt Parameter "confirmed_name" als String
+
+## FUNCTION CALLING BEISPIELE:
+- RICHTIG: search_vehicle_data mit query="nächster Service"
+- RICHTIG: authenticate_customer mit customer_name="Marco Rossi"
+- FALSCH: search_vehicle_data mit vehicle_id=123 oder id="xyz"
 
 ## AUTHENTIFIZIERUNG (OBLIGATORISCH)
 1. ERSTE ANTWORT: "Willkommen in der Werkstatt! Bitte nennen Sie mir Ihren Namen zur Identifikation."
@@ -84,10 +100,11 @@ class GarageAgent(Agent):
 WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kundennamen keine Datenweitergabe!
 """,
             llm=openai.LLM(
-                model="llama3.1:8b",
+                model="mistral:v0.3",  # Mistral v0.3
                 base_url="http://172.16.0.146:11434/v1",
                 api_key="ollama",
-                temperature=0.5,
+                temperature=0.3,  # Niedriger für Mistral
+                max_tokens=2048,  # Mistral bevorzugt kürzere Antworten
             ),
             stt=openai.STT(model="whisper-1", language="de"),
             tts=openai.TTS(model="tts-1", voice="onyx"),
@@ -119,7 +136,7 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
         self.transcription_count = 0
         self.vad_event_count = 0
         
-        logger.info(f"✅ Secure Garage Agent initialized with RAG service at {self.rag_url}")
+        logger.info(f"✅ Secure Garage Agent initialized with Mistral v0.3 and RAG service at {self.rag_url}")
         
     async def on_enter(self):
         """Called when agent enters session"""
@@ -163,8 +180,10 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
     async def confirm_fuzzy_match(self, confirmed_name: str) -> str:
         """Bestätigt einen Fuzzy Match Namen.
         
+        MISTRAL WICHTIG: Der Parameter heißt 'confirmed_name' (String).
+        
         Args:
-            confirmed_name: Der bestätigte Name
+            confirmed_name: Der bestätigte Name als String
             
         Returns:
             Bestätigung der Authentifizierung
@@ -176,13 +195,25 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
     async def authenticate_customer(self, customer_name: str) -> str:
         """Authentifiziert einen Kunden anhand des Namens mit Fuzzy Search Support.
         
+        MISTRAL WICHTIG: Der Parameter heißt 'customer_name' (String).
+        
+        Verwende diese Funktion für:
+        - Kundenidentifikation: customer_name="Marco Rossi"
+        - Nach Namensnennung: customer_name="Thomas Meier"
+        
         Args:
-            customer_name: Der Name des Kunden
+            customer_name: Der Name des Kunden als String
             
         Returns:
             Authentifizierungsstatus und Kundendaten
         """
         logger.info(f"🔐 Starting authentication for: '{customer_name}'")
+        logger.debug(f"Parameter type check - customer_name: {type(customer_name)}")
+        
+        # Mistral-spezifische Validierung
+        if not isinstance(customer_name, str):
+            logger.warning(f"Mistral sent non-string parameter: {type(customer_name)}")
+            customer_name = str(customer_name)
         
         try:
             # Check if already too many failed attempts
@@ -337,13 +368,27 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
     async def search_vehicle_data(self, query: str) -> str:
         """Sucht in der Fahrzeugdatenbank nach Informationen.
         
+        MISTRAL WICHTIG: Der Parameter heißt 'query' (String).
+        
+        Verwende diese Funktion für:
+        - Service-Informationen: query="nächster Service"
+        - Fahrzeugdaten: query="meine Fahrzeuge"
+        - Probleme: query="aktuelle Probleme"
+        - Kennzeichen: query="LU 234567"
+        
         Args:
-            query: Die Suchanfrage (z.B. Kennzeichen, Fahrzeugtyp, Problem)
+            query: Die Suchanfrage als TEXT/STRING. NICHT vehicle_id oder andere Namen!
             
         Returns:
-            Die gefundenen Fahrzeugdaten
+            Die gefundenen Fahrzeugdaten als Text
         """
         logger.info(f"🔍 Vehicle search requested: '{query}'")
+        logger.debug(f"Parameter type check - query: {type(query)}")
+        
+        # Mistral-spezifische Validierung
+        if not isinstance(query, str):
+            logger.warning(f"Mistral sent non-string parameter: {type(query)}")
+            query = str(query)
         
         # Security check - ensure customer is authenticated
         if not self._check_authentication():
@@ -360,12 +405,56 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
             # Update last activity time
             self.last_activity_time = datetime.now()
             
-            # Add customer filter to query for security
-            customer_filtered_query = f"{query} besitzer:{self.authenticated_customer}"
-            processed_query = self._process_license_plate(customer_filtered_query)
+            # SCHRITT 1: Kennzeichen des Kunden einmalig laden (mit Caching)
+            if not hasattr(self, '_customer_kennzeichen'):
+                logger.info(f"🔐 Loading vehicle data for {self.authenticated_customer}")
+                
+                async with httpx.AsyncClient() as client:
+                    # Suche nach allen Fahrzeugen des Kunden
+                    vehicle_response = await client.post(
+                        f"{self.rag_url}/search",
+                        json={
+                            "query": f"besitzer: {self.authenticated_customer}",
+                            "agent_type": "garage",
+                            "top_k": 10,
+                            "collection": "automotive_docs"
+                        }
+                    )
+                    
+                    self._customer_kennzeichen = []
+                    if vehicle_response.status_code == 200:
+                        vehicle_data = vehicle_response.json()
+                        for result in vehicle_data.get("results", []):
+                            content = result.get("content", "")
+                            # Verbesserte Regex für verschiedene Kennzeichen-Formate
+                            kz_patterns = [
+                                r'[A-Z]{2}\s*\d+',  # Standard Format
+                                r'Kennzeichen:\s*([A-Z]{2}\s*\d+)',  # Mit Label
+                                r'\(([A-Z]{2}\s*\d+)\)',  # In Klammern
+                            ]
+                            
+                            for pattern in kz_patterns:
+                                matches = re.findall(pattern, content)
+                                for match in matches:
+                                    normalized = match.strip().upper()
+                                    if normalized not in self._customer_kennzeichen:
+                                        self._customer_kennzeichen.append(normalized)
+                        
+                        logger.info(f"✅ Found {len(self._customer_kennzeichen)} license plates for customer: {self._customer_kennzeichen}")
             
-            logger.info(f"🔐 Searching vehicles for authenticated customer {self.authenticated_customer}")
-            logger.debug(f"Processed query: {processed_query}")
+            # SCHRITT 2: Erweiterte Suchanfrage mit Kennzeichen
+            # Füge alle Kundenkennzeichen zur Suche hinzu
+            enhanced_query = query
+            if hasattr(self, '_customer_kennzeichen') and self._customer_kennzeichen:
+                # Füge Kennzeichen als zusätzliche Suchbegriffe hinzu
+                kennzeichen_string = " ".join(self._customer_kennzeichen)
+                enhanced_query = f"{query} {kennzeichen_string}"
+            
+            # Verarbeite die Query (z.B. Zahlen zu Ziffern)
+            processed_query = self._process_license_plate(enhanced_query)
+            
+            logger.info(f"🔍 Enhanced search query: '{processed_query}'")
+            logger.debug(f"Original query: '{query}'")
             
             # Log data access
             self._log_access("vehicle_search", "attempt", {"query": query})
@@ -376,7 +465,7 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
                     json={
                         "query": processed_query,
                         "agent_type": "garage",
-                        "top_k": 3,
+                        "top_k": 10,  # Erhöht für bessere Trefferquote
                         "collection": "automotive_docs"
                     }
                 )
@@ -388,25 +477,99 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
                     results = data.get("results", [])
                     logger.debug(f"RAG returned {len(results)} results")
                     
-                    # Filter results to ensure they belong to authenticated customer
+                    # SCHRITT 3: Intelligenteres Filtern
                     filtered_results = []
+                    kennzeichen_set = set(self._customer_kennzeichen) if hasattr(self, '_customer_kennzeichen') else set()
+                    
                     for result in results:
                         content = result.get("content", "")
-                        if self.authenticated_customer.lower() in content.lower():
+                        content_lower = content.lower()
+                        
+                        # Prüfe ob der Inhalt zum Kunden gehört
+                        is_customer_data = False
+                        
+                        # 1. Check: Kundenname im Content
+                        if self.authenticated_customer.lower() in content_lower:
+                            is_customer_data = True
+                            logger.debug(f"✓ Found customer name in content")
+                        
+                        # 2. Check: Eines der Kundenkennzeichen im Content
+                        if not is_customer_data and kennzeichen_set:
+                            for kennzeichen in kennzeichen_set:
+                                if kennzeichen in content.upper():
+                                    is_customer_data = True
+                                    logger.debug(f"✓ Found customer license plate {kennzeichen} in content")
+                                    break
+                        
+                        # 3. Check: Spezifische Muster für Service-Infos
+                        if not is_customer_data:
+                            # Prüfe ob es eine Service-Info mit einem der Kundenkennzeichen ist
+                            service_patterns = [
+                                r'Service für.*\(([A-Z]{2}\s*\d+)\)',
+                                r'Nächster Service für.*\(([A-Z]{2}\s*\d+)\)',
+                                r'Wartung.*([A-Z]{2}\s*\d+)',
+                            ]
+                            
+                            for pattern in service_patterns:
+                                match = re.search(pattern, content)
+                                if match:
+                                    found_kennzeichen = match.group(1).strip().upper()
+                                    if found_kennzeichen in kennzeichen_set:
+                                        is_customer_data = True
+                                        logger.debug(f"✓ Found service info for customer vehicle {found_kennzeichen}")
+                                        break
+                        
+                        if is_customer_data:
                             filtered_results.append(result)
                     
                     if filtered_results:
                         logger.info(f"✅ Found {len(filtered_results)} vehicle results for {self.authenticated_customer}")
                         self._log_access("vehicle_search", "success", {"results_count": len(filtered_results)})
                         
+                        # Sortiere Ergebnisse nach Relevanz
+                        # Priorisiere Ergebnisse mit höherem Score
+                        filtered_results.sort(key=lambda x: x.get('score', 0), reverse=True)
+                        
                         formatted = []
-                        for i, result in enumerate(filtered_results):
+                        for i, result in enumerate(filtered_results[:5]):  # Maximal 5 Ergebnisse
                             content = result.get("content", "").strip()
+                            score = result.get("score", 0)
                             if content:
+                                # Füge Score zur Debugging hinzu (kann später entfernt werden)
                                 formatted.append(f"[{i+1}] {content}")
+                                logger.debug(f"Result {i+1} score: {score}")
                         
                         return "\n\n".join(formatted)
                     else:
+                        # Falls keine Ergebnisse, versuche eine allgemeinere Suche
+                        if "service" in query.lower() and hasattr(self, '_customer_kennzeichen') and self._customer_kennzeichen:
+                            logger.info("ℹ️ No direct results, trying broader service search")
+                            # Suche nur mit Kennzeichen
+                            for kennzeichen in self._customer_kennzeichen[:1]:  # Versuche mit erstem Kennzeichen
+                                retry_response = await client.post(
+                                    f"{self.rag_url}/search",
+                                    json={
+                                        "query": f"Service {kennzeichen}",
+                                        "agent_type": "garage",
+                                        "top_k": 5,
+                                        "collection": "automotive_docs"
+                                    }
+                                )
+                                
+                                if retry_response.status_code == 200:
+                                    retry_data = retry_response.json()
+                                    retry_results = retry_data.get("results", [])
+                                    if retry_results:
+                                        logger.info(f"✅ Found {len(retry_results)} results in retry")
+                                        formatted = []
+                                        for i, result in enumerate(retry_results[:3]):
+                                            content = result.get("content", "").strip()
+                                            if content and kennzeichen in content:
+                                                formatted.append(f"[{i+1}] {content}")
+                                        
+                                        if formatted:
+                                            return "\n\n".join(formatted)
+                        
                         self._log_access("vehicle_search", "no_results", {"query": query})
                         logger.info("ℹ️ No results found for customer")
                         return "Keine Fahrzeugdaten zu dieser Anfrage für Ihr Konto gefunden."
@@ -493,14 +656,15 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
 
 
 async def entrypoint(ctx: JobContext):
-    """Entry point for garage agent - CORRECTED VERSION"""
+    """Entry point for garage agent - MISTRAL VERSION"""
     logger.info("="*50)
-    logger.info("🚀 Secure Garage Agent Starting (1.0.x)")
+    logger.info("🚀 Secure Garage Agent Starting (1.0.x) - MISTRAL v0.3")
     logger.info("="*50)
     
     # Log configuration
     logger.debug(f"Room name: {ctx.room.name}")
     logger.debug(f"Room ID: {ctx.room.sid}")
+    logger.debug(f"Using Mistral v0.3 model")
     
     # SCHRITT 1: ZUERST connecten (OHNE AutoSubscribe!)
     logger.info("📡 Connecting to room...")
@@ -518,7 +682,7 @@ async def entrypoint(ctx: JobContext):
     logger.debug(f"Number of tracks: {len(participant.track_publications)}")
     
     # SCHRITT 3: DANN Agent und Session erstellen
-    logger.info("🎯 Creating agent and session...")
+    logger.info("🎯 Creating agent and session with Mistral...")
     agent = GarageAgent()
     session = AgentSession()
     
@@ -529,10 +693,10 @@ async def entrypoint(ctx: JobContext):
         agent=agent
     )
     
-    logger.info("✅ Secure Garage Agent ready and listening!")
+    logger.info("✅ Secure Garage Agent with Mistral v0.3 ready and listening!")
     logger.info("="*50)
 
 
 if __name__ == "__main__":
-    logger.info("🚀 Starting Garage Agent Worker...")
+    logger.info("🚀 Starting Garage Agent Worker with Mistral v0.3...")
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
