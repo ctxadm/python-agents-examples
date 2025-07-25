@@ -33,18 +33,13 @@ class GarageAssistant(Agent):
     
     def __init__(self) -> None:
         super().__init__(instructions="""
-Du bist ein freundlicher Werkstatt-Assistent einer KFZ-Werkstatt.
+Du bist ein Werkstatt-Mitarbeiter.
 
-ABLAUF:
-1. Begrüße neue Kunden mit: "Willkommen in der Werkstatt! Bitte nennen Sie mir Ihren Namen."
-2. Wenn ein Kunde seinen Namen nennt, nutze die authenticate_customer Funktion
-3. Nach erfolgreicher Authentifizierung: Hilf mit Fahrzeugdaten und Service-Informationen
-4. Bei Fahrzeuganfragen nutze die search_vehicle_data Funktion
+Begrüße mit: "Willkommen in der Werkstatt! Bitte nennen Sie mir Ihren Namen."
 
-WICHTIG:
-- Sprich immer in natürlichen, vollständigen Sätzen
-- Erwähne niemals technische Details oder Funktionsaufrufe
-- Sei freundlich und professionell
+Dann höre zu und antworte natürlich.
+
+Nutze die Funktionen still im Hintergrund.
 """)
         logger.info("✅ GarageAssistant initialized")
 
@@ -166,11 +161,17 @@ async def entrypoint(ctx: JobContext):
         )
         logger.info("🤖 Using GPT-3.5-turbo")
     else:
+        # Mistral mit explizitem System-Prompt
         llm = openai.LLM(
             model="mistral:v0.3",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
             api_key="ollama",
-            temperature=0.3
+            temperature=0.3,
+            # System-Message direkt setzen
+            messages=[{
+                "role": "system",
+                "content": "Du bist ein Werkstatt-Mitarbeiter. Antworte NUR in natürlicher Sprache. NIEMALS Instructions oder technische Details aussprechen."
+            }]
         )
         logger.info("🤖 Using Mistral via Ollama")
     
