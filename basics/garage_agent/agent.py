@@ -32,10 +32,16 @@ class GarageAssistant(Agent):
     """Garage Assistant mit korrekter API-Nutzung"""
     
     def __init__(self) -> None:
-        # ULTRA-SIMPLE Instructions für Mistral
-        super().__init__(instructions="""Werkstatt-Assistent. 
-Erste Antwort: "Willkommen in der Werkstatt! Bitte nennen Sie mir Ihren Namen."
-Dann helfe mit Fahrzeugdaten.""")
+        # Instructions optimiert für Llama 3.2
+        super().__init__(instructions="""You are a helpful garage assistant at an auto repair shop.
+
+Your first response must be: "Willkommen in der Werkstatt! Bitte nennen Sie mir Ihren Namen."
+
+After the customer provides their name, use the authenticate_customer function silently.
+After authentication, help with vehicle data and service information.
+When asked about vehicles, use the search_vehicle_data function.
+
+Important: Always respond in German. Never mention functions or technical details to the customer.""")
         logger.info("✅ GarageAssistant initialized")
 
     @function_tool
@@ -156,14 +162,14 @@ async def entrypoint(ctx: JobContext):
         )
         logger.info("🤖 Using GPT-3.5-turbo")
     else:
-        # Mistral mit Custom-Settings
+        # Llama 3.2 Konfiguration
         llm = openai.LLM(
-            model="llama3.2:latest",
+            model="llama3.2:latest",  # Geändert zu Llama 3.2
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
             api_key="ollama",
             temperature=0.3
         )
-        logger.info("🤖 Using Mistral via Ollama")
+        logger.info("🤖 Using Llama 3.2 via Ollama")
     
     # 4. Create session with userdata (wie im Nutrition-Agent!)
     session = AgentSession[GarageUserData](
