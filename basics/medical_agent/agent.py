@@ -180,25 +180,17 @@ async def entrypoint(ctx: JobContext):
     participant = await ctx.wait_for_participant()
     logger.info(f"✅ Participant joined: {participant.identity}")
     
-    # 3. LLM-Konfiguration
-    use_gpt = os.getenv("USE_GPT", "false").lower() == "true"
+    # 3. LLM-Konfiguration - NUR LLAMA 3.2!
     rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
     
-    if use_gpt:
-        llm = openai.LLM(
-            model="gpt-3.5-turbo",
-            temperature=0.3
-        )
-        logger.info("🤖 Using GPT-3.5-turbo")
-    else:
-        # Llama 3.2 Konfiguration
-        llm = openai.LLM(
-            model="llama3.2:latest",  # Geändert zu Llama 3.2
-            base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
-            api_key="ollama",
-            temperature=0.3
-        )
-        logger.info("🤖 Using Llama 3.2 via Ollama")
+    # Immer Llama 3.2 verwenden
+    llm = openai.LLM(
+        model="llama3.2:latest",
+        base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
+        api_key="ollama",
+        temperature=0.3
+    )
+    logger.info("🤖 Using Llama 3.2 via Ollama")
     
     # 4. Create session with userdata (wie im Garage Agent!)
     session = AgentSession[MedicalUserData](
