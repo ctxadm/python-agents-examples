@@ -285,40 +285,51 @@ async def entrypoint(ctx: JobContext):
             agent=agent
         )
         
-        # Debug Event Handler für Session
+        # Debug Event Handler für Session - KORRIGIERT!
         @session.on("user_input_transcribed")
         def on_user_input(event):
             logger.info(f"[{session_id}] 🎤 User input transcribed: {event.transcript} (final: {event.is_final})")
         
         @session.on("agent_state_changed")
         def on_state_changed(event):
-            logger.info(f"[{session_id}] 🤖 Agent state changed to: {event.state}")
+            # KORRIGIERT: Event hat kein 'state' Attribut direkt
+            # Das Event selbst enthält die neuen State-Informationen
+            logger.info(f"[{session_id}] 🤖 Agent state changed event received")
         
         @session.on("user_state_changed")
         def on_user_state(event):
-            logger.info(f"[{session_id}] 👤 User state changed to: {event.state}")
+            # KORRIGIERT: Event hat kein 'state' Attribut direkt
+            logger.info(f"[{session_id}] 👤 User state changed event received")
         
-        # 8. Initiale Begrüßung erzwingen
+        # 8. Initiale Begrüßung mit generate_reply
         await asyncio.sleep(1.0)  # Warte bis Session vollständig initialisiert
         
-        # Sende Begrüßung direkt über die Session
-        initial_greeting = "Guten Tag Herr Doktor, welche Patientendaten benötigen Sie?"
-        logger.info(f"📢 [{session_id}] Sending initial greeting: {initial_greeting}")
+        # Verwende generate_reply statt say
+        initial_instructions = "Begrüße den Arzt mit: 'Guten Tag Herr Doktor, welche Patientendaten benötigen Sie?'"
+        logger.info(f"📢 [{session_id}] Generating initial greeting...")
         
-        # Nutze die Session's TTS direkt
         try:
-            # Option 1: Wenn session.say verfügbar ist
-            if hasattr(session, 'say'):
-                await session.say(initial_greeting)
-            else:
-                # Option 2: Direkte TTS-Synthese und Audio-Ausgabe
-                tts_audio = await session.tts.synthesize(initial_greeting)
-                # LiveKit sendet das Audio automatisch an den Room
-                logger.info(f"✅ [{session_id}] Initial greeting sent via TTS")
+            await session.generate_reply(instructions=initial_instructions)
+            logger.info(f"✅ [{session_id}] Initial greeting sent")
         except Exception as e:
             logger.warning(f"[{session_id}] Could not send initial greeting: {e}")
         
         logger.info(f"✅ [{session_id}] Medical Agent ready and listening!")
+        
+        # WICHTIG: Warte auf Room Disconnect
+        # Die Session läuft automatisch weiter und handled User Input
+        disconnect_event = asyncio.Event()
+        
+        def handle_disconnect():
+            nonlocal session_closed
+            session_closed = True
+            disconnect_event.set()
+        
+        ctx.room.on("disconnected", handle_disconnect)
+        
+        # Warte bis der Room disconnected wird
+        await disconnect_event.wait()
+        logger.info(f"[{session_id}] Room disconnected, ending session")
         
     except Exception as e:
         logger.error(f"❌ [{session_id}] Error in medical agent: {e}", exc_info=True)
@@ -330,18 +341,6 @@ async def entrypoint(ctx: JobContext):
         
         if session is not None and not session_closed:
             try:
-                # NUR drain wenn Session noch aktiv ist
-                if hasattr(session, '_activity') and session._activity:
-                    logger.info(f"🛑 [{session_id}] Session still active, attempting drain...")
-                    try:
-                        # Mit Timeout um Hängen zu vermeiden
-                        await asyncio.wait_for(session.drain(), timeout=2.0)
-                        logger.info(f"✅ [{session_id}] Session drained")
-                    except asyncio.TimeoutError:
-                        logger.warning(f"⚠️ [{session_id}] Session drain timed out after 2s")
-                    except Exception as e:
-                        logger.warning(f"⚠️ [{session_id}] Session drain failed: {e}")
-                
                 # Session beenden
                 await session.aclose()
                 logger.info(f"✅ [{session_id}] Session closed successfully")
