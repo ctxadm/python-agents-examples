@@ -104,7 +104,7 @@ WICHTIG: Die Kundenauthentifizierung ist NICHT optional. Ohne bestätigten Kunde
                 base_url="http://172.16.0.146:11434/v1",
                 api_key="ollama",
                 temperature=0.3,  # Niedriger für Mistral
-                max_tokens=2048,  # Mistral bevorzugt kürzere Antworten
+                # max_tokens wird nicht unterstützt in dieser Version
             ),
             stt=openai.STT(model="whisper-1", language="de"),
             tts=openai.TTS(model="tts-1", voice="onyx"),
@@ -663,7 +663,7 @@ async def entrypoint(ctx: JobContext):
     
     # Log configuration
     logger.debug(f"Room name: {ctx.room.name}")
-    logger.debug(f"Room ID: {ctx.room.sid}")
+    logger.debug(f"Room ID: {await ctx.room.sid()}")  # Await hinzugefügt
     logger.debug(f"Using Mistral v0.3 model")
     
     # SCHRITT 1: ZUERST connecten (OHNE AutoSubscribe!)
