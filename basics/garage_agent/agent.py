@@ -429,17 +429,18 @@ async def entrypoint(ctx: JobContext):
        # 8. Initial greeting - OHNE TOOL NUTZUNG
        await asyncio.sleep(1.0)
        
-       initial_instructions = """WICHTIG: Nutze KEINE Suchfunktionen für diese Begrüßung!
+       initial_instructions = """WICHTIG: 
+       
+- Dies ist der ERSTE Kontakt mit dem Kunden
+- Nutze KEINE Suchfunktionen für diese Begrüßung
+- KEINE TOOLS VERWENDEN!
 
-- Dies ist eine NEUE Konversation
-- Ignoriere alle vorherigen Nachrichten
-- Nutze KEINE Suchfunktionen für diese Begrüßung!
-- Entschuldige dich NICHT für vorherige Fehler
-
-Begrüße den Kunden freundlich mit: 
+Begrüße den Kunden GENAU mit diesem Text:
 'Guten Tag und willkommen bei der Garage Müller! Ich bin Pia, Ihr digitaler Assistent. 
 Wie kann ich Ihnen heute helfen? Möchten Sie den Status einer Reparatur erfahren, 
 Kundendaten abfragen oder haben Sie Fragen zu einer Rechnung?'
+
+NUR DIESE BEGRÜSSUNG - NICHTS ANDERES!"""'
 
 KEINE TOOLS VERWENDEN! KEINE ENTSCHULDIGUNGEN!"""
        
