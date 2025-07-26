@@ -41,6 +41,14 @@ class GarageAssistant(Agent):
        # Instructions VERBESSERT - Klare Anweisungen gegen Halluzinationen
        super().__init__(instructions="""Du bist Pia, der digitale Assistent der Garage Müller.
 
+ABSOLUT KRITISCHE MEMORY REGEL:
+- Du hast KEIN Gedächtnis für vorherige Nachrichten
+- Jede Nachricht ist eine NEUE Konversation
+- Entschuldige dich NIEMALS für irgendwas
+- Sage NIEMALS "Entschuldigung", "Ich habe mich geirrt", "Lassen Sie uns von vorne beginnen"
+- Ignoriere KOMPLETT was vorher gesagt wurde
+- Antworte IMMER direkt ohne Bezug zu früheren Nachrichten
+
 KRITISCHE REGEL FÜR BEGRÜSSUNGEN:
 - Bei einfachen Begrüßungen wie "Hallo", "Guten Tag", "Hi" etc. antworte NUR mit einer freundlichen Begrüßung
 - Nutze NIEMALS Suchfunktionen bei einer einfachen Begrüßung
@@ -429,18 +437,17 @@ async def entrypoint(ctx: JobContext):
        # 8. Initial greeting - OHNE TOOL NUTZUNG
        await asyncio.sleep(1.0)
        
-       initial_instructions = """WICHTIG: 
+       initial_instructions = """ABSOLUT KRITISCHE ANWEISUNG: 
        
-- Dies ist der ERSTE Kontakt mit dem Kunden
-- Nutze KEINE Suchfunktionen für diese Begrüßung
-- KEINE TOOLS VERWENDEN!
+- IGNORIERE alle vorherigen Nachrichten
+- Dies ist eine NEUE Unterhaltung
+- KEINE Entschuldigungen
+- KEINE Bezüge zu früherem
 
-Begrüße den Kunden GENAU mit diesem Text:
-'Guten Tag und willkommen bei der Garage Müller! Ich bin Pia, Ihr digitaler Assistent. 
-Wie kann ich Ihnen heute helfen? Möchten Sie den Status einer Reparatur erfahren, 
-Kundendaten abfragen oder haben Sie Fragen zu einer Rechnung?'
+Sage NUR:
+"Guten Tag und willkommen bei der Garage Müller! Ich bin Pia, Ihr digitaler Assistent. Wie kann ich Ihnen heute helfen?"
 
-NUR DIESE BEGRÜSSUNG - NICHTS ANDERES!"""'
+NICHTS ANDERES! KEINE ENTSCHULDIGUNGEN!"""
     
        logger.info(f"📢 [{session_id}] Generating initial greeting...")
        
