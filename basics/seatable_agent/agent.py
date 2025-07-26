@@ -1,4 +1,3 @@
-# LiveKit Agents - Garage Management Agent mit SeaTable
 import logging
 import os
 import httpx
@@ -18,11 +17,11 @@ from livekit.plugins import openai, silero
 load_dotenv()
 
 # Logging
-logger = logging.getLogger("garage-agent")
+logger = logging.getLogger("garage-seatable-agent")
 logger.setLevel(logging.INFO)
 
 # Agent Name für Multi-Worker Setup
-AGENT_NAME = os.getenv("AGENT_NAME", "agent-garage-1")
+AGENT_NAME = os.getenv("AGENT_NAME", "agent-garage-seatable")
 
 @dataclass
 class GarageUserData:
@@ -88,7 +87,6 @@ class GarageAssistant(Agent):
     """Garage Assistant für Kundenverwaltung und Reparaturen"""
     
     def __init__(self) -> None:
-        # IDENTISCHE Instructions wie im funktionierenden Garage Agent
         super().__init__(instructions="""Du bist Pia, der digitale Assistent der Garage Müller.
 
 ABSOLUT KRITISCHE MEMORY REGEL:
@@ -303,14 +301,6 @@ WICHTIGE REGELN:
             logger.error(f"Invoice search error: {e}")
             return "Es gab einen Fehler beim Abrufen der Rechnungsdaten."
 
-    def _format_garage_data(self, content: str) -> str:
-        """Formatiert Garagendaten für bessere Lesbarkeit"""
-        content = content.replace('_', ' ')
-        content = re.sub(r'CHF\s*(\d+)\.(\d{2})', r'\1 Franken \2', content)
-        content = re.sub(r'(\d+)\.(\d{2})\s*CHF', r'\1 Franken \2', content)
-        content = re.sub(r'(\d{4})-(\d{2})-(\d{2})', r'\3.\2.\1', content)
-        return content
-
 
 async def request_handler(ctx: JobContext):
     """Request handler - KRITISCH für Job-Akzeptierung!"""
@@ -322,17 +312,23 @@ async def request_handler(ctx: JobContext):
 
 
 async def entrypoint(ctx: JobContext):
-    """Entry point für den Garage Agent - IDENTISCH zum funktionierenden Agent"""
+    """Entry point für den Garage Agent mit SeaTable"""
     room_name = ctx.room.name if ctx.room else "unknown"
     session_id = f"{room_name}_{int(asyncio.get_event_loop().time())}"
     
     logger.info("="*50)
-    logger.info(f"🚗 Starting Garage Agent Session: {session_id}")
+    logger.info(f"🚗 Starting Garage SeaTable Agent Session: {session_id}")
     logger.info("="*50)
+    
+    # DEBUG: Environment Check
+    logger.info("🔍 Environment Check:")
+    logger.info(f"  LIVEKIT_URL: {os.getenv('LIVEKIT_URL', 'NOT SET')}")
+    logger.info(f"  SEATABLE_BASE_TOKEN: {'***' if os.getenv('SEATABLE_BASE_TOKEN') else 'NOT SET'}")
+    logger.info(f"  SEATABLE_SERVER_URL: {os.getenv('SEATABLE_SERVER_URL', 'NOT SET')}")
     
     # SeaTable Config aus .env
     seatable_token = os.getenv("SEATABLE_BASE_TOKEN")
-    seatable_url = os.getenv("SEATABLE_SERVER_URL")
+    seatable_url = os.getenv("SEATABLE_SERVER_URL", "https://cloud.seatable.io")
     
     if not seatable_token:
         logger.error("❌ SEATABLE_BASE_TOKEN not set!")
@@ -359,15 +355,6 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"Room participants: {len(ctx.room.remote_participants)}")
         logger.info(f"Local participant: {ctx.room.local_participant.identity}")
         
-        # Track event handlers
-        @ctx.room.on("track_published")
-        def on_track_published(publication, participant):
-            logger.info(f"[{session_id}] Track published: {publication.kind} from {participant.identity}")
-        
-        @ctx.room.on("track_subscribed")
-        def on_track_subscribed(track, publication, participant):
-            logger.info(f"[{session_id}] Track subscribed: {track.kind} from {participant.identity}")
-        
         # 2. Wait for participant
         participant = await ctx.wait_for_participant()
         logger.info(f"✅ [{session_id}] Participant joined: {participant.identity}")
@@ -381,7 +368,6 @@ async def entrypoint(ctx: JobContext):
                 if track_pub.kind == rtc.TrackKind.KIND_AUDIO:
                     logger.info(f"✅ [{session_id}] Audio track found: {track_pub.sid}")
                     audio_track_received = True
-                    logger.info(f"📡 [{session_id}] Audio track - subscribed: {track_pub.subscribed}, muted: {track_pub.muted}")
                     break
             
             if audio_track_received:
@@ -476,7 +462,7 @@ NICHTS ANDERES! KEINE ENTSCHULDIGUNGEN!"""
         except Exception as e:
             logger.warning(f"[{session_id}] Could not send initial greeting: {e}")
         
-        logger.info(f"✅ [{session_id}] Garage Agent ready and listening!")
+        logger.info(f"✅ [{session_id}] Garage SeaTable Agent ready and listening!")
         
         # Wait for disconnect
         disconnect_event = asyncio.Event()
@@ -507,14 +493,6 @@ NICHTS ANDERES! KEINE ENTSCHULDIGUNGEN!"""
                 logger.warning(f"⚠️ [{session_id}] Error closing session: {e}")
         elif session_closed:
             logger.info(f"ℹ️ [{session_id}] Session already closed by disconnect event")
-        
-        # Disconnect from room if still connected
-        try:
-            if ctx.room and hasattr(ctx.room, 'connection_state') and ctx.room.connection_state == "connected":
-                await ctx.room.disconnect()
-                logger.info(f"✅ [{session_id}] Disconnected from room")
-        except Exception as e:
-            logger.warning(f"⚠️ [{session_id}] Error disconnecting from room: {e}")
         
         # Force garbage collection
         import gc
