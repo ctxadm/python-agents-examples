@@ -382,7 +382,7 @@ async def entrypoint(ctx: JobContext):
            model="llama3.2:latest",
            base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
            api_key="ollama",
-           temperature=0.3
+           temperature=0.7
        )
        logger.info(f"🤖 [{session_id}] Using Llama 3.2 via Ollama")
        
