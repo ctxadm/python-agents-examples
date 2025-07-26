@@ -38,7 +38,7 @@ class GarageAssistant(Agent):
    """Garage Assistant für Kundenverwaltung und Reparaturen"""
    
    def __init__(self) -> None:
-       # Instructions VERBESSERT - Klare Anweisungen für Begrüßungen
+       # Instructions VERBESSERT - Klare Anweisungen gegen Halluzinationen
        super().__init__(instructions="""Du bist Pia, der digitale Assistent der Garage Müller.
 
 KRITISCHE REGEL FÜR BEGRÜSSUNGEN:
@@ -46,11 +46,19 @@ KRITISCHE REGEL FÜR BEGRÜSSUNGEN:
 - Nutze NIEMALS Suchfunktionen bei einer einfachen Begrüßung
 - Warte IMMER auf eine konkrete Anfrage des Kunden bevor du suchst
 
+ABSOLUT KRITISCHE REGEL - NIEMALS DATEN ERFINDEN:
+- NIEMALS Informationen erfinden, raten oder halluzinieren!
+- Wenn die Datenbank "keine Daten gefunden" meldet, sage das EHRLICH
+- Erfinde KEINE Daten, Termine, Daten oder Services die nicht existieren
+- Sage NIEMALS Dinge wie "Ihr letzter Service war am..." wenn keine Daten gefunden wurden
+- Bei "keine Daten gefunden" frage nach mehr Details (z.B. Autonummer, Kennzeichen)
+- Gib NUR Informationen weiter, die DIREKT aus der Datenbank kommen
+
 WORKFLOW:
 1. Bei Begrüßung: Freundlich antworten und nach dem Anliegen fragen
 2. Höre aufmerksam zu und identifiziere das konkrete Anliegen
 3. NUR bei konkreten Anfragen: Nutze die passende Suchfunktion
-4. Gib präzise Auskünfte basierend auf den Datenbankdaten
+4. Gib NUR präzise Auskünfte basierend auf den tatsächlichen Datenbankdaten
 
 DEINE AUFGABEN:
 - Kundendaten abfragen (Name, Fahrzeug, Kontaktdaten)
@@ -65,7 +73,8 @@ WICHTIGE REGELN:
 - Währungen als "250 Franken" aussprechen
 - Keine technischen Details der Datenbank erwähnen
 - Bei Unklarheiten höflich nachfragen
-- KEINE Funktionen nutzen ohne konkrete Kundenanfrage""")
+- KEINE Funktionen nutzen ohne konkrete Kundenanfrage
+- NIEMALS Daten erfinden wenn keine gefunden wurden""")
        logger.info("✅ GarageAssistant initialized")
 
    @function_tool
@@ -122,9 +131,9 @@ WICHTIGE REGELN:
                            return response_text
                        else:
                            logger.warning("⚠️ Only irrelevant results found")
-                           return "Ich konnte keine relevanten Kundendaten zu Ihrer Anfrage finden. Bitte geben Sie mir mehr Informationen."
+                           return "Ich konnte keine relevanten Kundendaten zu Ihrer Anfrage finden. Bitte geben Sie mir mehr Informationen wie Ihre Autonummer oder Telefonnummer."
                    
-                   return "Ich konnte keine Kundendaten zu Ihrer Anfrage finden."
+                   return "Ich konnte keine Kundendaten zu Ihrer Anfrage finden. Können Sie mir bitte Ihre Autonummer oder Telefonnummer nennen?"
                    
                else:
                    logger.error(f"Customer search failed: {response.status_code}")
@@ -155,7 +164,7 @@ WICHTIGE REGELN:
                response = await client.post(
                    f"{context.userdata.rag_url}/search",
                    json={
-                       "query": f"Reparatur Status {query}",
+                       "query": f"Reparatur Status Service {query}",
                        "agent_type": "garage",
                        "top_k": 5,
                        "collection": "garage_management"
@@ -168,22 +177,35 @@ WICHTIGE REGELN:
                    if results:
                        logger.info(f"✅ Found {len(results)} repair results")
                        
-                       # Sammle alle relevanten Reparaturen
-                       repairs = []
+                       # DEBUG: Log ALL results before filtering
+                       for i, result in enumerate(results):
+                           content = result.get("content", "").strip()
+                           logger.info(f"RAG Result {i}: {content[:150]}...")  # First 150 chars
+                       
+                       # Sammle ALLE Ergebnisse, lockerer Filter
+                       all_results = []
                        for result in results:
                            content = result.get("content", "").strip()
-                           if "Reparatur" in content or "Status" in content:
-                               # Filter irrelevante Ergebnisse
-                               if not any(word in content.lower() for word in ["mhz", "bakom", "funk"]):
-                                   content = self._format_garage_data(content)
-                                   repairs.append(content)
+                           # Viel lockererer Filter - zeige fast alles außer offensichtlichen Fehlern
+                           if content and not any(word in content.lower() for word in ["mhz", "bakom", "funk", "frequenz"]):
+                               content = self._format_garage_data(content)
+                               all_results.append(content)
                        
-                       if repairs:
-                           response_text = "Hier sind die Reparaturinformationen:\n\n"
-                           response_text += "\n\n".join(repairs[:3])  # Max 3 Einträge
+                       if all_results:
+                           # Zeige ALLE gefundenen Daten
+                           response_text = f"Ich habe {len(all_results)} Einträge in der Datenbank gefunden:\n\n"
+                           response_text += "\n\n".join(all_results[:3])  # Max 3 Einträge
+                           
+                           # Spezifischer Hinweis wenn nichts passt
+                           if not any(word in response_text.lower() for word in ["reparatur", "status", "service", "wartung", query.lower()]):
+                               response_text += "\n\nHINWEIS: Diese Einträge scheinen nicht direkt zu Ihrer Anfrage zu passen. Können Sie mir bitte die Autonummer oder Auftragsnummer nennen?"
+                           
                            return response_text
+                       else:
+                           # Wenn wirklich NICHTS gefunden wurde
+                           return f"Ich konnte keine Daten zu '{query}' in unserer Datenbank finden. Bitte geben Sie mir die genaue Autonummer (z.B. ZH 123456) oder die Auftragsnummer."
                    
-                   return "Ich konnte keine Reparaturaufträge zu Ihrer Anfrage finden."
+                   return "Ich konnte keine Reparatur- oder Servicedaten zu Ihrer Anfrage finden. Können Sie mir bitte die Autonummer oder Auftragsnummer nennen?"
                    
                else:
                    logger.error(f"Repair search failed: {response.status_code}")
@@ -227,21 +249,28 @@ WICHTIGE REGELN:
                    if results:
                        logger.info(f"✅ Found {len(results)} invoice results")
                        
-                       invoices = []
+                       # DEBUG: Log results
+                       for i, result in enumerate(results):
+                           content = result.get("content", "").strip()
+                           logger.info(f"Invoice Result {i}: {content[:150]}...")
+                       
+                       # Lockerer Filter
+                       all_invoices = []
                        for result in results:
                            content = result.get("content", "").strip()
-                           if any(word in content for word in ["Rechnung", "Kosten", "CHF", "Franken"]):
-                               # Filter irrelevante Ergebnisse
-                               if not any(word in content.lower() for word in ["mhz", "bakom", "funk"]):
-                                   content = self._format_garage_data(content)
-                                   invoices.append(content)
+                           # Zeige fast alles was kein offensichtlicher Fehler ist
+                           if content and not any(word in content.lower() for word in ["mhz", "bakom", "funk"]):
+                               content = self._format_garage_data(content)
+                               all_invoices.append(content)
                        
-                       if invoices:
-                           response_text = "Hier sind die Rechnungsinformationen:\n\n"
-                           response_text += "\n\n".join(invoices[:2])
+                       if all_invoices:
+                           response_text = f"Ich habe {len(all_invoices)} Rechnungseinträge gefunden:\n\n"
+                           response_text += "\n\n".join(all_invoices[:2])
                            return response_text
+                       else:
+                           return "Ich konnte keine Rechnungsdaten zu Ihrer Anfrage finden. Bitte nennen Sie mir die Rechnungsnummer oder das genaue Datum."
                    
-                   return "Ich konnte keine Rechnungsdaten zu Ihrer Anfrage finden."
+                   return "Ich konnte keine Rechnungsdaten zu Ihrer Anfrage finden. Haben Sie eine Rechnungsnummer?"
                    
                else:
                    logger.error(f"Invoice search failed: {response.status_code}")
