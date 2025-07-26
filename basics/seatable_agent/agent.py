@@ -184,8 +184,8 @@ WORKFLOW:
 
 DEINE AUFGABEN:
 - Kundendaten abfragen (Name, Fahrzeug, Kontaktdaten)
-- Reparaturstatus mitteilen
-- Kostenvoranschläge erklären
+- Fahrzeugdaten anzeigen (Kennzeichen, Marke, Modell, Kilometerstand)
+- Service-Historie mitteilen
 - Termine koordinieren
 - Rechnungsinformationen bereitstellen
 
@@ -207,14 +207,14 @@ WICHTIGE REGELN:
         Sucht nach Kundendaten in der Garage-Datenbank.
         
         Args:
-            query: Suchbegriff (Name, Telefonnummer oder Autonummer)
+            query: Suchbegriff (Name, Telefonnummer oder Email)
         """
         logger.info(f"🔍 Searching customer data for: {query}")
         
         # GUARD gegen falsche Suchen bei Begrüßungen
-        if len(query) < 5 or query.lower() in ["hallo", "guten tag", "hi", "hey", "servus", "grüezi"]:
+        if len(query) < 3 or query.lower() in ["hallo", "guten tag", "hi", "hey", "servus", "grüezi"]:
             logger.warning(f"⚠️ Ignoring greeting search: {query}")
-            return "Bitte geben Sie mir Ihren Namen, Ihre Telefonnummer oder Ihre Autonummer, damit ich Ihre Kundendaten finden kann."
+            return "Bitte geben Sie mir Ihren Namen, Ihre Telefonnummer oder Email-Adresse, damit ich Ihre Kundendaten finden kann."
         
         try:
             client = SeaTableClient(
@@ -222,9 +222,9 @@ WICHTIGE REGELN:
                 context.userdata.seatable_base_token
             )
             
-            # SeaTable SQL Query
+            # SeaTable SQL Query - KORRIGIERT mit tatsächlichen Feldnamen
             sql_query = f"""
-            SELECT Name, Email, Telefon, Adresse, Fahrzeug 
+            SELECT Name, Email, Telefon, Kunde_seit, Notizen 
             FROM Kunden 
             WHERE Name LIKE '%{query}%' 
                OR Telefon LIKE '%{query}%'
@@ -244,8 +244,10 @@ WICHTIGE REGELN:
                         response_text += f"- Email: {customer.get('Email')}\n"
                     if customer.get('Telefon'):
                         response_text += f"- Telefon: {customer.get('Telefon')}\n"
-                    if customer.get('Fahrzeug'):
-                        response_text += f"- Fahrzeug: {customer.get('Fahrzeug')}\n"
+                    if customer.get('Kunde_seit'):
+                        response_text += f"- Kunde seit: {customer.get('Kunde_seit')}\n"
+                    if customer.get('Notizen'):
+                        response_text += f"- Notizen: {customer.get('Notizen')}\n"
                     response_text += "\n"
                 
                 # Speichere Kundennamen
@@ -254,81 +256,26 @@ WICHTIGE REGELN:
                 
                 return response_text
             else:
-                return "Ich konnte keine Kundendaten zu Ihrer Anfrage finden. Können Sie mir bitte Ihre Autonummer oder Telefonnummer nennen?"
+                return "Ich konnte keine Kundendaten zu Ihrer Anfrage finden. Können Sie mir bitte Ihren vollständigen Namen oder Ihre Telefonnummer nennen?"
                 
         except Exception as e:
             logger.error(f"Customer search error: {e}")
             return "Die Kundendatenbank ist momentan nicht erreichbar."
 
     @function_tool
-    async def search_repair_status(self, 
-                                  context: RunContext[GarageUserData],
-                                  query: str) -> str:
-        """
-        Sucht nach Reparaturstatus und Aufträgen.
-        
-        Args:
-            query: Kundenname, Autonummer oder Auftragsnummer
-        """
-        logger.info(f"🔧 Searching repair status for: {query}")
-        
-        if len(query) < 3:
-            return "Bitte geben Sie mir einen Namen, eine Autonummer oder Auftragsnummer."
-        
-        try:
-            client = SeaTableClient(
-                context.userdata.seatable_server_url,
-                context.userdata.seatable_base_token
-            )
-            
-            sql_query = f"""
-            SELECT Auftragsnummer, Kunde, Fahrzeug, Status, 
-                   Arbeiten, Kostenvoranschlag, Datum
-            FROM Reparaturen 
-            WHERE Kunde LIKE '%{query}%' 
-               OR Fahrzeug LIKE '%{query}%'
-               OR Auftragsnummer LIKE '%{query}%'
-            ORDER BY Datum DESC
-            LIMIT 5
-            """
-            
-            results = await client.query_table(sql_query)
-            
-            if results:
-                logger.info(f"✅ Found {len(results)} repair results")
-                
-                response_text = "Hier sind die Reparaturinformationen:\n\n"
-                for repair in results[:3]:
-                    response_text += f"**Auftrag {repair.get('Auftragsnummer', '-')}**\n"
-                    response_text += f"- Fahrzeug: {repair.get('Fahrzeug', '-')}\n"
-                    response_text += f"- Status: {repair.get('Status', '-')}\n"
-                    response_text += f"- Arbeiten: {repair.get('Arbeiten', '-')}\n"
-                    if repair.get('Kostenvoranschlag'):
-                        response_text += f"- Kosten: {repair.get('Kostenvoranschlag')} Franken\n"
-                    response_text += "\n"
-                
-                return response_text
-            else:
-                return "Ich konnte keine Reparaturaufträge zu Ihrer Anfrage finden. Können Sie mir bitte die Autonummer oder Auftragsnummer nennen?"
-                
-        except Exception as e:
-            logger.error(f"Repair search error: {e}")
-            return "Die Reparaturdatenbank ist momentan nicht verfügbar."
-
-    @function_tool
-    async def search_invoice_data(self, 
+    async def search_vehicle_data(self, 
                                  context: RunContext[GarageUserData],
                                  query: str) -> str:
         """
-        Sucht nach Rechnungsinformationen.
+        Sucht nach Fahrzeugdaten in der Datenbank.
         
         Args:
-            query: Kundenname, Rechnungsnummer oder Datum
+            query: Kennzeichen oder Besitzername
         """
-        logger.info(f"💰 Searching invoice data for: {query}")
+        logger.info(f"🚗 Searching vehicle data for: {query}")
         
         if len(query) < 3:
-            return "Bitte geben Sie mir einen Kundennamen, eine Rechnungsnummer oder ein Datum."
+            return "Bitte geben Sie mir ein Kennzeichen oder einen Kundennamen."
         
         try:
             client = SeaTableClient(
@@ -337,10 +284,68 @@ WICHTIGE REGELN:
             )
             
             sql_query = f"""
-            SELECT Rechnungsnummer, Kunde, Datum, Betrag, Status
-            FROM Rechnungen 
+            SELECT Kennzeichen, Marke, Modell, Baujahr, 
+                   Besitzer, Kilometerstand, Letzte_Inspektion, Farbe, Kraftstoff
+            FROM Fahrzeuge 
+            WHERE Kennzeichen LIKE '%{query}%' 
+               OR Besitzer LIKE '%{query}%'
+            LIMIT 5
+            """
+            
+            results = await client.query_table(sql_query)
+            
+            if results:
+                logger.info(f"✅ Found {len(results)} vehicle results")
+                
+                response_text = "Hier sind die Fahrzeugdaten:\n\n"
+                for vehicle in results:
+                    response_text += f"**{vehicle.get('Kennzeichen', '-')}**\n"
+                    response_text += f"- Besitzer: {vehicle.get('Besitzer', '-')}\n"
+                    response_text += f"- Marke/Modell: {vehicle.get('Marke', '-')} {vehicle.get('Modell', '-')}\n"
+                    response_text += f"- Baujahr: {vehicle.get('Baujahr', '-')}\n"
+                    response_text += f"- Farbe: {vehicle.get('Farbe', '-')}\n"
+                    response_text += f"- Kraftstoff: {vehicle.get('Kraftstoff', '-')}\n"
+                    response_text += f"- Kilometerstand: {vehicle.get('Kilometerstand', '-')} km\n"
+                    response_text += f"- Letzte Inspektion: {vehicle.get('Letzte_Inspektion', '-')}\n"
+                    response_text += "\n"
+                
+                return response_text
+            else:
+                return "Ich konnte keine Fahrzeugdaten zu Ihrer Anfrage finden. Bitte geben Sie das vollständige Kennzeichen an."
+                
+        except Exception as e:
+            logger.error(f"Vehicle search error: {e}")
+            return "Die Fahrzeugdatenbank ist momentan nicht verfügbar."
+
+    @function_tool
+    async def search_service_history(self, 
+                                   context: RunContext[GarageUserData],
+                                   query: str) -> str:
+        """
+        Sucht nach Service-Historie und Reparaturen.
+        
+        Args:
+            query: Kundenname, Kennzeichen oder Datum
+        """
+        logger.info(f"🔧 Searching service history for: {query}")
+        
+        if len(query) < 3:
+            return "Bitte geben Sie mir einen Namen, ein Kennzeichen oder ein Datum."
+        
+        try:
+            client = SeaTableClient(
+                context.userdata.seatable_server_url,
+                context.userdata.seatable_base_token
+            )
+            
+            # KORRIGIERT: Service statt Reparaturen, richtige Feldnamen
+            sql_query = f"""
+            SELECT Datum, Kunde, Fahrzeug_Kennzeichen, Status, 
+                   Beschreibung, Kosten, Mechaniker, Dauer_Stunden
+            FROM Service 
             WHERE Kunde LIKE '%{query}%' 
-               OR Rechnungsnummer LIKE '%{query}%'
+               OR Fahrzeug_Kennzeichen LIKE '%{query}%'
+               OR Datum LIKE '%{query}%'
             ORDER BY Datum DESC
             LIMIT 5
             """
@@ -348,23 +353,85 @@ WICHTIGE REGELN:
             results = await client.query_table(sql_query)
             
             if results:
-                logger.info(f"✅ Found {len(results)} invoice results")
+                logger.info(f"✅ Found {len(results)} service results")
                 
-                response_text = "Hier sind die Rechnungsinformationen:\n\n"
-                for invoice in results[:2]:
-                    response_text += f"**Rechnung {invoice.get('Rechnungsnummer', '-')}**\n"
-                    response_text += f"- Datum: {invoice.get('Datum', '-')}\n"
-                    response_text += f"- Betrag: {invoice.get('Betrag', '0')} Franken\n"
-                    response_text += f"- Status: {invoice.get('Status', '-')}\n"
+                response_text = "Hier ist die Service-Historie:\n\n"
+                for service in results[:3]:
+                    response_text += f"**Service vom {service.get('Datum', '-')}**\n"
+                    response_text += f"- Fahrzeug: {service.get('Fahrzeug_Kennzeichen', '-')}\n"
+                    response_text += f"- Beschreibung: {service.get('Beschreibung', '-')}\n"
+                    response_text += f"- Status: {service.get('Status', '-')}\n"
+                    response_text += f"- Mechaniker: {service.get('Mechaniker', '-')}\n"
+                    if service.get('Kosten'):
+                        response_text += f"- Kosten: {service.get('Kosten')} Franken\n"
+                    if service.get('Dauer_Stunden'):
+                        response_text += f"- Dauer: {service.get('Dauer_Stunden')} Stunden\n"
                     response_text += "\n"
                 
                 return response_text
             else:
-                return "Ich konnte keine Rechnungsdaten zu Ihrer Anfrage finden. Haben Sie eine Rechnungsnummer?"
+                return "Ich konnte keine Service-Einträge zu Ihrer Anfrage finden. Bitte geben Sie ein Kennzeichen oder einen Kundennamen an."
                 
         except Exception as e:
-            logger.error(f"Invoice search error: {e}")
-            return "Es gab einen Fehler beim Abrufen der Rechnungsdaten."
+            logger.error(f"Service search error: {e}")
+            return "Die Service-Datenbank ist momentan nicht verfügbar."
+
+    @function_tool
+    async def search_appointments(self, 
+                                context: RunContext[GarageUserData],
+                                query: str) -> str:
+        """
+        Sucht nach Terminen in der Datenbank.
+        
+        Args:
+            query: Kundenname, Kennzeichen oder Datum
+        """
+        logger.info(f"📅 Searching appointments for: {query}")
+        
+        if len(query) < 3:
+            return "Bitte geben Sie mir einen Namen, ein Kennzeichen oder ein Datum."
+        
+        try:
+            client = SeaTableClient(
+                context.userdata.seatable_server_url,
+                context.userdata.seatable_base_token
+            )
+            
+            sql_query = f"""
+            SELECT Termin_ID, Datum, Uhrzeit, Kunde, Fahrzeug, 
+                   Service_Art, Mechaniker, Status, Geschätzte_Dauer
+            FROM Termine 
+            WHERE Kunde LIKE '%{query}%' 
+               OR Fahrzeug LIKE '%{query}%'
+               OR Datum LIKE '%{query}%'
+            ORDER BY Datum DESC
+            LIMIT 5
+            """
+            
+            results = await client.query_table(sql_query)
+            
+            if results:
+                logger.info(f"✅ Found {len(results)} appointment results")
+                
+                response_text = "Hier sind die Termine:\n\n"
+                for termin in results[:3]:
+                    response_text += f"**Termin am {termin.get('Datum', '-')} um {termin.get('Uhrzeit', '-')} Uhr**\n"
+                    response_text += f"- Kunde: {termin.get('Kunde', '-')}\n"
+                    response_text += f"- Fahrzeug: {termin.get('Fahrzeug', '-')}\n"
+                    response_text += f"- Service: {termin.get('Service_Art', '-')}\n"
+                    response_text += f"- Mechaniker: {termin.get('Mechaniker', '-')}\n"
+                    response_text += f"- Status: {termin.get('Status', '-')}\n"
+                    if termin.get('Geschätzte_Dauer'):
+                        response_text += f"- Geschätzte Dauer: {termin.get('Geschätzte_Dauer')}\n"
+                    response_text += "\n"
+                
+                return response_text
+            else:
+                return "Ich konnte keine Termine zu Ihrer Anfrage finden."
+                
+        except Exception as e:
+            logger.error(f"Appointment search error: {e}")
+            return "Die Termin-Datenbank ist momentan nicht verfügbar."
 
 
 async def request_handler(ctx: JobContext):
