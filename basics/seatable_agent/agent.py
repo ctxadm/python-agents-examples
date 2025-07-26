@@ -63,23 +63,89 @@ class SeaTableClient:
                 logger.error(f"Failed to get access token: {response.status_code}")
                 raise Exception(f"Failed to get SeaTable access token")
     
-    async def query_table(self, sql_query: str) -> List[Dict]:
-        """Führt eine SQL-ähnliche Abfrage auf SeaTable aus"""
+async def query_table(self, sql_query: str) -> List[Dict]:
+    """Execute a query and return results - NOW USING ROW API"""
+    try:
         if not self.access_token:
             await self.get_access_token()
             
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.dtable_server}/dtable-db/api/v1/query/{self.dtable_uuid}/",
+        # Parse SQL to extract table name and conditions
+        import re
+        
+        # Extract table name
+        table_match = re.search(r'FROM\s+(\w+)', sql_query, re.IGNORECASE)
+        if not table_match:
+            logger.error(f"Could not extract table name from query: {sql_query}")
+            return []
+            
+        table_name = table_match.group(1)
+        
+        # Get all rows from table using Row API
+        async with httpx.AsyncClient(verify=False) as client:
+            response = await client.get(
+                f"{self.server_url}/dtable-server/api/v1/dtables/{self.dtable_uuid}/rows/",
                 headers={"Authorization": f"Bearer {self.access_token}"},
-                json={"sql": sql_query}
+                params={"table_name": table_name}
             )
             
-            if response.status_code == 200:
-                result = response.json()
-                return result.get("results", [])
-            else:
-                logger.error(f"SeaTable query failed: {response.status_code}")
+        if response.status_code == 200:
+            data = response.json()
+            rows = data.get("rows", [])
+            logger.info(f"✅ Retrieved {len(rows)} rows from table {table_name}")
+            
+            # Simple WHERE clause filtering
+            where_match = re.search(r'WHERE\s+(.+?)(?:\s+ORDER\s+BY|\s+LIMIT|\s*$)', sql_query, re.IGNORECASE)
+            if where_match:
+                condition = where_match.group(1)
+                filtered_rows = []
+                
+                # Split multiple conditions by OR
+                or_conditions = re.split(r'\s+OR\s+', condition, flags=re.IGNORECASE)
+                
+                for row in rows:
+                    for or_cond in or_conditions:
+                        # Handle LIKE conditions
+                        if 'LIKE' in or_cond.upper():
+                            field_match = re.search(r'(\w+)\s+LIKE\s+[\'"]%(.+?)%[\'"]', or_cond, re.IGNORECASE)
+                            if field_match:
+                                field, value = field_match.groups()
+                                if value.lower() in str(row.get(field, '')).lower():
+                                    filtered_rows.append(row)
+                                    break
+                        
+                        # Handle = conditions
+                        elif '=' in or_cond:
+                            field_match = re.search(r'(\w+)\s*=\s*[\'"](.+?)[\'"]', or_cond)
+                            if field_match:
+                                field, value = field_match.groups()
+                                if str(row.get(field, '')).lower() == value.lower():
+                                    filtered_rows.append(row)
+                                    break
+                
+                rows = filtered_rows
+                logger.info(f"✅ Filtered to {len(rows)} rows matching conditions")
+            
+            # Handle ORDER BY
+            order_match = re.search(r'ORDER\s+BY\s+(\w+)(?:\s+(DESC|ASC))?', sql_query, re.IGNORECASE)
+            if order_match:
+                field = order_match.group(1)
+                desc = order_match.group(2) and order_match.group(2).upper() == 'DESC'
+                rows.sort(key=lambda x: x.get(field, ''), reverse=desc)
+            
+            # Handle LIMIT
+            limit_match = re.search(r'LIMIT\s+(\d+)', sql_query, re.IGNORECASE)
+            if limit_match:
+                limit = int(limit_match.group(1))
+                rows = rows[:limit]
+                
+            return rows
+        else:
+            logger.error(f"Failed to fetch rows: {response.status_code} - {response.text}")
+            return []
+        
+    except Exception as e:
+        logger.error(f"Query error: {e}", exc_info=True)
+        return []
                 return []
 
 
