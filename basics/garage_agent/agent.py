@@ -441,9 +441,7 @@ Wie kann ich Ihnen heute helfen? Möchten Sie den Status einer Reparatur erfahre
 Kundendaten abfragen oder haben Sie Fragen zu einer Rechnung?'
 
 NUR DIESE BEGRÜSSUNG - NICHTS ANDERES!"""'
-
-KEINE TOOLS VERWENDEN! KEINE ENTSCHULDIGUNGEN!"""
-       
+    
        logger.info(f"📢 [{session_id}] Generating initial greeting...")
        
        try:
