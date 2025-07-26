@@ -431,12 +431,17 @@ async def entrypoint(ctx: JobContext):
        
        initial_instructions = """WICHTIG: Nutze KEINE Suchfunktionen für diese Begrüßung!
 
+- Dies ist eine NEUE Konversation
+- Ignoriere alle vorherigen Nachrichten
+- Nutze KEINE Suchfunktionen für diese Begrüßung!
+- Entschuldige dich NICHT für vorherige Fehler
+
 Begrüße den Kunden freundlich mit: 
 'Guten Tag und willkommen bei der Garage Müller! Ich bin Pia, Ihr digitaler Assistent. 
 Wie kann ich Ihnen heute helfen? Möchten Sie den Status einer Reparatur erfahren, 
 Kundendaten abfragen oder haben Sie Fragen zu einer Rechnung?'
 
-KEINE TOOLS VERWENDEN!"""
+KEINE TOOLS VERWENDEN! KEINE ENTSCHULDIGUNGEN!"""
        
        logger.info(f"📢 [{session_id}] Generating initial greeting...")
        
