@@ -1,11 +1,10 @@
-# LiveKit Agents - Garage Management Agent (Verbessert)
+# LiveKit Agents - Garage Management Agent
 import logging
 import os
 import httpx
 import asyncio
 import json
 import re
-import hashlib
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -33,13 +32,13 @@ class GarageUserData:
     current_customer_id: Optional[str] = None
     active_repair_id: Optional[str] = None
     user_language: str = "de"
-    last_search_results: Optional[List[Dict]] = None  # Speichert letzte Suchergebnisse für Validierung
 
 
 class GarageAssistant(Agent):
-    """Garage Assistant für Kundenverwaltung und Reparaturen mit Anti-Halluzination"""
+    """Garage Assistant für Kundenverwaltung und Reparaturen"""
     
     def __init__(self) -> None:
+        # Instructions VERBESSERT - Klare Anweisungen gegen Halluzinationen
         super().__init__(instructions="""Du bist Pia, der digitale Assistent der Garage Müller.
 
 ABSOLUT KRITISCHE MEMORY REGEL:
@@ -84,15 +83,14 @@ WICHTIGE REGELN:
 - Bei Unklarheiten höflich nachfragen
 - KEINE Funktionen nutzen ohne konkrete Kundenanfrage
 - NIEMALS Daten erfinden wenn keine gefunden wurden""")
-        logger.info("✅ GarageAssistant initialized with anti-hallucination features")
+        logger.info("✅ GarageAssistant initialized")
 
     def _extract_search_criteria(self, query: str) -> Dict[str, Optional[str]]:
         """Extrahiert spezifische Suchkriterien aus der Anfrage"""
         criteria = {
             "kennzeichen": None,
             "name": None,
-            "fahrzeug_id": None,
-            "phone": None
+            "fahrzeug_id": None
         }
         
         # Prüfe auf Kennzeichen-Format (z.B. "ZH 123456", "BE 567890")
@@ -107,104 +105,57 @@ WICHTIGE REGELN:
             criteria["fahrzeug_id"] = match.group()
             logger.info(f"🔑 Fahrzeug-ID erkannt: {criteria['fahrzeug_id']}")
         
-        # Prüfe auf Telefonnummer
-        phone_pattern = r'(\+41|0)\s*\d{2}\s*\d{3}\s*\d{2}\s*\d{2}'
-        if match := re.search(phone_pattern, query):
-            criteria["phone"] = match.group()
-            logger.info(f"📞 Telefonnummer erkannt: {criteria['phone']}")
-        
         return criteria
 
-    def _validate_search_result(self, result: dict, query: str, search_criteria: dict) -> float:
-        """
-        Validiert ob ein Suchergebnis tatsächlich relevant ist.
-        Gibt einen Relevanz-Score zwischen 0 und 1 zurück.
-        """
+    def _validate_search_result(self, result: dict, query: str) -> float:
+        """Validiert ob ein Suchergebnis tatsächlich relevant ist"""
         content = result.get('content', '').lower()
         payload = result.get('payload', {})
+        
+        # Extrahiere Suchkriterien
+        search_criteria = self._extract_search_criteria(query)
+        
         relevance_score = 0.0
         max_score = 0.0
         
-        # 1. Prüfe exakte Übereinstimmungen in strukturierten Feldern
-        if 'search_fields' in payload:
-            search_fields = payload['search_fields']
-            
-            # Kennzeichen-Übereinstimmung (höchste Priorität)
-            if search_criteria.get('kennzeichen'):
-                max_score += 5.0
-                normalized_kennzeichen = search_criteria['kennzeichen'].replace(" ", "").upper()
-                if search_fields.get('license_plate_normalized') == normalized_kennzeichen:
-                    relevance_score += 5.0
-                    logger.info(f"✅ Exakte Kennzeichen-Übereinstimmung: {normalized_kennzeichen}")
-            
-            # Fahrzeug-ID Übereinstimmung
-            if search_criteria.get('fahrzeug_id'):
-                max_score += 4.0
-                if search_fields.get('vehicle_id') == search_criteria['fahrzeug_id']:
-                    relevance_score += 4.0
-                    logger.info(f"✅ Exakte Fahrzeug-ID Übereinstimmung: {search_criteria['fahrzeug_id']}")
-            
-            # Name-Übereinstimmung
-            if search_criteria.get('name'):
-                max_score += 3.0
-                name_normalized = search_criteria['name'].lower().strip()
-                if name_normalized in search_fields.get('owner_name_normalized', ''):
-                    relevance_score += 3.0
-                    logger.info(f"✅ Name gefunden: {search_criteria['name']}")
+        # 1. Prüfe exakte Übereinstimmungen
+        if search_criteria.get('kennzeichen') and payload.get('kennzeichen'):
+            max_score += 5.0
+            if search_criteria['kennzeichen'].replace(" ", "") == payload['kennzeichen'].replace(" ", ""):
+                relevance_score += 5.0
+                logger.info(f"✅ Exakte Kennzeichen-Übereinstimmung")
         
-        # 2. Prüfe Content auf Query-Terme (niedrigere Priorität)
+        if search_criteria.get('fahrzeug_id') and payload.get('fahrzeug_id'):
+            max_score += 4.0
+            if search_criteria['fahrzeug_id'] == payload['fahrzeug_id']:
+                relevance_score += 4.0
+                logger.info(f"✅ Exakte Fahrzeug-ID Übereinstimmung")
+        
+        # 2. Prüfe Query-Terme im Content
         query_terms = [term.lower() for term in query.split() if len(term) > 2]
         for term in query_terms:
             max_score += 0.5
             if term in content:
                 relevance_score += 0.5
         
-        # 3. Validiere data_type
+        # 3. Prüfe ob es vehicle_complete Daten sind
         if payload.get('data_type') == 'vehicle_complete':
             relevance_score += 1.0
         max_score += 1.0
         
-        # 4. Prüfe validation_hash wenn vorhanden
-        if 'validation_hash' in payload and payload['validation_hash']:
-            relevance_score += 0.5
-        max_score += 0.5
-        
         # Berechne finalen Score
         final_score = relevance_score / max_score if max_score > 0 else 0
         
-        logger.info(f"📊 Relevanz-Score: {final_score:.2f} (Score: {relevance_score}/{max_score})")
+        logger.info(f"📊 Relevanz-Score: {final_score:.2f} ({relevance_score}/{max_score})")
         
         return final_score
-
-    def _format_garage_data_enhanced(self, content: str, payload: dict) -> str:
-        """Formatiert Garagendaten mit zusätzlicher Validierung"""
-        # Basis-Formatierung
-        content = content.replace('_', ' ')
-        
-        # Formatiere Währungen für Sprachausgabe
-        content = re.sub(r'CHF\s*(\d+)\.(\d{2})', r'\1 Franken \2', content)
-        content = re.sub(r'(\d+)\.(\d{2})\s*CHF', r'\1 Franken \2', content)
-        
-        # Formatiere Datum
-        content = re.sub(r'(\d{4})-(\d{2})-(\d{2})', r'\3.\2.\1', content)
-        
-        # Füge Validierungsinformationen hinzu wenn verfügbar
-        if 'metadata' in payload:
-            metadata = payload['metadata']
-            if metadata.get('has_active_problems'):
-                content += f"\n\n⚠️ ACHTUNG: Es gibt {metadata.get('problem_count', 0)} aktuelle Probleme mit diesem Fahrzeug."
-            
-            if metadata.get('warranty_expired') == False:
-                content += "\n\n✅ Das Fahrzeug ist noch unter Garantie."
-        
-        return content
 
     @function_tool
     async def search_customer_data(self, 
                                  context: RunContext[GarageUserData],
                                  query: str) -> str:
         """
-        Sucht nach Kundendaten in der Garage-Datenbank mit präziser Filterung.
+        Sucht nach Kundendaten in der Garage-Datenbank.
         
         Args:
             query: Suchbegriff (Name, Telefonnummer oder Autonummer)
@@ -212,39 +163,25 @@ WICHTIGE REGELN:
         logger.info(f"🔍 Searching customer data for: {query}")
         
         # GUARD gegen falsche Suchen bei Begrüßungen
-        greetings = ["hallo", "guten tag", "hi", "hey", "servus", "grüezi", "guten morgen", "guten abend"]
-        if len(query) < 5 or query.lower() in greetings:
+        if len(query) < 5 or query.lower() in ["hallo", "guten tag", "hi", "hey", "servus", "grüezi"]:
             logger.warning(f"⚠️ Ignoring greeting search: {query}")
             return "Bitte geben Sie mir Ihren Namen, Ihre Telefonnummer oder Ihre Autonummer, damit ich Ihre Kundendaten finden kann."
         
-        # Extrahiere spezifische Suchkriterien
-        search_criteria = self._extract_search_criteria(query)
-        
-        # Erstelle optimierte Suchanfrage
-        if search_criteria['kennzeichen']:
-            search_query = f"kennzeichen {search_criteria['kennzeichen']}"
-        elif search_criteria['fahrzeug_id']:
-            search_query = f"fahrzeug {search_criteria['fahrzeug_id']}"
-        else:
-            search_query = query
+        # GUARD gegen halluzinierte Anfragen
+        if "möchte gerne meine kundendaten" in query.lower() and len(query) > 30:
+            logger.warning(f"⚠️ Detected hallucinated query: {query}")
+            return "Bitte nennen Sie mir Ihren Namen oder Ihre Autonummer, damit ich Ihre Daten suchen kann."
         
         try:
             async with httpx.AsyncClient() as client:
-                # Erweiterte Suchanfrage mit Filtern
-                search_payload = {
-                    "query": search_query,
-                    "agent_type": "garage",
-                    "top_k": 5,  # Mehr Ergebnisse für bessere Filterung
-                    "collection": "garage_management"
-                }
-                
-                # Füge Filter hinzu wenn möglich
-                if search_criteria['kennzeichen'] or search_criteria['fahrzeug_id']:
-                    search_payload["score_threshold"] = 0.7  # Höherer Threshold für präzise Suchen
-                
                 response = await client.post(
                     f"{context.userdata.rag_url}/search",
-                    json=search_payload
+                    json={
+                        "query": query,
+                        "agent_type": "garage",
+                        "top_k": 5,
+                        "collection": "garage_management"
+                    }
                 )
                 
                 if response.status_code == 200:
@@ -253,61 +190,42 @@ WICHTIGE REGELN:
                     if results:
                         logger.info(f"✅ Found {len(results)} customer results")
                         
-                        # Validiere und bewerte alle Ergebnisse
-                        validated_results = []
-                        for result in results:
-                            relevance_score = self._validate_search_result(result, query, search_criteria)
-                            
-                            if relevance_score >= 0.5:  # Mindest-Relevanzschwelle
-                                validated_results.append({
-                                    'result': result,
-                                    'score': relevance_score
-                                })
-                        
-                        # Sortiere nach Relevanz
-                        validated_results.sort(key=lambda x: x['score'], reverse=True)
-                        
-                        if validated_results:
-                            # Speichere Ergebnisse im Context für spätere Validierung
-                            context.userdata.last_search_results = [vr['result'] for vr in validated_results[:3]]
-                            
-                            # Formatiere Top-Ergebnisse
-                            response_parts = []
-                            for i, vr in enumerate(validated_results[:2]):  # Max 2 Ergebnisse
-                                result = vr['result']
+                        # Validiere und filtere Ergebnisse
+                        relevant_results = []
+                        for result in results[:5]:
+                            score = self._validate_search_result(result, query)
+                            if score >= 0.3:  # Mindest-Relevanzschwelle
                                 content = result.get("content", "").strip()
-                                payload = result.get("payload", {})
-                                
-                                formatted_content = self._format_garage_data_enhanced(content, payload)
-                                
-                                # Füge Header hinzu bei mehreren Ergebnissen
-                                if len(validated_results) > 1:
-                                    response_parts.append(f"**Ergebnis {i+1}:**\n{formatted_content}")
-                                else:
-                                    response_parts.append(formatted_content)
-                            
-                            return "\n\n---\n\n".join(response_parts)
+                                if content and not any(word in content.lower() for word in ["mhz", "bakom", "funk", "frequenz"]):
+                                    content = self._format_garage_data(content)
+                                    relevant_results.append((score, content))
                         
+                        if relevant_results:
+                            # Sortiere nach Relevanz
+                            relevant_results.sort(key=lambda x: x[0], reverse=True)
+                            # Gib nur die besten Ergebnisse zurück
+                            response_text = "\n\n".join([content for _, content in relevant_results[:2]])
+                            return response_text
                         else:
-                            logger.warning("⚠️ No results passed validation")
-                            return self._generate_no_results_message(query, search_criteria)
+                            logger.warning("⚠️ No relevant results found")
+                            return "Ich konnte keine relevanten Kundendaten zu Ihrer Anfrage finden. Bitte geben Sie mir Ihre genaue Autonummer (z.B. ZH 123456) oder Ihren vollständigen Namen."
                     
-                    return self._generate_no_results_message(query, search_criteria)
+                    return "Ich konnte keine Kundendaten zu Ihrer Anfrage finden. Können Sie mir bitte Ihre Autonummer oder Telefonnummer nennen?"
                     
                 else:
                     logger.error(f"Customer search failed: {response.status_code}")
-                    return "Es gab einen technischen Fehler bei der Suche. Bitte versuchen Sie es erneut."
+                    return "Es gab einen technischen Fehler. Bitte versuchen Sie es erneut."
                     
         except Exception as e:
             logger.error(f"Customer search error: {e}")
-            return "Die Kundendatenbank ist momentan nicht erreichbar. Bitte versuchen Sie es in ein paar Minuten erneut."
+            return "Die Kundendatenbank ist momentan nicht erreichbar."
 
     @function_tool
     async def search_repair_status(self, 
                                  context: RunContext[GarageUserData],
                                  query: str) -> str:
         """
-        Sucht nach Reparaturstatus und Aufträgen mit verbesserter Präzision.
+        Sucht nach Reparaturstatus und Aufträgen.
         
         Args:
             query: Kundenname, Autonummer oder Auftragsnummer
@@ -318,29 +236,15 @@ WICHTIGE REGELN:
         if len(query) < 3:
             return "Bitte geben Sie mir einen Namen, eine Autonummer oder Auftragsnummer."
         
-        # Extrahiere Suchkriterien
-        search_criteria = self._extract_search_criteria(query)
-        
-        # Erstelle spezifische Suchanfrage für Reparaturen
-        search_terms = []
-        if search_criteria['kennzeichen']:
-            search_terms.append(search_criteria['kennzeichen'])
-        if search_criteria['fahrzeug_id']:
-            search_terms.append(search_criteria['fahrzeug_id'])
-        search_terms.append(query)
-        
-        search_query = f"Reparatur Service Status {' '.join(search_terms)}"
-        
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{context.userdata.rag_url}/search",
                     json={
-                        "query": search_query,
+                        "query": f"Reparatur Status Service {query}",
                         "agent_type": "garage",
-                        "top_k": 10,  # Mehr Ergebnisse für bessere Filterung
-                        "collection": "garage_management",
-                        "score_threshold": 0.6
+                        "top_k": 5,
+                        "collection": "garage_management"
                     }
                 )
                 
@@ -351,60 +255,35 @@ WICHTIGE REGELN:
                         logger.info(f"✅ Found {len(results)} repair results")
                         
                         # Validiere Ergebnisse
-                        validated_results = []
+                        all_results = []
                         for result in results:
-                            relevance_score = self._validate_search_result(result, query, search_criteria)
+                            score = self._validate_search_result(result, query)
+                            content = result.get("content", "").strip()
                             
-                            # Prüfe zusätzlich auf Reparatur-relevante Inhalte
-                            content = result.get("content", "").lower()
-                            payload = result.get("payload", {})
+                            # Prüfe auf Reparatur-relevante Keywords
+                            repair_keywords = ["reparatur", "status", "service", "wartung", "arbeiten"]
+                            has_repair_content = any(kw in content.lower() for kw in repair_keywords)
                             
-                            # Bonus für Reparatur-relevante Keywords
-                            repair_keywords = ["service", "reparatur", "wartung", "arbeiten", "kosten", "problem"]
-                            repair_relevance = sum(1 for kw in repair_keywords if kw in content) * 0.1
-                            
-                            total_score = relevance_score + repair_relevance
-                            
-                            if total_score >= 0.4:  # Niedrigerer Threshold für Reparaturen
-                                validated_results.append({
-                                    'result': result,
-                                    'score': total_score
-                                })
+                            if score >= 0.2 and content and not any(word in content.lower() for word in ["mhz", "bakom", "funk"]):
+                                content = self._format_garage_data(content)
+                                all_results.append((score, content, has_repair_content))
                         
-                        # Sortiere nach Relevanz
-                        validated_results.sort(key=lambda x: x['score'], reverse=True)
-                        
-                        if validated_results:
-                            # Gruppiere Ergebnisse nach Fahrzeug
-                            vehicle_groups = {}
-                            for vr in validated_results[:5]:
-                                result = vr['result']
-                                payload = result.get('payload', {})
-                                vehicle_key = payload.get('primary_key', 'unknown')
-                                
-                                if vehicle_key not in vehicle_groups:
-                                    vehicle_groups[vehicle_key] = []
-                                vehicle_groups[vehicle_key].append(result)
+                        if all_results:
+                            # Sortiere nach Relevanz und Reparatur-Content
+                            all_results.sort(key=lambda x: (x[2], x[0]), reverse=True)
                             
-                            # Formatiere Antwort
-                            response_parts = []
-                            for vehicle_key, results_group in vehicle_groups.items():
-                                if len(results_group) > 0:
-                                    # Nehme das relevanteste Ergebnis pro Fahrzeug
-                                    result = results_group[0]
-                                    content = result.get("content", "").strip()
-                                    payload = result.get("payload", {})
-                                    
-                                    formatted_content = self._format_garage_data_enhanced(content, payload)
-                                    response_parts.append(formatted_content)
+                            response_text = f"Ich habe {len(all_results)} Einträge gefunden:\n\n"
+                            response_text += "\n\n".join([content for _, content, _ in all_results[:2]])
                             
-                            if response_parts:
-                                return "\n\n---\n\n".join(response_parts[:2])  # Max 2 Fahrzeuge
+                            # Wenn keine reparaturspezifischen Inhalte
+                            if not any(has_repair for _, _, has_repair in all_results):
+                                response_text += "\n\nHINWEIS: Die gefundenen Einträge enthalten keine spezifischen Reparaturinformationen. Bitte geben Sie mir die Auftragsnummer für genauere Details."
                             
-                        logger.warning("⚠️ No repair-relevant results found")
-                        return self._generate_no_results_message(query, search_criteria, context_type="repair")
+                            return response_text
+                        else:
+                            return f"Ich konnte keine Reparaturdaten zu '{query}' finden. Bitte geben Sie mir die genaue Autonummer oder Auftragsnummer."
                     
-                    return self._generate_no_results_message(query, search_criteria, context_type="repair")
+                    return "Ich konnte keine Reparatur- oder Servicedaten zu Ihrer Anfrage finden. Können Sie mir bitte die Autonummer oder Auftragsnummer nennen?"
                     
                 else:
                     logger.error(f"Repair search failed: {response.status_code}")
@@ -412,14 +291,14 @@ WICHTIGE REGELN:
                     
         except Exception as e:
             logger.error(f"Repair search error: {e}")
-            return "Es gab einen Fehler beim Abrufen der Reparaturdaten. Bitte versuchen Sie es erneut."
+            return "Es gab einen Fehler beim Abrufen der Reparaturdaten."
 
     @function_tool
     async def search_invoice_data(self, 
                                 context: RunContext[GarageUserData],
                                 query: str) -> str:
         """
-        Sucht nach Rechnungsinformationen mit verbesserter Validierung.
+        Sucht nach Rechnungsinformationen.
         
         Args:
             query: Kundenname, Rechnungsnummer oder Datum
@@ -430,28 +309,15 @@ WICHTIGE REGELN:
         if len(query) < 3:
             return "Bitte geben Sie mir einen Kundennamen, eine Rechnungsnummer oder ein Datum."
         
-        # Extrahiere Suchkriterien
-        search_criteria = self._extract_search_criteria(query)
-        
-        # Prüfe auf Datum-Format
-        date_pattern = r'(\d{1,2})\.(\d{1,2})\.(\d{2,4})'
-        date_match = re.search(date_pattern, query)
-        if date_match:
-            search_criteria['date'] = date_match.group()
-        
-        # Erstelle Suchanfrage
-        search_query = f"Rechnung Kosten {query}"
-        
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{context.userdata.rag_url}/search",
                     json={
-                        "query": search_query,
+                        "query": f"Rechnung Kosten {query}",
                         "agent_type": "garage",
-                        "top_k": 5,
-                        "collection": "garage_management",
-                        "score_threshold": 0.6
+                        "top_k": 3,
+                        "collection": "garage_management"
                     }
                 )
                 
@@ -461,42 +327,24 @@ WICHTIGE REGELN:
                     if results:
                         logger.info(f"✅ Found {len(results)} invoice results")
                         
-                        # Validiere Ergebnisse mit Fokus auf Rechnungsdaten
-                        validated_results = []
+                        # Validiere und filtere
+                        all_invoices = []
                         for result in results:
-                            relevance_score = self._validate_search_result(result, query, search_criteria)
+                            score = self._validate_search_result(result, query)
+                            content = result.get("content", "").strip()
                             
-                            # Prüfe auf Rechnungs-relevante Inhalte
-                            content = result.get("content", "").lower()
-                            invoice_keywords = ["rechnung", "kosten", "chf", "franken", "betrag", "zahlung"]
-                            invoice_relevance = sum(1 for kw in invoice_keywords if kw in content) * 0.15
-                            
-                            total_score = relevance_score + invoice_relevance
-                            
-                            if total_score >= 0.4:
-                                validated_results.append({
-                                    'result': result,
-                                    'score': total_score
-                                })
+                            if score >= 0.2 and content and not any(word in content.lower() for word in ["mhz", "bakom", "funk"]):
+                                content = self._format_garage_data(content)
+                                all_invoices.append(content)
                         
-                        if validated_results:
-                            # Sortiere und formatiere
-                            validated_results.sort(key=lambda x: x['score'], reverse=True)
-                            
-                            response_parts = []
-                            for vr in validated_results[:2]:
-                                result = vr['result']
-                                content = result.get("content", "").strip()
-                                payload = result.get("payload", {})
-                                
-                                formatted_content = self._format_garage_data_enhanced(content, payload)
-                                response_parts.append(formatted_content)
-                            
-                            return "\n\n---\n\n".join(response_parts)
-                        
-                        return self._generate_no_results_message(query, search_criteria, context_type="invoice")
+                        if all_invoices:
+                            response_text = f"Ich habe {len(all_invoices)} Rechnungseinträge gefunden:\n\n"
+                            response_text += "\n\n".join(all_invoices[:2])
+                            return response_text
+                        else:
+                            return "Ich konnte keine Rechnungsdaten zu Ihrer Anfrage finden. Bitte nennen Sie mir die Rechnungsnummer oder das genaue Datum."
                     
-                    return self._generate_no_results_message(query, search_criteria, context_type="invoice")
+                    return "Ich konnte keine Rechnungsdaten zu Ihrer Anfrage finden. Haben Sie eine Rechnungsnummer?"
                     
                 else:
                     logger.error(f"Invoice search failed: {response.status_code}")
@@ -506,48 +354,19 @@ WICHTIGE REGELN:
             logger.error(f"Invoice search error: {e}")
             return "Es gab einen Fehler beim Abrufen der Rechnungsdaten."
 
-    def _generate_no_results_message(self, query: str, search_criteria: dict, context_type: str = "customer") -> str:
-        """Generiert hilfreiche Nachrichten wenn keine Ergebnisse gefunden wurden"""
+    def _format_garage_data(self, content: str) -> str:
+        """Formatiert Garagendaten für bessere Lesbarkeit"""
+        # Ersetze Unterstriche
+        content = content.replace('_', ' ')
         
-        if context_type == "customer":
-            message = f"Ich konnte keine Kundendaten zu '{query}' in unserer Datenbank finden.\n\n"
-            message += "Bitte geben Sie mir eine der folgenden Informationen:\n"
-            message += "• Ihr vollständiges **Autokennzeichen** (z.B. ZH 123456)\n"
-            message += "• Ihren **vollständigen Namen** wie er bei uns registriert ist\n"
-            message += "• Ihre **Fahrzeug-ID** falls bekannt (z.B. F001)\n"
-            message += "• Ihre **Telefonnummer**\n\n"
-            message += "So kann ich Ihre Daten präzise in unserem System finden."
-            
-        elif context_type == "repair":
-            message = f"Ich konnte keine Reparatur- oder Servicedaten zu '{query}' finden.\n\n"
-            message += "Für die Suche nach Reparaturinformationen benötige ich:\n"
-            message += "• Das **Kennzeichen** des Fahrzeugs\n"
-            message += "• Die **Auftragsnummer** falls vorhanden\n"
-            message += "• Den **Namen des Fahrzeughalters**\n\n"
-            message += "Mit diesen Angaben kann ich den aktuellen Status Ihrer Reparatur abrufen."
-            
-        elif context_type == "invoice":
-            message = f"Ich konnte keine Rechnungsdaten zu '{query}' finden.\n\n"
-            message += "Für Rechnungsinformationen benötige ich:\n"
-            message += "• Die **Rechnungsnummer**\n"
-            message += "• Das **Rechnungsdatum** (TT.MM.JJJJ)\n"
-            message += "• Den **Kundennamen** oder das **Kennzeichen**\n\n"
-            message += "Mit diesen Informationen kann ich Ihre Rechnung in unserem System finden."
+        # Formatiere Währungen für Sprachausgabe
+        content = re.sub(r'CHF\s*(\d+)\.(\d{2})', r'\1 Franken \2', content)
+        content = re.sub(r'(\d+)\.(\d{2})\s*CHF', r'\1 Franken \2', content)
         
-        else:
-            message = f"Ich konnte keine Daten zu '{query}' finden. Bitte geben Sie mir mehr Informationen."
+        # Formatiere Datum
+        content = re.sub(r'(\d{4})-(\d{2})-(\d{2})', r'\3.\2.\1', content)
         
-        # Füge erkannte Kriterien hinzu
-        if any(search_criteria.values()):
-            message += "\n\n**Erkannte Suchkriterien:**\n"
-            if search_criteria.get('kennzeichen'):
-                message += f"• Kennzeichen: {search_criteria['kennzeichen']}\n"
-            if search_criteria.get('fahrzeug_id'):
-                message += f"• Fahrzeug-ID: {search_criteria['fahrzeug_id']}\n"
-            if search_criteria.get('name'):
-                message += f"• Name: {search_criteria['name']}\n"
-        
-        return message
+        return content
 
 
 async def request_handler(ctx: JobContext):
@@ -640,12 +459,11 @@ async def entrypoint(ctx: JobContext):
                 rag_url=rag_url,
                 current_customer_id=None,
                 active_repair_id=None,
-                user_language="de",
-                last_search_results=None
+                user_language="de"
             ),
             llm=llm,
             vad=silero.VAD.load(
-                min_silence_duration=0.6,
+                min_silence_duration=0.6,  # Etwas schneller als Medical
                 min_speech_duration=0.2
             ),
             stt=openai.STT(
@@ -654,22 +472,21 @@ async def entrypoint(ctx: JobContext):
             ),
             tts=openai.TTS(
                 model="tts-1",
-                voice="nova"
+                voice="nova"  # Freundliche Stimme für Kundenkontakt
             )
         )
         
         # 6. Create agent
         agent = GarageAssistant()
         
-        # 7. Start session
-        await asyncio.sleep(0.5)
+        # 7. Start session - WICHTIG: Erst starten, dann greeting
         logger.info(f"🏁 [{session_id}] Starting session...")
         await session.start(
             room=ctx.room,
             agent=agent
         )
         
-        # Event handlers
+        # Event handlers NACH dem Start
         @session.on("user_input_transcribed")
         def on_user_input(event):
             logger.info(f"[{session_id}] 🎤 User: {event.transcript} (final: {event.is_final})")
@@ -682,8 +499,8 @@ async def entrypoint(ctx: JobContext):
         def on_user_state(event):
             logger.info(f"[{session_id}] 👤 User state changed")
         
-        # 8. Initial greeting - OHNE TOOL NUTZUNG
-        await asyncio.sleep(1.0)
+        # 8. Initial greeting - MIT MEHR DELAY
+        await asyncio.sleep(2.0)  # Erhöht von 1.0 auf 2.0
         
         initial_instructions = """ABSOLUT KRITISCHE ANWEISUNG: 
        
@@ -700,13 +517,21 @@ NICHTS ANDERES! KEINE ENTSCHULDIGUNGEN!"""
         logger.info(f"📢 [{session_id}] Generating initial greeting...")
         
         try:
-            await session.generate_reply(
-                instructions=initial_instructions,
-                tool_choice="none"  # WICHTIG: Keine Tools bei Begrüßung!
-            )
-            logger.info(f"✅ [{session_id}] Initial greeting sent")
+            # Verwende say() statt generate_reply() für direktere Kontrolle
+            greeting_text = "Guten Tag und willkommen bei der Garage Müller! Ich bin Pia, Ihr digitaler Assistent. Wie kann ich Ihnen heute helfen?"
+            await session.say(greeting_text, allow_interruptions=True)
+            logger.info(f"✅ [{session_id}] Initial greeting sent via say()")
         except Exception as e:
             logger.warning(f"[{session_id}] Could not send initial greeting: {e}")
+            # Fallback auf generate_reply
+            try:
+                await session.generate_reply(
+                    instructions=initial_instructions,
+                    tool_choice="none"
+                )
+                logger.info(f"✅ [{session_id}] Initial greeting sent via generate_reply()")
+            except Exception as e2:
+                logger.error(f"[{session_id}] Failed to send greeting: {e2}")
         
         logger.info(f"✅ [{session_id}] Garage Agent ready and listening!")
         
