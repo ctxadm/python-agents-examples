@@ -331,11 +331,30 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                     "top_k": 5
                 }
                 
-                response = await client.post(
-                    "http://localhost:8000/search",
-                    json=search_payload,
-                    timeout=5.0
-                )
+                # Alternative: Try different endpoint or collection names
+                collections_to_try = ["garage_management", "garage", "vehicles"]
+                
+                for collection in collections_to_try:
+                    search_payload["collection"] = collection
+                    
+                    response = await client.post(
+                        "http://localhost:8000/search",
+                        json=search_payload,
+                        timeout=5.0
+                    )
+                    result = response.json()
+                    
+                    # Check if we got the right collection
+                    if result.get("collection_used") == collection or (
+                        result.get("results") and 
+                        any("fahrzeug" in str(r).lower() or "vehicle" in str(r).lower() 
+                            for r in result.get("results", []))
+                    ):
+                        logger.info(f"✅ Using collection: {collection}")
+                        break
+                    else:
+                        logger.warning(f"Collection {collection} didn't return vehicle data")
+                        continue
                 result = response.json()
                 
                 logger.info(f"Search response: {json.dumps(result, indent=2)[:500]}...")  # Debug log
