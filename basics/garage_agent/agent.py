@@ -120,6 +120,24 @@ class HalluccinationDetector:
         if any(g in input_lower for g in greetings):
             return {"intent": "greeting", "data": None}
         
+        # Buchstabierte Buchstaben (z.B. "Z wie Zeppelin, H wie Heinrich")
+        buchstabiert_pattern = r'([A-Z])\s*wie\s*\w+(?:\s*[,.]?\s*([A-Z])\s*wie\s*\w+)?'
+        buchstabiert_match = re.findall(buchstabiert_pattern, user_input, re.IGNORECASE)
+        if buchstabiert_match:
+            # Extrahiere alle Buchstaben
+            letters = []
+            for match in buchstabiert_match:
+                for letter in match:
+                    if letter:
+                        letters.append(letter.upper())
+            
+            if len(letters) == 2:
+                canton = ''.join(letters)
+                if cls.validate_canton(canton):
+                    return {"intent": "canton_provided", "data": canton}
+            elif len(letters) == 1:
+                return {"intent": "partial_canton", "data": letters[0]}
+        
         # Canton letters (z.B. "A.G.", "AG", "A G")
         canton_patterns = [
             r'^([A-Z])\s*\.?\s*([A-Z])\.?$',  # A.G. oder A G
@@ -138,8 +156,11 @@ class HalluccinationDetector:
                     return {"intent": "canton_provided", "data": canton}
         
         # Numbers only (z.B. "5 6 7 8 9" oder "56789")
-        if re.match(r'^[\d\s]+$', user_input.strip()):
-            numbers = user_input.replace(" ", "")
+        # Auch mit Kommas (z.B. "1, 2, 3...")
+        numbers_pattern = r'^[\d\s,\.]+$'
+        if re.match(numbers_pattern, user_input.strip()):
+            # Entferne alles außer Zahlen
+            numbers = re.sub(r'[^\d]', '', user_input)
             if 3 <= len(numbers) <= 6:
                 return {"intent": "numbers_provided", "data": numbers}
         
@@ -272,6 +293,19 @@ Remember: ALWAYS use actual user input, NEVER use examples!""")
             context.userdata.license_plate_context.canton_letters = data
             context.userdata.conversation_state = ConversationState.COLLECTING_LICENSE_PLATE
             return f"Danke, ich habe {data} notiert. Wie lauten die Zahlen Ihres Kennzeichens?"
+        
+        elif intent == "partial_canton":
+            # Nur ein Buchstabe wurde gegeben
+            if context.userdata.license_plate_context.canton_letters:
+                # Wir haben bereits einen Buchstaben, kombiniere sie
+                full_canton = context.userdata.license_plate_context.canton_letters + data
+                if self.hallucination_detector.validate_canton(full_canton):
+                    context.userdata.license_plate_context.canton_letters = full_canton
+                    return f"Danke, ich habe {full_canton} notiert. Wie lauten die Zahlen Ihres Kennzeichens?"
+            else:
+                # Erster Buchstabe
+                context.userdata.license_plate_context.canton_letters = data
+                return "Ich habe den ersten Buchstaben notiert. Bitte nennen Sie mir noch den zweiten Buchstaben des Kantons."
         
         elif intent == "numbers_provided":
             # Prüfe ob wir bereits einen Canton haben
