@@ -233,10 +233,13 @@ If the tool returns data with "Aktuelle Probleme" like:
 - Ladeklappe öffnet manchmal schwer
 
 You MUST say something like:
-"Ich sehe bei Ihrem [Fahrzeug] folgende dokumentierte Probleme:
+"Ich sehe bei Ihrem [Marke Modell] folgende dokumentierte Probleme:
 - [Problem 1]
 - [Problem 2]
 Möchten Sie diese Probleme beheben lassen?"
+
+IMPORTANT: Always use the vehicle's Marke (brand) and Modell (model) when referring to it, NOT the Fahrzeug-ID!
+Example: "Ihr Tesla Model 3 Long Range" instead of "Ihr F005"
 
 NEVER say "keine spezifischen Probleme gefunden" when problems ARE listed!
 
@@ -258,6 +261,11 @@ You: [Use search_invoice_data to get service history]
 Example 3 - When asking for costs:
 User: "Was kosten die anstehenden Arbeiten?"
 You: [Use search_invoice_data to get cost estimates]
+Response: "Die geschätzten Kosten für die Reparaturen an Ihrem [Marke Modell] betragen..."
+
+Example 4 - Referring to vehicles:
+WRONG: "Die Kosten für Ihr F005..."
+CORRECT: "Die Kosten für Ihren Tesla Model 3 Long Range..."
 
 FORBIDDEN WORDS (use alternatives):
 - "Entschuldigung" → "Leider"
@@ -732,35 +740,7 @@ async def request_handler(ctx: JobContext):
     await ctx.accept()
 
 
-async def entrypoint(ctx: JobContext):
-    """Entry point für den Garage Agent"""
-    room_name = ctx.room.name if ctx.room else "unknown"
-    session_id = f"{room_name}_{int(asyncio.get_event_loop().time())}"
-    
-    logger.info("="*50)
-    logger.info(f"🚗 Starting Garage Agent Session: {session_id}")
-    logger.info("="*50)
-    
-    session = None
-    session_closed = False
-    
-    # Register disconnect handler FIRST
-    def on_disconnect():
-        nonlocal session_closed
-        logger.info(f"[{session_id}] Room disconnected event received")
-        session_closed = True
-    
-    if ctx.room:
-        ctx.room.on("disconnected", on_disconnect)
-    
-    try:
-        # 1. Connect to room
-        await ctx.connect()
-        logger.info(f"✅ [{session_id}] Connected to room")
-        
-        # 2. Wait for participant
-        participant = await ctx.wait_for_participant()
-        logger.info(f"✅ [{session_id}] Participant joined: {participant.identity}")
+d: {participant.identity}")
         
         # 3. Wait for audio track
         audio_track_received = False
