@@ -61,6 +61,8 @@ ABSOLUT KRITISCHE REGEL - NIEMALS DATEN ERFINDEN:
 - Wenn die Datenbank "keine Daten gefunden" meldet, sage das EHRLICH
 - Erfinde KEINE Daten, Termine, Daten oder Services die nicht existieren
 - Sage NIEMALS Dinge wie "Ihr letzter Service war am..." wenn keine Daten gefunden wurden
+- Sage NIEMALS "wir haben Ihr Auto eingeliefert" wenn keine Daten gefunden wurden
+- Sage NIEMALS "Entschuldigung" - verwende stattdessen "Leider" oder ähnliche Formulierungen
 - Bei "keine Daten gefunden" frage nach mehr Details (z.B. Autonummer, Kennzeichen)
 - Gib NUR Informationen weiter, die DIREKT aus der Datenbank kommen
 
@@ -118,7 +120,15 @@ WICHTIGE REGELN:
         kennzeichen_pattern = r'[A-Z]{2}\s*\d{3,6}'
         kennzeichen_match = re.search(kennzeichen_pattern, query.upper())
         if kennzeichen_match:
-            logger.info(f"📋 Kennzeichen erkannt: {kennzeichen_match.group()}")
+            # Normalisiere das Kennzeichen für die Suche
+            normalized_kennzeichen = kennzeichen_match.group()
+            # Erstelle beide Varianten: mit und ohne Leerzeichen
+            kennzeichen_with_space = re.sub(r'([A-Z]{2})(\d+)', r'\1 \2', normalized_kennzeichen)
+            kennzeichen_without_space = normalized_kennzeichen.replace(" ", "")
+            logger.info(f"📋 Kennzeichen erkannt: {kennzeichen_with_space} / {kennzeichen_without_space}")
+            
+            # Modifiziere die Query für bessere Suche
+            query = f"{kennzeichen_with_space} {kennzeichen_without_space} {query}"
         
         try:
             async with httpx.AsyncClient() as client:
@@ -153,6 +163,16 @@ WICHTIGE REGELN:
                                         search_kennzeichen = kennzeichen_match.group().replace(" ", "")
                                         # Prüfe beide mögliche Felder: kennzeichen und license_plate
                                         payload_kennzeichen = payload.get("kennzeichen", payload.get("license_plate", "")).replace(" ", "")
+                                        
+                                        # Prüfe auch in search_fields wenn vorhanden
+                                        if 'search_fields' in payload:
+                                            license_normalized = payload['search_fields'].get('license_plate_normalized', '')
+                                            if license_normalized and license_normalized == search_kennzeichen.upper():
+                                                logger.info("✅ Exakte Kennzeichen-Übereinstimmung in search_fields")
+                                                content = self._format_garage_data(content)
+                                                relevant_results.insert(0, content)
+                                                continue
+                                        
                                         if payload_kennzeichen == search_kennzeichen:
                                             logger.info("✅ Exakte Kennzeichen-Übereinstimmung")
                                             content = self._format_garage_data(content)
