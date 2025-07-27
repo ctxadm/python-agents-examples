@@ -10,8 +10,8 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 from dotenv import load_dotenv
 from livekit import agents, rtc
-from livekit.agents import JobContext, WorkerOptions, cli
-from livekit.agents.voice import AgentSession, Agent, RunContext
+from livekit.agents import JobContext, WorkerOptions, cli, RunContext
+from livekit.agents.voice import AgentSession, Agent
 from livekit.agents.llm import function_tool
 from livekit.plugins import openai, silero
 
@@ -32,68 +32,58 @@ class GarageUserData:
     current_customer_id: Optional[str] = None
     active_repair_id: Optional[str] = None
     user_language: str = "de"
-    greeting_sent: bool = False  # Track ob Begrüßung gesendet wurde
+    greeting_sent: bool = False
+    customer_name: Optional[str] = None  # Speichere den Kundennamen
 
 
 class GarageAssistant(Agent):
     """Garage Assistant für Kundenverwaltung und Reparaturen"""
     
     def __init__(self) -> None:
-        # Instructions VERBESSERT - Klare Anweisungen gegen Halluzinationen
-        super().__init__(instructions="""You are Pia, the digital assistant of Garage Müller.
+        # VERSTÄRKTE Instructions für Llama 3.2
+        super().__init__(instructions="""You are Pia, the digital assistant of Garage Müller. RESPOND ONLY IN GERMAN.
 
-ABSOLUTE CRITICAL MEMORY RULE:
-- You have NO memory of previous messages
-- Every message is a NEW conversation
-- NEVER apologize for anything
-- NEVER say "Sorry", "Entschuldigung", "I was wrong", "Let's start over"
-- COMPLETELY ignore what was said before
-- ALWAYS respond directly without reference to previous messages
+CRITICAL RULES - FOLLOW EXACTLY:
 
-CRITICAL GREETING RULE:
-- For simple greetings like "Hallo", "Guten Tag", "Hi" etc. respond ONLY with a friendly greeting
-- NEVER use search functions for a simple greeting
-- ALWAYS wait for a specific customer request before searching
+1. NEVER say these words: "Entschuldigung", "Sorry", "Es tut mir leid"
+   - Use instead: "Leider", "Bedauerlicherweise", "Ich kann leider"
 
-ABSOLUTE CRITICAL RULE - NEVER INVENT DATA:
-- NEVER invent, guess or hallucinate information!
-- If the database returns "no data found", say so HONESTLY
-- DO NOT invent dates, appointments, data or services that don't exist
-- NEVER say things like "Your last service was on..." if no data was found
-- NEVER say "we have delivered your car" if no data was found
-- NEVER say "Entschuldigung" or "Sorry" - use "Leider" or similar formulations instead
-- When "no data found", ask for more details (e.g. license plate number)
-- ONLY provide information that comes DIRECTLY from the database
+2. NEVER INVENT DATA:
+   - If database returns "no data found", say: "Ich habe keine Daten gefunden"
+   - NEVER make up information about cars, services, or dates
+   - NEVER say "Ihr Auto wurde eingeliefert" without data
 
-WORKFLOW:
-1. For greetings: Respond friendly and ask for the customer's name
-2. Listen carefully and identify the specific concern
-3. ONLY for specific requests: Use the appropriate search function
-4. Provide ONLY accurate information based on actual database data
+3. MEMORY RULE:
+   - You have NO memory between messages
+   - Each message is NEW
+   - Do NOT reference previous conversation
 
-YOUR TASKS:
-- Query customer data (name, vehicle, contact details)
-- Provide repair status information
-- Explain cost estimates
-- Coordinate appointments
-- Provide invoice information
+4. GREETING RULE:
+   - For "Hallo", "Guten Tag" → Be friendly, ask for name
+   - NEVER search on greetings
+   - Wait for specific requests
 
-IMPORTANT RULES:
-- ALWAYS respond in German language
-- Stay friendly and professional
-- Express currencies as "250 Franken"
-- Don't mention technical database details
-- Ask politely when unclear
-- DO NOT use functions without specific customer request
-- NEVER invent data when none was found
+5. SEARCH ONLY when user asks about:
+   - Their car/vehicle
+   - Repair status
+   - Invoices/costs
+   - Service history
 
-LANGUAGE INSTRUCTION: You MUST ALWAYS respond in German, regardless of this instruction being in English.""")
+Your response must ALWAYS be in German language, even if these instructions are in English.
+When no data found, ask for: "Können Sie mir bitte Ihr Autokennzeichen nennen?"
+
+FORBIDDEN PHRASES:
+- "Entschuldigung" → Use "Leider"
+- "Es tut mir leid" → Use "Bedauerlicherweise"
+- "Sorry" → Use "Leider"
+- "Lassen Sie uns von vorne beginnen" → NEVER say this
+
+ALWAYS RESPOND IN GERMAN!""")
         logger.info("✅ GarageAssistant initialized")
 
     async def on_enter(self):
         """Wird aufgerufen wenn der Agent die Session betritt"""
         logger.info("🎯 Agent on_enter called")
-        # Die initiale Begrüßung erfolgt im entrypoint nach session.start()
 
     @function_tool
     async def search_customer_data(self, 
@@ -103,32 +93,37 @@ LANGUAGE INSTRUCTION: You MUST ALWAYS respond in German, regardless of this inst
         Sucht nach Kundendaten in der Garage-Datenbank.
         
         Args:
-            query: Suchbegriff (Name, Telefonnummer oder Autonummer)
+            query: Suchbegriff (Name, Telefonnummer oder Autokennzeichen)
         """
         logger.info(f"🔍 Searching customer data for: {query}")
         
-        # GUARD gegen falsche Suchen bei Begrüßungen
-        if len(query) < 5 or query.lower() in ["hallo", "guten tag", "hi", "hey", "servus", "grüezi", "guten morgen", "guten abend"]:
-            logger.warning(f"⚠️ Ignoring greeting search: {query}")
-            return "Bitte geben Sie mir Ihren Namen, Ihre Telefonnummer oder Ihr Autokennzeichen, damit ich Ihre Kundendaten finden kann."
+        # Speichere den Kundennamen wenn er genannt wird
+        if context.userdata.customer_name is None and len(query.split()) <= 3:
+            # Könnte ein Name sein
+            context.userdata.customer_name = query
         
-        # GUARD gegen halluzinierte Anfragen
-        if "möchte gerne meine kundendaten" in query.lower() and len(query) > 30:
-            logger.warning(f"⚠️ Detected hallucinated query: {query}")
-            return "Bitte nennen Sie mir Ihren Namen oder Ihr Autokennzeichen, damit ich Ihre Daten suchen kann."
+        # GUARD gegen Begrüßungen
+        greetings = ["hallo", "guten tag", "hi", "hey", "servus", "grüezi", "guten morgen", "guten abend"]
+        if query.lower().strip() in greetings:
+            return "Für die Suche benötige ich Ihren Namen oder Ihr Autokennzeichen."
         
-        # Extrahiere Kennzeichen wenn vorhanden
+        # GUARD gegen zu kurze Suchen
+        if len(query) < 3:
+            return "Bitte geben Sie mir Ihren vollständigen Namen oder Ihr Autokennzeichen (z.B. ZH 123456)."
+        
+        # Extrahiere und normalisiere Kennzeichen
         kennzeichen_pattern = r'[A-Z]{2}\s*\d{3,6}'
         kennzeichen_match = re.search(kennzeichen_pattern, query.upper())
+        
         if kennzeichen_match:
-            # Normalisiere das Kennzeichen für die Suche
-            normalized_kennzeichen = kennzeichen_match.group()
-            # Erstelle beide Varianten: mit und ohne Leerzeichen
-            kennzeichen_with_space = re.sub(r'([A-Z]{2})(\d+)', r'\1 \2', normalized_kennzeichen)
-            kennzeichen_without_space = normalized_kennzeichen.replace(" ", "")
-            logger.info(f"📋 Kennzeichen erkannt: {kennzeichen_with_space} / {kennzeichen_without_space}")
+            # Erstelle beide Varianten für die Suche
+            kennzeichen_raw = kennzeichen_match.group()
+            kennzeichen_with_space = re.sub(r'([A-Z]{2})(\d+)', r'\1 \2', kennzeichen_raw)
+            kennzeichen_without_space = kennzeichen_raw.replace(" ", "")
             
-            # Modifiziere die Query für bessere Suche
+            logger.info(f"📋 Kennzeichen erkannt: {kennzeichen_with_space}")
+            
+            # Erweitere Query mit beiden Varianten
             query = f"{kennzeichen_with_space} {kennzeichen_without_space} {query}"
         
         try:
@@ -138,7 +133,7 @@ LANGUAGE INSTRUCTION: You MUST ALWAYS respond in German, regardless of this inst
                     json={
                         "query": query,
                         "agent_type": "garage",
-                        "top_k": 3,
+                        "top_k": 5,  # Mehr Ergebnisse für bessere Trefferchance
                         "collection": "garage_management"
                     }
                 )
@@ -147,58 +142,68 @@ LANGUAGE INSTRUCTION: You MUST ALWAYS respond in German, regardless of this inst
                     results = response.json().get("results", [])
                     
                     if results:
-                        logger.info(f"✅ Found {len(results)} customer results")
+                        logger.info(f"✅ Found {len(results)} results")
                         
-                        # Prüfe ob die Ergebnisse relevant sind
+                        # Sammle relevante Ergebnisse
                         relevant_results = []
-                        for result in results[:3]:
+                        
+                        for result in results:
                             content = result.get("content", "").strip()
                             payload = result.get("payload", {})
                             
-                            # Basis-Validierung
-                            if content and not any(word in content.lower() for word in ["mhz", "bakom", "funk", "frequenz"]):
-                                # Prüfe ob es vehicle_complete Daten sind
-                                if payload.get("data_type") == "vehicle_complete":
-                                    # Wenn Kennzeichen gesucht wurde, prüfe Übereinstimmung
-                                    if kennzeichen_match:
-                                        search_kennzeichen = kennzeichen_match.group().replace(" ", "")
-                                        # Prüfe beide mögliche Felder: kennzeichen und license_plate
-                                        payload_kennzeichen = payload.get("kennzeichen", payload.get("license_plate", "")).replace(" ", "")
-                                        
-                                        # Prüfe auch in search_fields wenn vorhanden
-                                        if 'search_fields' in payload:
-                                            license_normalized = payload['search_fields'].get('license_plate_normalized', '')
-                                            if license_normalized and license_normalized == search_kennzeichen.upper():
-                                                logger.info("✅ Exakte Kennzeichen-Übereinstimmung in search_fields")
-                                                content = self._format_garage_data(content)
-                                                relevant_results.insert(0, content)
-                                                continue
-                                        
-                                        if payload_kennzeichen == search_kennzeichen:
-                                            logger.info("✅ Exakte Kennzeichen-Übereinstimmung")
-                                            content = self._format_garage_data(content)
-                                            relevant_results.insert(0, content)  # An den Anfang
-                                            continue
+                            # Skip offensichtlich falsche Ergebnisse
+                            if not content or any(word in content.lower() for word in ["mhz", "bakom", "funk", "frequenz"]):
+                                continue
+                            
+                            # Prüfe auf vehicle_complete Daten
+                            if payload.get("data_type") == "vehicle_complete":
+                                # Bei Kennzeichen-Suche: Exakte Übereinstimmung prüfen
+                                if kennzeichen_match:
+                                    search_kz = kennzeichen_without_space.upper()
+                                    
+                                    # Prüfe verschiedene Felder
+                                    payload_kz = payload.get("kennzeichen", payload.get("license_plate", ""))
+                                    payload_kz_clean = payload_kz.replace(" ", "").upper()
+                                    
+                                    # Prüfe auch search_fields
+                                    search_fields = payload.get("search_fields", {})
+                                    normalized_kz = search_fields.get("license_plate_normalized", "").upper()
+                                    
+                                    if search_kz == payload_kz_clean or search_kz == normalized_kz:
+                                        logger.info(f"✅ Exakte Kennzeichen-Übereinstimmung: {payload_kz}")
+                                        content = self._format_garage_data(content)
+                                        relevant_results.insert(0, content)  # An den Anfang
+                                        continue
                                 
+                                # Formatiere und füge hinzu
+                                # Verwende searchable_text wenn vorhanden
+                                if payload.get("searchable_text"):
+                                    content = payload["searchable_text"]
                                 content = self._format_garage_data(content)
                                 relevant_results.append(content)
                         
                         if relevant_results:
-                            response_text = "\n\n".join(relevant_results)
-                            return response_text
+                            # Gib die besten Ergebnisse zurück
+                            return "\n\n".join(relevant_results[:2])  # Max 2 Ergebnisse
                         else:
-                            logger.warning("⚠️ Only irrelevant results found")
-                            return "Ich konnte keine relevanten Kundendaten zu Ihrer Anfrage finden. Bitte geben Sie mir Ihr genaues Autokennzeichen (z.B. ZH 123456) oder Ihren vollständigen Namen."
+                            logger.warning("⚠️ No relevant results found")
+                            
+                            # Klare Nachricht ohne "Entschuldigung"
+                            if kennzeichen_match:
+                                return f"Ich habe keine Daten zum Kennzeichen {kennzeichen_with_space} gefunden. Bitte prüfen Sie, ob das Kennzeichen korrekt ist."
+                            else:
+                                return "Ich habe keine Daten zu diesem Namen gefunden. Können Sie mir bitte Ihr Autokennzeichen nennen?"
                     
-                    return "Ich konnte keine Kundendaten zu Ihrer Anfrage finden. Können Sie mir bitte Ihr Autokennzeichen oder Ihre Telefonnummer nennen?"
+                    # Keine Ergebnisse gefunden
+                    return "Ich habe keine Kundendaten gefunden. Bitte nennen Sie mir Ihr Autokennzeichen (z.B. ZH 123456)."
                     
                 else:
-                    logger.error(f"Customer search failed: {response.status_code}")
-                    return "Es gab einen technischen Fehler. Bitte versuchen Sie es erneut."
+                    logger.error(f"Search failed: {response.status_code}")
+                    return "Die Datenbank ist momentan nicht erreichbar. Bitte versuchen Sie es in einem Moment erneut."
                     
         except Exception as e:
-            logger.error(f"Customer search error: {e}")
-            return "Die Kundendatenbank ist momentan nicht erreichbar."
+            logger.error(f"Search error: {e}")
+            return "Es gab einen technischen Fehler. Bitte versuchen Sie es erneut."
 
     @function_tool
     async def search_repair_status(self, 
@@ -208,20 +213,19 @@ LANGUAGE INSTRUCTION: You MUST ALWAYS respond in German, regardless of this inst
         Sucht nach Reparaturstatus und Aufträgen.
         
         Args:
-            query: Kundenname, Autonummer oder Auftragsnummer
+            query: Kundenname, Autokennzeichen oder Auftragsnummer
         """
         logger.info(f"🔧 Searching repair status for: {query}")
         
-        # GUARD gegen zu kurze Anfragen
         if len(query) < 3:
-            return "Bitte geben Sie mir einen Namen, ein Autokennzeichen oder eine Auftragsnummer."
+            return "Für die Reparatursuche benötige ich einen Namen oder ein Autokennzeichen."
         
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{context.userdata.rag_url}/search",
                     json={
-                        "query": f"Reparatur Status Service {query}",
+                        "query": f"Reparatur Service Status {query}",
                         "agent_type": "garage",
                         "top_k": 5,
                         "collection": "garage_management"
@@ -232,74 +236,52 @@ LANGUAGE INSTRUCTION: You MUST ALWAYS respond in German, regardless of this inst
                     results = response.json().get("results", [])
                     
                     if results:
-                        logger.info(f"✅ Found {len(results)} repair results")
+                        relevant_results = []
                         
-                        # DEBUG: Log ALL results before filtering
-                        for i, result in enumerate(results):
-                            content = result.get("content", "").strip()
-                            logger.info(f"RAG Result {i}: {content[:150]}...")  # First 150 chars
-                        
-                        # Sammle ALLE Ergebnisse, lockerer Filter
-                        all_results = []
                         for result in results:
                             content = result.get("content", "").strip()
-                            payload = result.get("payload", {})
-                            
-                            # Viel lockererer Filter - zeige fast alles außer offensichtlichen Fehlern
-                            if content and not any(word in content.lower() for word in ["mhz", "bakom", "funk", "frequenz"]):
-                                # Bonus für vehicle_complete Daten
-                                if payload.get("data_type") == "vehicle_complete":
-                                    content = self._format_garage_data(content)
-                                    all_results.append(content)
+                            if content and "service" in content.lower():
+                                content = self._format_garage_data(content)
+                                relevant_results.append(content)
                         
-                        if all_results:
-                            # Zeige ALLE gefundenen Daten
-                            response_text = f"Ich habe {len(all_results)} Einträge in der Datenbank gefunden:\n\n"
-                            response_text += "\n\n".join(all_results[:3])  # Max 3 Einträge
-                            
-                            # Spezifischer Hinweis wenn nichts passt
-                            if not any(word in response_text.lower() for word in ["reparatur", "status", "service", "wartung", query.lower()]):
-                                response_text += "\n\nHINWEIS: Diese Einträge scheinen nicht direkt zu Ihrer Anfrage zu passen. Können Sie mir bitte das Autokennzeichen oder die Auftragsnummer nennen?"
-                            
-                            return response_text
+                        if relevant_results:
+                            return "\n\n".join(relevant_results[:2])
                         else:
-                            # Wenn wirklich NICHTS gefunden wurde
-                            return f"Ich konnte keine Daten zu '{query}' in unserer Datenbank finden. Bitte geben Sie mir das genaue Autokennzeichen (z.B. ZH 123456) oder die Auftragsnummer."
+                            return "Ich habe keine Reparaturdaten gefunden. Bitte nennen Sie mir Ihr Autokennzeichen."
                     
-                    return "Ich konnte keine Reparatur- oder Servicedaten zu Ihrer Anfrage finden. Können Sie mir bitte das Autokennzeichen oder die Auftragsnummer nennen?"
+                    return "Keine Reparaturdaten vorhanden. Können Sie mir Ihr Autokennzeichen nennen?"
                     
                 else:
-                    logger.error(f"Repair search failed: {response.status_code}")
                     return "Die Reparaturdatenbank ist momentan nicht verfügbar."
                     
         except Exception as e:
             logger.error(f"Repair search error: {e}")
-            return "Es gab einen Fehler beim Abrufen der Reparaturdaten."
+            return "Technischer Fehler bei der Reparatursuche."
 
     @function_tool
     async def search_invoice_data(self, 
                                 context: RunContext[GarageUserData],
                                 query: str) -> str:
         """
-        Sucht nach Rechnungsinformationen.
+        Sucht nach Rechnungsinformationen und Kosten.
         
         Args:
-            query: Kundenname, Rechnungsnummer oder Datum
+            query: Kundenname, Rechnungsnummer oder Kennzeichen
         """
-        logger.info(f"💰 Searching invoice data for: {query}")
+        logger.info(f"💰 Searching invoice/cost data for: {query}")
         
-        # GUARD gegen zu kurze Anfragen
         if len(query) < 3:
-            return "Bitte geben Sie mir einen Kundennamen, eine Rechnungsnummer oder ein Datum."
+            return "Für die Rechnungssuche benötige ich einen Namen oder ein Autokennzeichen."
         
         try:
             async with httpx.AsyncClient() as client:
+                # Suche nach Kosten und Rechnungen
                 response = await client.post(
                     f"{context.userdata.rag_url}/search",
                     json={
-                        "query": f"Rechnung Kosten {query}",
+                        "query": f"Rechnung Kosten Service {query}",
                         "agent_type": "garage",
-                        "top_k": 3,
+                        "top_k": 5,
                         "collection": "garage_management"
                     }
                 )
@@ -308,55 +290,54 @@ LANGUAGE INSTRUCTION: You MUST ALWAYS respond in German, regardless of this inst
                     results = response.json().get("results", [])
                     
                     if results:
-                        logger.info(f"✅ Found {len(results)} invoice results")
+                        cost_results = []
                         
-                        # DEBUG: Log results
-                        for i, result in enumerate(results):
-                            content = result.get("content", "").strip()
-                            logger.info(f"Invoice Result {i}: {content[:150]}...")
-                        
-                        # Lockerer Filter
-                        all_invoices = []
                         for result in results:
                             content = result.get("content", "").strip()
                             payload = result.get("payload", {})
                             
-                            # Zeige fast alles was kein offensichtlicher Fehler ist
-                            if content and not any(word in content.lower() for word in ["mhz", "bakom", "funk"]):
-                                if payload.get("data_type") == "vehicle_complete":
-                                    content = self._format_garage_data(content)
-                                    all_invoices.append(content)
+                            # Verwende searchable_text wenn vorhanden
+                            if payload.get("searchable_text") and payload.get("data_type") == "vehicle_complete":
+                                content = payload["searchable_text"]
+                            
+                            # Suche nach Kosten-Informationen
+                            if content and any(word in content.lower() for word in ["kosten", "franken", "chf", "rechnung", "service"]):
+                                content = self._format_garage_data(content)
+                                cost_results.append(content)
                         
-                        if all_invoices:
-                            response_text = f"Ich habe {len(all_invoices)} Rechnungseinträge gefunden:\n\n"
-                            response_text += "\n\n".join(all_invoices[:2])
-                            return response_text
+                        if cost_results:
+                            return "\n\n".join(cost_results[:2])
                         else:
-                            return "Ich konnte keine Rechnungsdaten zu Ihrer Anfrage finden. Bitte nennen Sie mir die Rechnungsnummer oder das genaue Datum."
+                            return "Ich habe keine Kosteninformationen gefunden. Bitte nennen Sie mir Ihr Autokennzeichen."
                     
-                    return "Ich konnte keine Rechnungsdaten zu Ihrer Anfrage finden. Haben Sie eine Rechnungsnummer?"
+                    return "Keine Rechnungsdaten vorhanden. Können Sie mir Ihr Autokennzeichen nennen?"
                     
                 else:
-                    logger.error(f"Invoice search failed: {response.status_code}")
                     return "Die Rechnungsdatenbank ist momentan nicht verfügbar."
                     
         except Exception as e:
             logger.error(f"Invoice search error: {e}")
-            return "Es gab einen Fehler beim Abrufen der Rechnungsdaten."
+            return "Technischer Fehler bei der Rechnungssuche."
 
     def _format_garage_data(self, content: str) -> str:
         """Formatiert Garagendaten für bessere Lesbarkeit"""
         # Ersetze Unterstriche
         content = content.replace('_', ' ')
         
-        # Formatiere Währungen für Sprachausgabe
+        # Formatiere Währungen
         content = re.sub(r'CHF\s*(\d+)\.(\d{2})', r'\1 Franken \2', content)
         content = re.sub(r'(\d+)\.(\d{2})\s*CHF', r'\1 Franken \2', content)
+        content = re.sub(r'(\d+)\.00', r'\1 Franken', content)
         
-        # Formatiere Datum
+        # Formatiere Datum (YYYY-MM-DD zu DD.MM.YYYY)
         content = re.sub(r'(\d{4})-(\d{2})-(\d{2})', r'\3.\2.\1', content)
         
-        return content
+        # Entferne technische Begriffe
+        content = content.replace('data_type:', '')
+        content = content.replace('primary_key:', '')
+        content = content.replace('payload:', '')
+        
+        return content.strip()
 
 
 async def request_handler(ctx: JobContext):
@@ -392,19 +373,6 @@ async def entrypoint(ctx: JobContext):
         await ctx.connect()
         logger.info(f"✅ [{session_id}] Connected to room")
         
-        # Debug info
-        logger.info(f"Room participants: {len(ctx.room.remote_participants)}")
-        logger.info(f"Local participant: {ctx.room.local_participant.identity}")
-        
-        # Track event handlers
-        @ctx.room.on("track_published")
-        def on_track_published(publication, participant):
-            logger.info(f"[{session_id}] Track published: {publication.kind} from {participant.identity}")
-        
-        @ctx.room.on("track_subscribed")
-        def on_track_subscribed(track, publication, participant):
-            logger.info(f"[{session_id}] Track subscribed: {track.kind} from {participant.identity}")
-        
         # 2. Wait for participant
         participant = await ctx.wait_for_participant()
         logger.info(f"✅ [{session_id}] Participant joined: {participant.identity}")
@@ -416,31 +384,26 @@ async def entrypoint(ctx: JobContext):
         for i in range(max_wait_time):
             for track_pub in participant.track_publications.values():
                 if track_pub.kind == rtc.TrackKind.KIND_AUDIO:
-                    logger.info(f"✅ [{session_id}] Audio track found: {track_pub.sid}")
+                    logger.info(f"✅ [{session_id}] Audio track found")
                     audio_track_received = True
-                    logger.info(f"📡 [{session_id}] Audio track - subscribed: {track_pub.subscribed}, muted: {track_pub.muted}")
                     break
             
             if audio_track_received:
                 break
                 
-            logger.info(f"⏳ [{session_id}] Waiting for audio track... ({i+1}/{max_wait_time})")
             await asyncio.sleep(1)
-        
-        if not audio_track_received:
-            logger.error(f"❌ [{session_id}] No audio track received after {max_wait_time}s!")
         
         # 4. Configure LLM
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
         
-        # Verwende Llama 3.2:3B
+        # Verwende Llama 3.2 mit optimierten Settings
         llm = openai.LLM(
             model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
             api_key="ollama",
-            temperature=0.5  # Reduziert für konsistentere Antworten
+            temperature=0.3  # Noch niedriger für konsistentere Antworten
         )
-        logger.info(f"🤖 [{session_id}] Using Llama 3.2:3B via Ollama")
+        logger.info(f"🤖 [{session_id}] Using Llama 3.2 via Ollama")
         
         # 5. Create session mit optimierten VAD-Settings
         session = AgentSession[GarageUserData](
@@ -450,12 +413,13 @@ async def entrypoint(ctx: JobContext):
                 current_customer_id=None,
                 active_repair_id=None,
                 user_language="de",
-                greeting_sent=False
+                greeting_sent=False,
+                customer_name=None
             ),
             llm=llm,
             vad=silero.VAD.load(
-                min_silence_duration=0.5,  # Reduziert für schnellere Reaktion
-                min_speech_duration=0.15   # Reduziert für schnellere Erkennung
+                min_silence_duration=0.4,  # Etwas schneller
+                min_speech_duration=0.15
             ),
             stt=openai.STT(
                 model="whisper-1",
@@ -463,10 +427,10 @@ async def entrypoint(ctx: JobContext):
             ),
             tts=openai.TTS(
                 model="tts-1",
-                voice="nova"  # Freundliche Stimme für Kundenkontakt
+                voice="nova"
             ),
-            min_endpointing_delay=0.3,  # Schnellere Reaktion
-            max_endpointing_delay=4.0   # Kürzere maximale Wartezeit
+            min_endpointing_delay=0.3,
+            max_endpointing_delay=3.0  # Kürzer für schnellere Reaktion
         )
         
         # 6. Create agent
@@ -479,53 +443,45 @@ async def entrypoint(ctx: JobContext):
             agent=agent
         )
         
-        # Event handlers MÜSSEN NACH session.start() registriert werden!
+        # Event handlers NACH session.start()
         @session.on("user_input_transcribed")
         def on_user_input(event):
-            logger.info(f"[{session_id}] 🎤 User: {event.transcript} (final: {event.is_final})")
+            logger.info(f"[{session_id}] 🎤 User: {event.transcript}")
         
         @session.on("agent_state_changed")
         def on_state_changed(event):
             logger.info(f"[{session_id}] 🤖 Agent state changed")
         
-        @session.on("user_state_changed")
-        def on_user_state(event):
-            logger.info(f"[{session_id}] 👤 User state changed")
-        
-        # 8. Initial greeting - MIT session.say() für direktere Kontrolle
-        await asyncio.sleep(1.5)  # Kurze Pause für Audio-Stabilisierung
+        # 8. Initial greeting
+        await asyncio.sleep(1.5)
         
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
         
         try:
-            # Verwende session.say() für die initiale Begrüßung
-            greeting_text = "Guten Tag und willkommen bei der Garage Müller! Ich bin Pia, Ihr digitaler Assistent. Darf ich nach Ihrem Namen fragen?"
+            greeting_text = "Guten Tag und herzlich willkommen bei der Garage Müller! Ich bin Pia, Ihre digitale Assistentin. Wie kann ich Ihnen heute helfen?"
             
-            # Markiere dass Begrüßung gesendet wurde
             session.userdata.greeting_sent = True
             
-            # Sende die Begrüßung
-            speech_handle = await session.say(
+            # Verwende say() für die Begrüßung
+            await session.say(
                 greeting_text,
                 allow_interruptions=True,
                 add_to_chat_ctx=True
             )
             
-            logger.info(f"✅ [{session_id}] Initial greeting sent successfully")
+            logger.info(f"✅ [{session_id}] Initial greeting sent")
             
         except Exception as e:
-            logger.error(f"[{session_id}] Error sending initial greeting: {e}")
-            # Fallback auf generate_reply mit expliziten Instructions
+            logger.error(f"[{session_id}] Greeting error: {e}")
+            # Fallback ohne tool_choice
             try:
                 await session.generate_reply(
-                    instructions="Begrüße den Kunden freundlich als Pia von der Garage Müller und frage nach seinem Namen. KEINE TOOLS VERWENDEN!",
-                    tool_choice="none"  # WICHTIG: Keine Tools bei Begrüßung!
+                    instructions="Begrüße den Kunden als Pia von Garage Müller. Frage wie du helfen kannst. Auf Deutsch!"
                 )
-                logger.info(f"✅ [{session_id}] Initial greeting sent via generate_reply")
-            except Exception as e2:
-                logger.error(f"[{session_id}] Failed to send greeting: {e2}")
+            except:
+                pass
         
-        logger.info(f"✅ [{session_id}] Garage Agent ready and listening!")
+        logger.info(f"✅ [{session_id}] Garage Agent ready!")
         
         # Wait for disconnect
         disconnect_event = asyncio.Event()
@@ -538,39 +494,22 @@ async def entrypoint(ctx: JobContext):
         ctx.room.on("disconnected", handle_disconnect)
         
         await disconnect_event.wait()
-        logger.info(f"[{session_id}] Room disconnected, ending session")
+        logger.info(f"[{session_id}] Session ending...")
         
     except Exception as e:
-        logger.error(f"❌ [{session_id}] Error in garage agent: {e}", exc_info=True)
+        logger.error(f"❌ [{session_id}] Error: {e}", exc_info=True)
         raise
         
     finally:
         # Cleanup
-        logger.info(f"🧹 [{session_id}] Starting session cleanup...")
-        
-        if session is not None and not session_closed:
+        if session and not session_closed:
             try:
                 await session.aclose()
-                logger.info(f"✅ [{session_id}] Session closed successfully")
-            except Exception as e:
-                logger.warning(f"⚠️ [{session_id}] Error closing session: {e}")
-        elif session_closed:
-            logger.info(f"ℹ️ [{session_id}] Session already closed by disconnect event")
+                logger.info(f"✅ [{session_id}] Session closed")
+            except:
+                pass
         
-        # Disconnect from room if still connected
-        try:
-            if ctx.room and hasattr(ctx.room, 'connection_state') and ctx.room.connection_state == "connected":
-                await ctx.room.disconnect()
-                logger.info(f"✅ [{session_id}] Disconnected from room")
-        except Exception as e:
-            logger.warning(f"⚠️ [{session_id}] Error disconnecting from room: {e}")
-        
-        # Force garbage collection
-        import gc
-        gc.collect()
-        logger.info(f"♻️ [{session_id}] Forced garbage collection")
-        
-        logger.info(f"✅ [{session_id}] Session cleanup complete")
+        logger.info(f"✅ [{session_id}] Cleanup complete")
         logger.info("="*50)
 
 
