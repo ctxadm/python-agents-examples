@@ -101,15 +101,27 @@ class IdentifierExtractor:
         """Extrahiert Intent und Daten aus User-Input"""
         input_lower = user_input.lower().strip()
         
-        # Greetings
-        greetings = ["hallo", "guten tag", "hi", "hey", "servus", "grüezi", "guten morgen", "guten abend"]
-        if any(g in input_lower for g in greetings):
-            return {"intent": "greeting", "data": None}
+        # Check for specific service queries FIRST
+        if any(word in input_lower for word in ["letzte service", "letzten service", "service historie", "servicehistorie"]):
+            return {"intent": "service_history", "data": user_input}
         
-        # Fahrzeug-ID (F001, F002, etc.)
+        if any(word in input_lower for word in ["anstehende arbeiten", "anstehende reparaturen", "was muss gemacht werden"]):
+            return {"intent": "pending_work", "data": user_input}
+        
+        if any(word in input_lower for word in ["kosten", "preis", "wie viel", "was kostet"]):
+            if "anstehend" in input_lower or "gesamt" in input_lower:
+                return {"intent": "cost_estimate", "data": user_input}
+            else:
+                return {"intent": "cost_query", "data": user_input}
+        
+        # Fahrzeug-ID (F001, F002, etc.) - Check even in longer sentences
         fahrzeug_id_match = re.search(r'\b(F\d{3})\b', user_input.upper())
         if fahrzeug_id_match:
             return {"intent": "fahrzeug_id", "data": fahrzeug_id_match.group(1)}
+        
+        # Greetings - but only if no other important info is present
+        greetings = ["hallo", "guten tag", "hi", "hey", "servus", "grüezi", "guten morgen", "guten abend"]
+        has_greeting = any(g in input_lower for g in greetings)
         
         # Name detection
         name_patterns = [
@@ -124,6 +136,10 @@ class IdentifierExtractor:
                 # Filter out common false positives
                 if name.lower() not in ["die", "der", "das", "mein", "dein", "ihr"]:
                     return {"intent": "customer_name", "data": name}
+        
+        # If we found a greeting but no other data, return greeting
+        if has_greeting and not fahrzeug_id_match:
+            return {"intent": "greeting", "data": None}
         
         # Buchstabierte Buchstaben (z.B. "B wie Bertha, E wie Emil")
         buchstabiert_pattern = r'([A-Z])\s*wie\s*\w+(?:\s*[,.]?\s*([A-Z])\s*wie\s*\w+)?'
@@ -209,6 +225,20 @@ CRITICAL ANTI-HALLUCINATION RULES:
 2. NEVER claim to have found data when the search failed
 3. NEVER make up prices, dates, or any information
 4. When you get "keine passenden Daten", ask for identification again
+5. ALWAYS acknowledge found problems when they are listed in the data
+
+WHEN DATA IS FOUND WITH PROBLEMS:
+If the tool returns data with "Aktuelle Probleme" like:
+- Reichweite niedriger als erwartet
+- Ladeklappe öffnet manchmal schwer
+
+You MUST say something like:
+"Ich sehe bei Ihrem [Fahrzeug] folgende dokumentierte Probleme:
+- [Problem 1]
+- [Problem 2]
+Möchten Sie diese Probleme beheben lassen?"
+
+NEVER say "keine spezifischen Probleme gefunden" when problems ARE listed!
 
 CUSTOMER IDENTIFICATION OPTIONS:
 1. Fahrzeug-ID (z.B. "F001", "F002", etc.) - PREFERRED METHOD
@@ -221,17 +251,13 @@ Example 1 - Using Fahrzeug-ID:
 User: "Meine Fahrzeug-ID ist F001"
 You: [SEARCH with "F001"]
 
-Example 2 - Using name:
-User: "Mein Name ist Claudia Schneider"
-You: [SEARCH with "Claudia Schneider"]
+Example 2 - When asking for specific data:
+User: "Was sind meine letzten Services?"
+You: [Use search_invoice_data to get service history]
 
-Example 3 - Using license plate:
-User: "b e 567890"
-You: [SEARCH with "BE 567890"] → Tool will format correctly
-
-Example 4 - No data found:
-Tool returns: "Ich habe keine passenden Daten gefunden"
-You: "Leider konnte ich keine Daten finden. Können Sie mir bitte Ihre Fahrzeug-ID, Ihren Namen oder Ihr Kennzeichen nennen?"
+Example 3 - When asking for costs:
+User: "Was kosten die anstehenden Arbeiten?"
+You: [Use search_invoice_data to get cost estimates]
 
 FORBIDDEN WORDS (use alternatives):
 - "Entschuldigung" → "Leider"
@@ -242,7 +268,8 @@ RESPONSE RULES:
 1. Be friendly and professional
 2. If search returns no data, SAY SO and ask for identification
 3. NEVER invent prices or information
-4. Suggest using Fahrzeug-ID for faster service
+4. Always acknowledge problems found in the data
+5. Suggest using Fahrzeug-ID for faster service
 
 Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
         
@@ -355,7 +382,23 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                         # Store vehicle data in context
                         context.userdata.current_vehicle_data = vehicle_data
                         
-                        # Format response
+                        # Check if user is asking for specific information
+                        query_lower = query.lower()
+                        
+                        # If asking about services
+                        if intent == "service_history" or any(word in query_lower for word in ["service", "letzte", "historie"]):
+                            if 'letzte_services' in vehicle_data and vehicle_data['letzte_services']:
+                                response_text = f"Hier sind die letzten Services für Ihr {vehicle_data.get('marke', '')} {vehicle_data.get('modell', '')}:\n"
+                                for service in vehicle_data['letzte_services']:
+                                    response_text += f"\n**{service.get('datum', 'unbekannt')}** - {service.get('service_typ', 'Service')}:\n"
+                                    response_text += f"- Kilometerstand: {service.get('km_stand', 0)} km\n"
+                                    response_text += f"- Arbeiten: {', '.join(service.get('arbeiten', []))}\n"
+                                    response_text += f"- Kosten: CHF {service.get('kosten', 0):.2f}\n"
+                                return response_text
+                            else:
+                                return "Ich habe keine Service-Historie für Ihr Fahrzeug gefunden."
+                        
+                        # Default: show general vehicle data
                         response_text = "Ich habe folgende Daten gefunden:\n"
                         
                         if 'fahrzeug_id' in vehicle_data:
@@ -413,6 +456,10 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
         """
         logger.info(f"💰 Searching invoice data for: {query}")
         
+        # Extract intent to understand what user is asking for
+        intent_result = self.identifier_extractor.extract_intent_from_input(query)
+        intent = intent_result["intent"]
+        
         # Use stored identification if available
         if context.userdata.customer_context.has_identifier():
             search_query = context.userdata.customer_context.get_search_query()
@@ -455,26 +502,92 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                                 break
                     
                     if vehicle_data:
-                        response_text = "Hier sind die Kosteninformationen:\n"
+                        # Check what specific info user wants
+                        if intent == "service_history" or "service" in query.lower():
+                            # User wants service history
+                            if 'letzte_services' in vehicle_data and vehicle_data['letzte_services']:
+                                response_text = f"Hier ist die Service-Historie für Ihr {vehicle_data.get('marke', '')} {vehicle_data.get('modell', '')}:\n"
+                                total_spent = 0
+                                for service in vehicle_data['letzte_services']:
+                                    response_text += f"\n**{service.get('datum', 'unbekannt')}** - {service.get('service_typ', 'Service')}:\n"
+                                    response_text += f"- Kilometerstand: {service.get('km_stand', 0)} km\n"
+                                    response_text += f"- Arbeiten: {', '.join(service.get('arbeiten', []))}\n"
+                                    cost = service.get('kosten', 0)
+                                    response_text += f"- Kosten: CHF {cost:.2f}\n"
+                                    total_spent += cost
+                                response_text += f"\n**Gesamtausgaben für Services**: CHF {total_spent:.2f}"
+                                return response_text
+                            else:
+                                return "Ich habe keine Service-Historie für Ihr Fahrzeug gefunden."
                         
-                        if 'letzte_services' in vehicle_data:
-                            response_text += "\n**Durchgeführte Services:**\n"
-                            for service in vehicle_data['letzte_services']:
-                                response_text += f"\n{service.get('datum', 'unbekannt')} - {service.get('service_typ', 'Service')}:\n"
-                                response_text += f"- Kosten: CHF {service.get('kosten', 0):.2f}\n"
-                                if 'arbeiten' in service:
-                                    response_text += f"- Arbeiten: {', '.join(service['arbeiten'])}\n"
+                        elif intent == "cost_estimate" or "anstehend" in query.lower():
+                            # User wants cost estimate for pending work
+                            if 'anstehende_arbeiten' in vehicle_data and vehicle_data['anstehende_arbeiten']:
+                                response_text = "Hier sind die anstehenden Arbeiten und geschätzten Kosten:\n"
+                                total_cost = 0
+                                
+                                # Group by priority
+                                high_priority = []
+                                medium_priority = []
+                                low_priority = []
+                                
+                                for arbeit in vehicle_data['anstehende_arbeiten']:
+                                    priority = arbeit.get('priorität', 'normal')
+                                    if priority == 'hoch':
+                                        high_priority.append(arbeit)
+                                    elif priority == 'mittel':
+                                        medium_priority.append(arbeit)
+                                    else:
+                                        low_priority.append(arbeit)
+                                
+                                if high_priority:
+                                    response_text += "\n**Hohe Priorität:**\n"
+                                    for arbeit in high_priority:
+                                        cost = arbeit.get('geschätzte_kosten', 0)
+                                        response_text += f"- {arbeit.get('arbeit', 'Arbeit')}: CHF {cost:.2f}\n"
+                                        total_cost += cost
+                                
+                                if medium_priority:
+                                    response_text += "\n**Mittlere Priorität:**\n"
+                                    for arbeit in medium_priority:
+                                        cost = arbeit.get('geschätzte_kosten', 0)
+                                        response_text += f"- {arbeit.get('arbeit', 'Arbeit')}: CHF {cost:.2f}\n"
+                                        total_cost += cost
+                                
+                                if low_priority:
+                                    response_text += "\n**Niedrige Priorität:**\n"
+                                    for arbeit in low_priority:
+                                        cost = arbeit.get('geschätzte_kosten', 0)
+                                        response_text += f"- {arbeit.get('arbeit', 'Arbeit')}: CHF {cost:.2f}\n"
+                                        total_cost += cost
+                                
+                                response_text += f"\n**Geschätzte Gesamtkosten für alle anstehenden Arbeiten**: CHF {total_cost:.2f}"
+                                return response_text
+                            else:
+                                return "Es sind keine anstehenden Arbeiten für Ihr Fahrzeug dokumentiert."
                         
-                        if 'anstehende_arbeiten' in vehicle_data and vehicle_data['anstehende_arbeiten']:
-                            response_text += "\n**Anstehende Arbeiten und geschätzte Kosten:**\n"
-                            total_cost = 0
-                            for arbeit in vehicle_data['anstehende_arbeiten']:
-                                cost = arbeit.get('geschätzte_kosten', 0)
-                                response_text += f"- {arbeit.get('arbeit', 'Arbeit')}: CHF {cost:.2f} ({arbeit.get('priorität', 'normal')})\n"
-                                total_cost += cost
-                            response_text += f"\n**Geschätzte Gesamtkosten**: CHF {total_cost:.2f}"
-                        
-                        return response_text
+                        else:
+                            # General cost overview
+                            response_text = "Hier sind die Kosteninformationen:\n"
+                            
+                            if 'letzte_services' in vehicle_data:
+                                response_text += "\n**Durchgeführte Services:**\n"
+                                for service in vehicle_data['letzte_services']:
+                                    response_text += f"\n{service.get('datum', 'unbekannt')} - {service.get('service_typ', 'Service')}:\n"
+                                    response_text += f"- Kosten: CHF {service.get('kosten', 0):.2f}\n"
+                                    if 'arbeiten' in service:
+                                        response_text += f"- Arbeiten: {', '.join(service['arbeiten'])}\n"
+                            
+                            if 'anstehende_arbeiten' in vehicle_data and vehicle_data['anstehende_arbeiten']:
+                                response_text += "\n**Anstehende Arbeiten und geschätzte Kosten:**\n"
+                                total_cost = 0
+                                for arbeit in vehicle_data['anstehende_arbeiten']:
+                                    cost = arbeit.get('geschätzte_kosten', 0)
+                                    response_text += f"- {arbeit.get('arbeit', 'Arbeit')}: CHF {cost:.2f} ({arbeit.get('priorität', 'normal')})\n"
+                                    total_cost += cost
+                                response_text += f"\n**Geschätzte Gesamtkosten**: CHF {total_cost:.2f}"
+                            
+                            return response_text
                     else:
                         logger.info("❌ No invoice data found")
                         return "Ich habe keine Kosteninformationen gefunden. Bitte nennen Sie mir Ihre Fahrzeug-ID, Ihren Namen oder Ihr Kennzeichen."
@@ -501,6 +614,10 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
             Gefundene Reparaturdaten oder Fehlermeldung
         """
         logger.info(f"🔧 Searching repair status for: {query}")
+        
+        # Extract intent
+        intent_result = self.identifier_extractor.extract_intent_from_input(query)
+        intent = intent_result["intent"]
         
         # Use stored identification if available
         if context.userdata.customer_context.has_identifier():
@@ -544,22 +661,54 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                                 break
                     
                     if vehicle_data:
-                        response_text = "Hier ist der Status Ihres Fahrzeugs:\n"
+                        response_text = f"Hier ist der Status für Ihr {vehicle_data.get('marke', '')} {vehicle_data.get('modell', '')}:\n"
                         
+                        # Always show current problems first
                         if 'aktuelle_probleme' in vehicle_data and vehicle_data['aktuelle_probleme']:
                             response_text += "\n**Aktuelle Probleme:**\n"
                             for problem in vehicle_data['aktuelle_probleme']:
                                 response_text += f"- {problem}\n"
+                        else:
+                            response_text += "\n**Keine aktuellen Probleme dokumentiert.**\n"
                         
+                        # Show pending work
                         if 'anstehende_arbeiten' in vehicle_data and vehicle_data['anstehende_arbeiten']:
                             response_text += "\n**Anstehende Arbeiten:**\n"
+                            
+                            # Group by priority
+                            high_priority = []
+                            medium_priority = []
+                            low_priority = []
+                            
                             for arbeit in vehicle_data['anstehende_arbeiten']:
-                                response_text += f"- {arbeit.get('arbeit', 'Arbeit')} "
-                                response_text += f"(Priorität: {arbeit.get('priorität', 'normal')})\n"
+                                priority = arbeit.get('priorität', 'normal')
+                                if priority == 'hoch':
+                                    high_priority.append(arbeit)
+                                elif priority == 'mittel':
+                                    medium_priority.append(arbeit)
+                                else:
+                                    low_priority.append(arbeit)
+                            
+                            if high_priority:
+                                response_text += "\n*Hohe Priorität:*\n"
+                                for arbeit in high_priority:
+                                    response_text += f"- {arbeit.get('arbeit', 'Arbeit')}\n"
+                            
+                            if medium_priority:
+                                response_text += "\n*Mittlere Priorität:*\n"
+                                for arbeit in medium_priority:
+                                    response_text += f"- {arbeit.get('arbeit', 'Arbeit')}\n"
+                            
+                            if low_priority:
+                                response_text += "\n*Niedrige Priorität:*\n"
+                                for arbeit in low_priority:
+                                    response_text += f"- {arbeit.get('arbeit', 'Arbeit')}\n"
                         
+                        # Show next service
                         if 'nächster_service_fällig' in vehicle_data:
                             response_text += f"\n**Nächster Service fällig**: {vehicle_data['nächster_service_fällig']}"
                         
+                        # Show warranty status
                         if 'garantie_bis' in vehicle_data:
                             response_text += f"\n**Garantie bis**: {vehicle_data['garantie_bis']}"
                         
