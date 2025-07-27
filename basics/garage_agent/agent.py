@@ -464,26 +464,40 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
             search_query = query
             
         try:
+            # DIREKTE QDRANT ABFRAGE für Rechnungsdaten
             async with httpx.AsyncClient() as client:
-                # Wichtig: Spezifiziere die richtige Collection!
-                search_payload = {
-                    "query": search_query,
-                    "type": "invoice",
-                    "collection": "garage_management",  # WICHTIG: Richtige Collection
-                    "top_k": 5
-                }
-                
-                response = await client.post(
-                    "http://localhost:8000/search",
-                    json=search_payload,
+                qdrant_response = await client.post(
+                    "http://172.16.0.108:6333/collections/garage_management/points/scroll",
+                    json={
+                        "limit": 100,
+                        "with_payload": True,
+                        "with_vector": False
+                    },
                     timeout=5.0
                 )
-                result = response.json()
                 
-                if result.get("results") or context.userdata.current_vehicle_data:
-                    # Use current vehicle data if available
+                if qdrant_response.status_code == 200:
+                    qdrant_data = qdrant_response.json()
+                    points = qdrant_data.get("result", {}).get("points", [])
+                    
+                    # Verwende gespeicherte Daten wenn vorhanden
                     if context.userdata.current_vehicle_data:
                         vehicle_data = context.userdata.current_vehicle_data
+                    else:
+                        # Suche nach dem Query
+                        search_lower = search_query.lower().strip()
+                        vehicle_data = None
+                        
+                        for point in points:
+                            payload = point.get("payload", {})
+                            # Check verschiedene Felder
+                            if (search_lower in str(payload.get("fahrzeug_id", "")).lower() or
+                                search_lower in str(payload.get("besitzer", "")).lower() or
+                                search_lower in str(payload.get("kennzeichen", "")).lower().replace(" ", "")):
+                                vehicle_data = payload
+                                break
+                    
+                    if vehicle_data:
                     else:
                         # Extract from results with proper structure handling
                         results_list = result.get("results", [])
@@ -548,26 +562,40 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
             search_query = query
             
         try:
+            # DIREKTE QDRANT ABFRAGE für Reparaturstatus
             async with httpx.AsyncClient() as client:
-                # Wichtig: Spezifiziere die richtige Collection!
-                search_payload = {
-                    "query": search_query,
-                    "type": "repair",
-                    "collection": "garage_management",  # WICHTIG: Richtige Collection
-                    "top_k": 5
-                }
-                
-                response = await client.post(
-                    "http://localhost:8000/search",
-                    json=search_payload,
+                qdrant_response = await client.post(
+                    "http://172.16.0.108:6333/collections/garage_management/points/scroll",
+                    json={
+                        "limit": 100,
+                        "with_payload": True,
+                        "with_vector": False
+                    },
                     timeout=5.0
                 )
-                result = response.json()
                 
-                if result.get("results") or context.userdata.current_vehicle_data:
-                    # Use current vehicle data if available
+                if qdrant_response.status_code == 200:
+                    qdrant_data = qdrant_response.json()
+                    points = qdrant_data.get("result", {}).get("points", [])
+                    
+                    # Verwende gespeicherte Daten wenn vorhanden
                     if context.userdata.current_vehicle_data:
                         vehicle_data = context.userdata.current_vehicle_data
+                    else:
+                        # Suche nach dem Query
+                        search_lower = search_query.lower().strip()
+                        vehicle_data = None
+                        
+                        for point in points:
+                            payload = point.get("payload", {})
+                            # Check verschiedene Felder
+                            if (search_lower in str(payload.get("fahrzeug_id", "")).lower() or
+                                search_lower in str(payload.get("besitzer", "")).lower() or
+                                search_lower in str(payload.get("kennzeichen", "")).lower().replace(" ", "")):
+                                vehicle_data = payload
+                                break
+                    
+                    if vehicle_data:
                     else:
                         # Extract from results with proper structure handling
                         results_list = result.get("results", [])
