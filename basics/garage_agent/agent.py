@@ -429,7 +429,7 @@ async def entrypoint(ctx: JobContext):
         
         # Verwende Llama 3.2 mit optimierten Settings
         llm = openai.LLM(
-            model="llama3.2:latest",
+            model="llama3.1:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
             api_key="ollama",
             temperature=0.3  # Noch niedriger für konsistentere Antworten
