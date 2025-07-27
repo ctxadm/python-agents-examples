@@ -25,9 +25,6 @@ logger.setLevel(logging.INFO)
 # Agent Name für Multi-Worker Setup
 AGENT_NAME = os.getenv("AGENT_NAME", "agent-garage-1")
 
-# Agent Name für Multi-Worker Setup
-AGENT_NAME = os.getenv("AGENT_NAME", "agent-garage-1")
-
 class ConversationState(Enum):
     """State Machine für Konversationsphasen"""
     GREETING = "greeting"
@@ -325,117 +322,76 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
         context.userdata.last_search_query = query
         
         try:
+            # DIREKTE QDRANT ABFRAGE
             async with httpx.AsyncClient() as client:
-                # Wichtig: Spezifiziere die richtige Collection!
-                search_payload = {
-                    "query": query,
-                    "type": "customer",
-                    "collection": "garage_management",  # WICHTIG: Richtige Collection
-                    "top_k": 5
-                }
+                qdrant_response = await client.post(
+                    "http://172.16.0.108:6333/collections/garage_management/points/scroll",
+                    json={
+                        "limit": 100,
+                        "with_payload": True,
+                        "with_vector": False
+                    },
+                    timeout=5.0
+                )
                 
-                # Alternative: Try different endpoint or collection names
-                collections_to_try = ["garage_management", "garage", "vehicles"]
-                
-                for collection in collections_to_try:
-                    search_payload["collection"] = collection
+                if qdrant_response.status_code == 200:
+                    qdrant_data = qdrant_response.json()
+                    points = qdrant_data.get("result", {}).get("points", [])
                     
-                    response = await client.post(
-                        "http://localhost:8000/search",
-                        json=search_payload,
-                        timeout=5.0
-                    )
-                    result = response.json()
+                    # Suche nach dem Query
+                    search_lower = query.lower().strip()
+                    vehicle_data = None
                     
-                    # Check if we got the right collection
-                    if result.get("collection_used") == collection or (
-                        result.get("results") and 
-                        any("fahrzeug" in str(r).lower() or "vehicle" in str(r).lower() 
-                            for r in result.get("results", []))
-                    ):
-                        logger.info(f"✅ Using collection: {collection}")
-                        break
+                    for point in points:
+                        payload = point.get("payload", {})
+                        # Check verschiedene Felder
+                        if (search_lower in str(payload.get("fahrzeug_id", "")).lower() or
+                            search_lower in str(payload.get("besitzer", "")).lower() or
+                            search_lower in str(payload.get("kennzeichen", "")).lower().replace(" ", "")):
+                            vehicle_data = payload
+                            break
+                    
+                    if vehicle_data:
+                        # Store vehicle data in context
+                        context.userdata.current_vehicle_data = vehicle_data
+                        
+                        # Format response
+                        response_text = "Ich habe folgende Daten gefunden:\n"
+                        
+                        if 'fahrzeug_id' in vehicle_data:
+                            response_text += f"\n**Fahrzeug-ID**: {vehicle_data['fahrzeug_id']}\n"
+                        if 'besitzer' in vehicle_data:
+                            response_text += f"**Besitzer**: {vehicle_data['besitzer']}\n"
+                        if 'kennzeichen' in vehicle_data:
+                            response_text += f"**Kennzeichen**: {vehicle_data['kennzeichen']}\n"
+                        if 'marke' in vehicle_data and 'modell' in vehicle_data:
+                            response_text += f"**Fahrzeug**: {vehicle_data['marke']} {vehicle_data['modell']}\n"
+                        if 'baujahr' in vehicle_data:
+                            response_text += f"**Baujahr**: {vehicle_data['baujahr']}\n"
+                        if 'kilometerstand' in vehicle_data:
+                            response_text += f"**Kilometerstand**: {vehicle_data['kilometerstand']} km\n"
+                        
+                        # Show latest service if available
+                        if 'letzte_services' in vehicle_data and vehicle_data['letzte_services']:
+                            latest_service = vehicle_data['letzte_services'][0]
+                            response_text += f"\n**Letzter Service** ({latest_service.get('datum', 'unbekannt')}):\n"
+                            response_text += f"- Typ: {latest_service.get('service_typ', 'unbekannt')}\n"
+                            response_text += f"- Kosten: CHF {latest_service.get('kosten', 0):.2f}\n"
+                        
+                        # Show current problems if any
+                        if 'aktuelle_probleme' in vehicle_data and vehicle_data['aktuelle_probleme']:
+                            response_text += f"\n**Aktuelle Probleme**:\n"
+                            for problem in vehicle_data['aktuelle_probleme']:
+                                response_text += f"- {problem}\n"
+                        
+                        return response_text
                     else:
-                        logger.warning(f"Collection {collection} didn't return vehicle data")
-                        continue
-                result = response.json()
-                
-                logger.info(f"Search response: {json.dumps(result, indent=2)[:500]}...")  # Debug log
-                
-                if result.get("results"):
-                    logger.info(f"✅ Found {len(result['results'])} results")
-                    
-                    # Check if results contain actual data
-                    results_list = result.get("results", [])
-                    if not results_list:
+                        logger.info("❌ No results found in Qdrant")
+                        context.userdata.customer_context.reset()
                         return "Ich habe keine passenden Daten gefunden. Können Sie mir bitte Ihre Fahrzeug-ID (z.B. F001), Ihren vollständigen Namen oder Ihr Autokennzeichen nennen?"
-                    
-                    # Check if we're getting the wrong collection
-                    collection_used = result.get("collection_used", "")
-                    if collection_used != "garage_management":
-                        logger.error(f"Wrong collection returned: {collection_used}")
-                        return "Es gab ein Problem mit der Datenbank-Verbindung. Bitte versuchen Sie es erneut."
-                    
-                    # Format response based on actual data structure
-                    response_text = "Ich habe folgende Daten gefunden:\n"
-                    
-                    # Take first result - it might have 'payload' wrapper
-                    first_result = results_list[0]
-                    
-                    # Extract the actual data (might be in 'payload' field)
-                    if isinstance(first_result, dict) and 'payload' in first_result:
-                        vehicle_data = first_result['payload']
-                    else:
-                        vehicle_data = first_result
-                    
-                    # Store vehicle data in context
-                    context.userdata.current_vehicle_data = vehicle_data
-                    
-                    # Format the response with actual data - check different possible field names
-                    if 'fahrzeug_id' in vehicle_data:
-                        response_text += f"\n**Fahrzeug-ID**: {vehicle_data['fahrzeug_id']}\n"
-                    if 'besitzer' in vehicle_data:
-                        response_text += f"**Besitzer**: {vehicle_data['besitzer']}\n"
-                    elif 'owner_name' in vehicle_data:
-                        response_text += f"**Besitzer**: {vehicle_data['owner_name']}\n"
-                    if 'kennzeichen' in vehicle_data:
-                        response_text += f"**Kennzeichen**: {vehicle_data['kennzeichen']}\n"
-                    elif 'license_plate' in vehicle_data:
-                        response_text += f"**Kennzeichen**: {vehicle_data['license_plate']}\n"
-                    if 'marke' in vehicle_data and 'modell' in vehicle_data:
-                        response_text += f"**Fahrzeug**: {vehicle_data['marke']} {vehicle_data['modell']}\n"
-                    if 'baujahr' in vehicle_data:
-                        response_text += f"**Baujahr**: {vehicle_data['baujahr']}\n"
-                    if 'kilometerstand' in vehicle_data:
-                        response_text += f"**Kilometerstand**: {vehicle_data['kilometerstand']} km\n"
-                    
-                    # Show latest service if available
-                    if 'letzte_services' in vehicle_data and vehicle_data['letzte_services']:
-                        latest_service = vehicle_data['letzte_services'][0]
-                        response_text += f"\n**Letzter Service** ({latest_service.get('datum', 'unbekannt')}):\n"
-                        response_text += f"- Typ: {latest_service.get('service_typ', 'unbekannt')}\n"
-                        response_text += f"- Kosten: CHF {latest_service.get('kosten', 0):.2f}\n"
-                    
-                    # Show current problems if any
-                    if 'aktuelle_probleme' in vehicle_data and vehicle_data['aktuelle_probleme']:
-                        response_text += f"\n**Aktuelle Probleme**:\n"
-                        for problem in vehicle_data['aktuelle_probleme']:
-                            response_text += f"- {problem}\n"
-                    
-                    # If we still only have the header, something went wrong
-                    if response_text == "Ich habe folgende Daten gefunden:\n":
-                        logger.error(f"Data structure issue. First result: {first_result}")
-                        # Try to show raw content if available
-                        if 'content' in first_result:
-                            return f"Gefundene Daten: {first_result['content']}"
-                        return "Es gab ein Problem beim Abrufen der Daten. Bitte versuchen Sie es erneut."
-                            
-                    return response_text
                 else:
-                    logger.info("❌ No results found")
-                    # Reset context on failed search
-                    context.userdata.customer_context.reset()
-                    return "Ich habe keine passenden Daten gefunden. Können Sie mir bitte Ihre Fahrzeug-ID (z.B. F001), Ihren vollständigen Namen oder Ihr Autokennzeichen nennen?"
+                    logger.error(f"Qdrant error: {qdrant_response.status_code}")
+                    return "Es gab ein Problem mit der Datenbank-Verbindung. Bitte versuchen Sie es erneut."
                     
         except Exception as e:
             logger.error(f"Search error: {e}")
@@ -499,41 +455,32 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                                 break
                     
                     if vehicle_data:
-                    else:
-                        # Extract from results with proper structure handling
-                        results_list = result.get("results", [])
-                        if not results_list:
-                            return "Ich habe keine Kosteninformationen gefunden. Bitte nennen Sie mir Ihre Fahrzeug-ID, Ihren Namen oder Ihr Kennzeichen."
+                        response_text = "Hier sind die Kosteninformationen:\n"
                         
-                        first_result = results_list[0]
-                        if isinstance(first_result, dict) and 'payload' in first_result:
-                            vehicle_data = first_result['payload']
-                        else:
-                            vehicle_data = first_result
-                    
-                    response_text = "Hier sind die Kosteninformationen:\n"
-                    
-                    if 'letzte_services' in vehicle_data:
-                        response_text += "\n**Durchgeführte Services:**\n"
-                        for service in vehicle_data['letzte_services']:
-                            response_text += f"\n{service.get('datum', 'unbekannt')} - {service.get('service_typ', 'Service')}:\n"
-                            response_text += f"- Kosten: CHF {service.get('kosten', 0):.2f}\n"
-                            if 'arbeiten' in service:
-                                response_text += f"- Arbeiten: {', '.join(service['arbeiten'])}\n"
-                    
-                    if 'anstehende_arbeiten' in vehicle_data and vehicle_data['anstehende_arbeiten']:
-                        response_text += "\n**Anstehende Arbeiten und geschätzte Kosten:**\n"
-                        total_cost = 0
-                        for arbeit in vehicle_data['anstehende_arbeiten']:
-                            cost = arbeit.get('geschätzte_kosten', 0)
-                            response_text += f"- {arbeit.get('arbeit', 'Arbeit')}: CHF {cost:.2f} ({arbeit.get('priorität', 'normal')})\n"
-                            total_cost += cost
-                        response_text += f"\n**Geschätzte Gesamtkosten**: CHF {total_cost:.2f}"
-                    
-                    return response_text
+                        if 'letzte_services' in vehicle_data:
+                            response_text += "\n**Durchgeführte Services:**\n"
+                            for service in vehicle_data['letzte_services']:
+                                response_text += f"\n{service.get('datum', 'unbekannt')} - {service.get('service_typ', 'Service')}:\n"
+                                response_text += f"- Kosten: CHF {service.get('kosten', 0):.2f}\n"
+                                if 'arbeiten' in service:
+                                    response_text += f"- Arbeiten: {', '.join(service['arbeiten'])}\n"
+                        
+                        if 'anstehende_arbeiten' in vehicle_data and vehicle_data['anstehende_arbeiten']:
+                            response_text += "\n**Anstehende Arbeiten und geschätzte Kosten:**\n"
+                            total_cost = 0
+                            for arbeit in vehicle_data['anstehende_arbeiten']:
+                                cost = arbeit.get('geschätzte_kosten', 0)
+                                response_text += f"- {arbeit.get('arbeit', 'Arbeit')}: CHF {cost:.2f} ({arbeit.get('priorität', 'normal')})\n"
+                                total_cost += cost
+                            response_text += f"\n**Geschätzte Gesamtkosten**: CHF {total_cost:.2f}"
+                        
+                        return response_text
+                    else:
+                        logger.info("❌ No invoice data found")
+                        return "Ich habe keine Kosteninformationen gefunden. Bitte nennen Sie mir Ihre Fahrzeug-ID, Ihren Namen oder Ihr Kennzeichen."
                 else:
-                    logger.info("❌ No invoice data found")
-                    return "Ich habe keine Kosteninformationen gefunden. Bitte nennen Sie mir Ihre Fahrzeug-ID, Ihren Namen oder Ihr Kennzeichen."
+                    logger.error(f"Qdrant error: {qdrant_response.status_code}")
+                    return "Es gab ein Problem mit der Datenbank. Bitte versuchen Sie es erneut."
                     
         except Exception as e:
             logger.error(f"Invoice search error: {e}")
@@ -597,41 +544,32 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                                 break
                     
                     if vehicle_data:
-                    else:
-                        # Extract from results with proper structure handling
-                        results_list = result.get("results", [])
-                        if not results_list:
-                            return "Ich habe keine Reparaturdaten gefunden. Bitte nennen Sie mir Ihre Fahrzeug-ID, Ihren Namen oder Ihr Kennzeichen."
+                        response_text = "Hier ist der Status Ihres Fahrzeugs:\n"
                         
-                        first_result = results_list[0]
-                        if isinstance(first_result, dict) and 'payload' in first_result:
-                            vehicle_data = first_result['payload']
-                        else:
-                            vehicle_data = first_result
-                    
-                    response_text = "Hier ist der Status Ihres Fahrzeugs:\n"
-                    
-                    if 'aktuelle_probleme' in vehicle_data and vehicle_data['aktuelle_probleme']:
-                        response_text += "\n**Aktuelle Probleme:**\n"
-                        for problem in vehicle_data['aktuelle_probleme']:
-                            response_text += f"- {problem}\n"
-                    
-                    if 'anstehende_arbeiten' in vehicle_data and vehicle_data['anstehende_arbeiten']:
-                        response_text += "\n**Anstehende Arbeiten:**\n"
-                        for arbeit in vehicle_data['anstehende_arbeiten']:
-                            response_text += f"- {arbeit.get('arbeit', 'Arbeit')} "
-                            response_text += f"(Priorität: {arbeit.get('priorität', 'normal')})\n"
-                    
-                    if 'nächster_service_fällig' in vehicle_data:
-                        response_text += f"\n**Nächster Service fällig**: {vehicle_data['nächster_service_fällig']}"
-                    
-                    if 'garantie_bis' in vehicle_data:
-                        response_text += f"\n**Garantie bis**: {vehicle_data['garantie_bis']}"
-                    
-                    return response_text
+                        if 'aktuelle_probleme' in vehicle_data and vehicle_data['aktuelle_probleme']:
+                            response_text += "\n**Aktuelle Probleme:**\n"
+                            for problem in vehicle_data['aktuelle_probleme']:
+                                response_text += f"- {problem}\n"
+                        
+                        if 'anstehende_arbeiten' in vehicle_data and vehicle_data['anstehende_arbeiten']:
+                            response_text += "\n**Anstehende Arbeiten:**\n"
+                            for arbeit in vehicle_data['anstehende_arbeiten']:
+                                response_text += f"- {arbeit.get('arbeit', 'Arbeit')} "
+                                response_text += f"(Priorität: {arbeit.get('priorität', 'normal')})\n"
+                        
+                        if 'nächster_service_fällig' in vehicle_data:
+                            response_text += f"\n**Nächster Service fällig**: {vehicle_data['nächster_service_fällig']}"
+                        
+                        if 'garantie_bis' in vehicle_data:
+                            response_text += f"\n**Garantie bis**: {vehicle_data['garantie_bis']}"
+                        
+                        return response_text
+                    else:
+                        logger.info("❌ No repair data found")
+                        return "Ich habe keine Reparaturdaten gefunden. Bitte nennen Sie mir Ihre Fahrzeug-ID, Ihren Namen oder Ihr Kennzeichen."
                 else:
-                    logger.info("❌ No repair data found")
-                    return "Ich habe keine Reparaturdaten gefunden. Bitte nennen Sie mir Ihre Fahrzeug-ID, Ihren Namen oder Ihr Kennzeichen."
+                    logger.error(f"Qdrant error: {qdrant_response.status_code}")
+                    return "Es gab ein Problem mit der Datenbank. Bitte versuchen Sie es erneut."
                     
         except Exception as e:
             logger.error(f"Repair search error: {e}")
