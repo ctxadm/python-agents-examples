@@ -63,8 +63,8 @@ class SeaTableClient:
                 logger.error(f"Failed to get access token: {response.status_code}")
                 raise Exception(f"Failed to get SeaTable access token")
     
-    async def query_unified_table(self, table_name: str, filters: Dict[str, str] = None) -> List[Dict]:
-        """Query the unified table with optional filters"""
+    async def query_unified_table(self, table_name: str, search_value: str = None) -> List[Dict]:
+        """Query the unified table with search functionality"""
         try:
             if not self.access_token:
                 await self.get_access_token()
@@ -82,19 +82,21 @@ class SeaTableClient:
                 rows = data.get("rows", [])
                 logger.info(f"✅ Retrieved {len(rows)} rows from table {table_name}")
                 
-                # Apply filters if provided
-                if filters:
+                # If search_value provided, filter results
+                if search_value:
                     filtered_rows = []
+                    search_lower = search_value.lower().replace(" ", "")  # Remove spaces for better matching
+                    
                     for row in rows:
-                        match = True
-                        for field, value in filters.items():
-                            if field in row and value.lower() not in str(row.get(field, '')).lower():
-                                match = False
+                        # Check all relevant fields
+                        for field in ['Kennzeichen', 'Besitzer_Name', 'Kunden_Name', 'Email', 'Telefon']:
+                            field_value = str(row.get(field, '')).lower().replace(" ", "")
+                            if search_lower in field_value or field_value in search_lower:
+                                filtered_rows.append(row)
                                 break
-                        if match:
-                            filtered_rows.append(row)
+                    
                     rows = filtered_rows
-                    logger.info(f"✅ Filtered to {len(rows)} rows")
+                    logger.info(f"✅ Filtered to {len(rows)} rows matching '{search_value}'")
                 
                 return rows
             else:
@@ -260,51 +262,47 @@ WICHTIGE REGELN:
                 context.userdata.seatable_base_token
             )
             
-            # Suche in der vereinheitlichten Tabelle
-            results = await client.query_unified_table("Garage_Gesamtdaten")
+            # Suche in der vereinheitlichten Tabelle mit dem query-Wert
+            results = await client.query_unified_table("Garage_Gesamtdaten", query)
             
-            # Filtere nach Kennzeichen oder Besitzer
-            matching_vehicles = []
-            seen_vehicles = set()
-            
-            for row in results:
-                kennzeichen = row.get('Kennzeichen', '')
-                besitzer = row.get('Besitzer_Name', '')
+            if results:
+                logger.info(f"✅ Found {len(results)} vehicle results")
                 
-                # Check if query matches
-                if (query.lower() in kennzeichen.lower() or 
-                    query.lower() in besitzer.lower()):
-                    
-                    # Avoid duplicates
-                    vehicle_key = f"{kennzeichen}_{besitzer}"
-                    if vehicle_key not in seen_vehicles:
-                        seen_vehicles.add(vehicle_key)
-                        matching_vehicles.append({
-                            'Kennzeichen': kennzeichen,
-                            'Besitzer': besitzer,
-                            'Marke': row.get('Marke', '-'),
-                            'Modell': row.get('Modell', '-'),
-                            'Baujahr': row.get('Baujahr', '-'),
-                            'Farbe': row.get('Farbe', '-'),
-                            'Kraftstoff': row.get('Kraftstoff', '-'),
-                            'Kilometerstand': row.get('Kilometerstand', '-'),
-                            'Letzte_Inspektion': row.get('Letzte_Inspektion', '-'),
-                            'VIN': row.get('VIN', '-')
-                        })
-            
-            if matching_vehicles:
-                logger.info(f"✅ Found {len(matching_vehicles)} vehicle results")
+                # Dedupliziere nach Kennzeichen
+                seen_vehicles = set()
+                unique_vehicles = []
+                
+                for row in results:
+                    kennzeichen = row.get('Kennzeichen', '')
+                    if kennzeichen and kennzeichen not in seen_vehicles:
+                        seen_vehicles.add(kennzeichen)
+                        unique_vehicles.append(row)
                 
                 response_text = "Hier sind die Fahrzeugdaten:\n\n"
-                for vehicle in matching_vehicles[:5]:
-                    response_text += f"**{vehicle['Kennzeichen']}**\n"
-                    response_text += f"- Besitzer: {vehicle['Besitzer']}\n"
-                    response_text += f"- Marke/Modell: {vehicle['Marke']} {vehicle['Modell']}\n"
-                    response_text += f"- Baujahr: {vehicle['Baujahr']}\n"
-                    response_text += f"- Farbe: {vehicle['Farbe']}\n"
-                    response_text += f"- Kraftstoff: {vehicle['Kraftstoff']}\n"
-                    response_text += f"- Kilometerstand: {vehicle['Kilometerstand']} km\n"
-                    response_text += f"- Letzte Inspektion: {vehicle['Letzte_Inspektion']}\n"
+                for row in unique_vehicles[:5]:
+                    kennzeichen = row.get('Kennzeichen', '-')
+                    besitzer = row.get('Besitzer_Name', '-')
+                    fahrzeug_details = row.get('Fahrzeuge_Details', '-')
+                    
+                    # Parse Fahrzeugdetails
+                    marke = '-'
+                    modell = '-'
+                    baujahr = '-'
+                    
+                    if fahrzeug_details and fahrzeug_details != '-':
+                        # Beispiel: "BMW 3er (2020)"
+                        import re
+                        match = re.match(r'([\w\s]+?)\s+([\w\s-]+?)\s*\((\d{4})\)', fahrzeug_details)
+                        if match:
+                            marke = match.group(1)
+                            modell = match.group(2)
+                            baujahr = match.group(3)
+                    
+                    response_text += f"**{kennzeichen}**\n"
+                    response_text += f"- Besitzer: {besitzer}\n"
+                    response_text += f"- Marke/Modell: {marke} {modell}\n"
+                    response_text += f"- Baujahr: {baujahr}\n"
+                    response_text += f"- Fahrzeugdetails: {fahrzeug_details}\n"
                     response_text += "\n"
                 
                 return response_text
