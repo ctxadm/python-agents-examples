@@ -589,10 +589,7 @@ async def entrypoint(ctx: JobContext):
             model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
             api_key="ollama",
-            temperature=0.0,  # Minimale Temperatur für maximale Konsistenz
-            top_p=0.9,
-            frequency_penalty=0.1,  # Leichte Penalty für Wiederholungen
-            presence_penalty=0.1
+            temperature=0.0  # Minimale Temperatur für maximale Konsistenz
         )
         logger.info(f"🤖 [{session_id}] Using Llama 3.2 with anti-hallucination settings")
         
