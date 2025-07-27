@@ -107,12 +107,12 @@ WICHTIGE REGELN:
         # GUARD gegen falsche Suchen bei Begrüßungen
         if len(query) < 5 or query.lower() in ["hallo", "guten tag", "hi", "hey", "servus", "grüezi", "guten morgen", "guten abend"]:
             logger.warning(f"⚠️ Ignoring greeting search: {query}")
-            return "Bitte geben Sie mir Ihren Namen, Ihre Telefonnummer oder Ihre Autonummer, damit ich Ihre Kundendaten finden kann."
+            return "Bitte geben Sie mir Ihren Namen, Ihre Telefonnummer oder Ihr Autokennzeichen, damit ich Ihre Kundendaten finden kann."
         
         # GUARD gegen halluzinierte Anfragen
         if "möchte gerne meine kundendaten" in query.lower() and len(query) > 30:
             logger.warning(f"⚠️ Detected hallucinated query: {query}")
-            return "Bitte nennen Sie mir Ihren Namen oder Ihre Autonummer, damit ich Ihre Daten suchen kann."
+            return "Bitte nennen Sie mir Ihren Namen oder Ihr Autokennzeichen, damit ich Ihre Daten suchen kann."
         
         # Extrahiere Kennzeichen wenn vorhanden
         kennzeichen_pattern = r'[A-Z]{2}\s*\d{3,6}'
@@ -151,7 +151,9 @@ WICHTIGE REGELN:
                                     # Wenn Kennzeichen gesucht wurde, prüfe Übereinstimmung
                                     if kennzeichen_match:
                                         search_kennzeichen = kennzeichen_match.group().replace(" ", "")
-                                        if payload.get("kennzeichen", "").replace(" ", "") == search_kennzeichen:
+                                        # Prüfe beide mögliche Felder: kennzeichen und license_plate
+                                        payload_kennzeichen = payload.get("kennzeichen", payload.get("license_plate", "")).replace(" ", "")
+                                        if payload_kennzeichen == search_kennzeichen:
                                             logger.info("✅ Exakte Kennzeichen-Übereinstimmung")
                                             content = self._format_garage_data(content)
                                             relevant_results.insert(0, content)  # An den Anfang
@@ -165,9 +167,9 @@ WICHTIGE REGELN:
                             return response_text
                         else:
                             logger.warning("⚠️ Only irrelevant results found")
-                            return "Ich konnte keine relevanten Kundendaten zu Ihrer Anfrage finden. Bitte geben Sie mir Ihre genaue Autonummer (z.B. ZH 123456) oder Ihren vollständigen Namen."
+                            return "Ich konnte keine relevanten Kundendaten zu Ihrer Anfrage finden. Bitte geben Sie mir Ihr genaues Autokennzeichen (z.B. ZH 123456) oder Ihren vollständigen Namen."
                     
-                    return "Ich konnte keine Kundendaten zu Ihrer Anfrage finden. Können Sie mir bitte Ihre Autonummer oder Telefonnummer nennen?"
+                    return "Ich konnte keine Kundendaten zu Ihrer Anfrage finden. Können Sie mir bitte Ihr Autokennzeichen oder Ihre Telefonnummer nennen?"
                     
                 else:
                     logger.error(f"Customer search failed: {response.status_code}")
@@ -191,7 +193,7 @@ WICHTIGE REGELN:
         
         # GUARD gegen zu kurze Anfragen
         if len(query) < 3:
-            return "Bitte geben Sie mir einen Namen, eine Autonummer oder Auftragsnummer."
+            return "Bitte geben Sie mir einen Namen, ein Autokennzeichen oder eine Auftragsnummer."
         
         try:
             async with httpx.AsyncClient() as client:
@@ -236,14 +238,14 @@ WICHTIGE REGELN:
                             
                             # Spezifischer Hinweis wenn nichts passt
                             if not any(word in response_text.lower() for word in ["reparatur", "status", "service", "wartung", query.lower()]):
-                                response_text += "\n\nHINWEIS: Diese Einträge scheinen nicht direkt zu Ihrer Anfrage zu passen. Können Sie mir bitte die Autonummer oder Auftragsnummer nennen?"
+                                response_text += "\n\nHINWEIS: Diese Einträge scheinen nicht direkt zu Ihrer Anfrage zu passen. Können Sie mir bitte das Autokennzeichen oder die Auftragsnummer nennen?"
                             
                             return response_text
                         else:
                             # Wenn wirklich NICHTS gefunden wurde
-                            return f"Ich konnte keine Daten zu '{query}' in unserer Datenbank finden. Bitte geben Sie mir die genaue Autonummer (z.B. ZH 123456) oder die Auftragsnummer."
+                            return f"Ich konnte keine Daten zu '{query}' in unserer Datenbank finden. Bitte geben Sie mir das genaue Autokennzeichen (z.B. ZH 123456) oder die Auftragsnummer."
                     
-                    return "Ich konnte keine Reparatur- oder Servicedaten zu Ihrer Anfrage finden. Können Sie mir bitte die Autonummer oder Auftragsnummer nennen?"
+                    return "Ich konnte keine Reparatur- oder Servicedaten zu Ihrer Anfrage finden. Können Sie mir bitte das Autokennzeichen oder die Auftragsnummer nennen?"
                     
                 else:
                     logger.error(f"Repair search failed: {response.status_code}")
