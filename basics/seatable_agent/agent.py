@@ -468,34 +468,49 @@ async def entrypoint(ctx: JobContext):
     
     session = None
     session_closed = False
+    disconnect_event = asyncio.Event()
     
-    # Register disconnect handler FIRST
+    # Single disconnect handler
     def on_disconnect():
         nonlocal session_closed
-        logger.info(f"[{session_id}] Room disconnected event received")
-        session_closed = True
-    
-    if ctx.room:
-        ctx.room.on("disconnected", on_disconnect)
+        if not session_closed:
+            logger.info(f"[{session_id}] 🔌 Room disconnected event received")
+            session_closed = True
+            disconnect_event.set()
     
     try:
         # 1. Connect to room
         await ctx.connect()
         logger.info(f"✅ [{session_id}] Connected to room")
         
+        # Register disconnect handler AFTER connection
+        if ctx.room:
+            ctx.room.on("disconnected", on_disconnect)
+        
         # Debug info
         logger.info(f"Room participants: {len(ctx.room.remote_participants)}")
         logger.info(f"Local participant: {ctx.room.local_participant.identity}")
         
-        # 2. Wait for participant
-        participant = await ctx.wait_for_participant()
-        logger.info(f"✅ [{session_id}] Participant joined: {participant.identity}")
+        # 2. Wait for participant with timeout
+        try:
+            participant = await asyncio.wait_for(
+                ctx.wait_for_participant(),
+                timeout=30.0  # 30 second timeout
+            )
+            logger.info(f"✅ [{session_id}] Participant joined: {participant.identity}")
+        except asyncio.TimeoutError:
+            logger.error(f"❌ [{session_id}] No participant joined within 30 seconds")
+            return
         
         # 3. Wait for audio track
         audio_track_received = False
         max_wait_time = 10
         
         for i in range(max_wait_time):
+            if session_closed:
+                logger.info(f"[{session_id}] Session closed during audio wait")
+                return
+                
             for track_pub in participant.track_publications.values():
                 if track_pub.kind == rtc.TrackKind.KIND_AUDIO:
                     logger.info(f"✅ [{session_id}] Audio track found: {track_pub.sid}")
@@ -510,13 +525,14 @@ async def entrypoint(ctx: JobContext):
         
         if not audio_track_received:
             logger.error(f"❌ [{session_id}] No audio track received after {max_wait_time}s!")
+            return
         
         # 4. Configure LLM
         llm = openai.LLM(
             model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
             api_key="ollama",
-            temperature=0.3
+            temperature=0.1
         )
         logger.info(f"🤖 [{session_id}] Using Llama 3.2 via Ollama")
         
@@ -596,42 +612,54 @@ NICHTS ANDERES! KEINE ENTSCHULDIGUNGEN!"""
         
         logger.info(f"✅ [{session_id}] Garage SeaTable Agent ready and listening!")
         
-        # Wait for disconnect
-        disconnect_event = asyncio.Event()
-        
-        def handle_disconnect():
-            nonlocal session_closed
-            session_closed = True
-            disconnect_event.set()
-        
-        ctx.room.on("disconnected", handle_disconnect)
-        
-        await disconnect_event.wait()
-        logger.info(f"[{session_id}] Room disconnected, ending session")
+        # Wait for disconnect with timeout
+        try:
+            await asyncio.wait_for(
+                disconnect_event.wait(),
+                timeout=300.0  # 5 minute maximum session time
+            )
+            logger.info(f"[{session_id}] Disconnect event received")
+        except asyncio.TimeoutError:
+            logger.info(f"[{session_id}] Session timeout after 5 minutes")
         
     except Exception as e:
         logger.error(f"❌ [{session_id}] Error in garage agent: {e}", exc_info=True)
-        raise
         
     finally:
-        # Cleanup
-        logger.info(f"🧹 [{session_id}] Starting session cleanup...")
+        # CRITICAL: Comprehensive cleanup
+        logger.info(f"🧹 [{session_id}] Starting comprehensive cleanup...")
         
+        # 1. Close session first
         if session is not None and not session_closed:
             try:
+                logger.info(f"[{session_id}] Closing agent session...")
                 await session.aclose()
                 logger.info(f"✅ [{session_id}] Session closed successfully")
             except Exception as e:
                 logger.warning(f"⚠️ [{session_id}] Error closing session: {e}")
-        elif session_closed:
-            logger.info(f"ℹ️ [{session_id}] Session already closed by disconnect event")
         
-        # Force garbage collection
+        # 2. CRITICAL: Disconnect from room explicitly
+        if ctx.room and not session_closed:
+            try:
+                logger.info(f"[{session_id}] Disconnecting from room...")
+                await ctx.room.disconnect()
+                logger.info(f"✅ [{session_id}] Room disconnected successfully")
+            except Exception as e:
+                logger.warning(f"⚠️ [{session_id}] Error disconnecting room: {e}")
+        
+        # 3. Clear all references
+        session = None
+        agent = None
+        
+        # 4. Force garbage collection
         import gc
         gc.collect()
         logger.info(f"♻️ [{session_id}] Forced garbage collection")
         
-        logger.info(f"✅ [{session_id}] Session cleanup complete")
+        # 5. Small delay to ensure resources are fully released
+        await asyncio.sleep(0.5)
+        
+        logger.info(f"✅ [{session_id}] Cleanup complete - room freed")
         logger.info("="*50)
 
 
