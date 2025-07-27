@@ -269,6 +269,17 @@ Remember: ALWAYS use actual user input, NEVER use examples!""")
         """
         logger.info(f"🔍 Original search query: {query}")
         
+        # WICHTIG: Prüfe ob Query buchstabierte Buchstaben enthält
+        # z.B. "B Bertha E Emil" sollte zu "BE" werden
+        buchstabiert_match = re.search(r'([A-Z])\s*\w+\s+([A-Z])\s*\w+', query)
+        if buchstabiert_match:
+            canton = buchstabiert_match.group(1) + buchstabiert_match.group(2)
+            # Extrahiere Zahlen falls vorhanden
+            numbers_match = re.search(r'\d+', query)
+            if numbers_match and self.hallucination_detector.validate_canton(canton):
+                query = f"{canton} {numbers_match.group()}"
+                logger.info(f"✅ Korrigierte buchstabierte Eingabe zu: {query}")
+        
         # Validiere Query gegen Halluzinationen
         validated_query = self._validate_and_clean_query(query, context)
         if validated_query is None:
@@ -487,6 +498,12 @@ Remember: ALWAYS use actual user input, NEVER use examples!""")
         """
         logger.info(f"💰 Searching invoice/cost data for: {query}")
         
+        # Wenn wir ein vollständiges Kennzeichen im Kontext haben, verwende es
+        if context.userdata.license_plate_context.is_complete():
+            stored_plate = context.userdata.license_plate_context.complete_plate
+            logger.info(f"✅ Verwende gespeichertes Kennzeichen: {stored_plate}")
+            query = f"{stored_plate} {query}"
+        
         # Validierung
         validated_query = self._validate_and_clean_query(query, context)
         if validated_query is None:
@@ -527,7 +544,7 @@ Remember: ALWAYS use actual user input, NEVER use examples!""")
                                 cost_results.append(content)
                         
                         if cost_results:
-                            context.userdata.license_plate_context.reset()
+                            # Kontext NICHT resetten, da wir ihn noch brauchen könnten
                             return "\n\n".join(cost_results[:2])
                         else:
                             return "Ich habe keine Kosteninformationen gefunden. Bitte nennen Sie mir Ihr Autokennzeichen."
