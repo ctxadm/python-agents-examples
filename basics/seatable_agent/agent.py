@@ -63,24 +63,13 @@ class SeaTableClient:
                 logger.error(f"Failed to get access token: {response.status_code}")
                 raise Exception(f"Failed to get SeaTable access token")
     
-    async def query_table(self, sql_query: str) -> List[Dict]:
-        """Execute a query and return results - NOW USING ROW API"""
+    async def query_unified_table(self, table_name: str, filters: Dict[str, str] = None) -> List[Dict]:
+        """Query the unified table with optional filters"""
         try:
             if not self.access_token:
                 await self.get_access_token()
-                
-            # Parse SQL to extract table name and conditions
-            import re
             
-            # Extract table name
-            table_match = re.search(r'FROM\s+(\w+)', sql_query, re.IGNORECASE)
-            if not table_match:
-                logger.error(f"Could not extract table name from query: {sql_query}")
-                return []
-                
-            table_name = table_match.group(1)
-            
-            # Get all rows from table using Row API
+            # Get all rows from the unified table
             async with httpx.AsyncClient(verify=False) as client:
                 response = await client.get(
                     f"{self.server_url}/dtable-server/api/v1/dtables/{self.dtable_uuid}/rows/",
@@ -93,56 +82,25 @@ class SeaTableClient:
                 rows = data.get("rows", [])
                 logger.info(f"✅ Retrieved {len(rows)} rows from table {table_name}")
                 
-                # Simple WHERE clause filtering
-                where_match = re.search(r'WHERE\s+(.+?)(?:\s+ORDER\s+BY|\s+LIMIT|\s*$)', sql_query, re.IGNORECASE)
-                if where_match:
-                    condition = where_match.group(1)
+                # Apply filters if provided
+                if filters:
                     filtered_rows = []
-                    
-                    # Split multiple conditions by OR
-                    or_conditions = re.split(r'\s+OR\s+', condition, flags=re.IGNORECASE)
-                    
                     for row in rows:
-                        for or_cond in or_conditions:
-                            # Handle LIKE conditions
-                            if 'LIKE' in or_cond.upper():
-                                field_match = re.search(r'(\w+)\s+LIKE\s+[\'"]%(.+?)%[\'"]', or_cond, re.IGNORECASE)
-                                if field_match:
-                                    field, value = field_match.groups()
-                                    if value.lower() in str(row.get(field, '')).lower():
-                                        filtered_rows.append(row)
-                                        break
-                            
-                            # Handle = conditions
-                            elif '=' in or_cond:
-                                field_match = re.search(r'(\w+)\s*=\s*[\'"](.+?)[\'"]', or_cond)
-                                if field_match:
-                                    field, value = field_match.groups()
-                                    if str(row.get(field, '')).lower() == value.lower():
-                                        filtered_rows.append(row)
-                                        break
-                    
+                        match = True
+                        for field, value in filters.items():
+                            if field in row and value.lower() not in str(row.get(field, '')).lower():
+                                match = False
+                                break
+                        if match:
+                            filtered_rows.append(row)
                     rows = filtered_rows
-                    logger.info(f"✅ Filtered to {len(rows)} rows matching conditions")
+                    logger.info(f"✅ Filtered to {len(rows)} rows")
                 
-                # Handle ORDER BY
-                order_match = re.search(r'ORDER\s+BY\s+(\w+)(?:\s+(DESC|ASC))?', sql_query, re.IGNORECASE)
-                if order_match:
-                    field = order_match.group(1)
-                    desc = order_match.group(2) and order_match.group(2).upper() == 'DESC'
-                    rows.sort(key=lambda x: x.get(field, ''), reverse=desc)
-                
-                # Handle LIMIT
-                limit_match = re.search(r'LIMIT\s+(\d+)', sql_query, re.IGNORECASE)
-                if limit_match:
-                    limit = int(limit_match.group(1))
-                    rows = rows[:limit]
-                    
                 return rows
             else:
-                logger.error(f"Failed to fetch rows: {response.status_code} - {response.text}")
+                logger.error(f"Failed to fetch rows: {response.status_code}")
                 return []
-            
+                
         except Exception as e:
             logger.error(f"Query error: {e}", exc_info=True)
             return []
@@ -175,6 +133,14 @@ ABSOLUT KRITISCHE REGEL - NIEMALS DATEN ERFINDEN:
 - Sage NIEMALS Dinge wie "Ihr letzter Service war am..." wenn keine Daten gefunden wurden
 - Bei "keine Daten gefunden" frage nach mehr Details (z.B. Autonummer, Kennzeichen)
 - Gib NUR Informationen weiter, die DIREKT aus der Datenbank kommen
+
+KRITISCHE REGEL FÜR PREISAUSKÜNFTE:
+- Bei Preisanfragen IMMER nur tatsächliche Daten aus der Datenbank nennen
+- NIEMALS Preise aufschlüsseln oder berechnen, die nicht explizit so in der Datenbank stehen
+- Bei allgemeinen Preisanfragen ohne konkrete Kundendaten sage: 
+  "Ich kann Ihnen gerne Beispiele aus vergangenen Services nennen, aber für aktuelle Preise sollten Sie direkt bei uns anrufen."
+- Wenn Preise gefunden werden, sage IMMER dazu: "Das war der Preis bei diesem spezifischen Service"
+- ERFINDE NIEMALS Paketpreise oder Rabatte, die nicht in der Datenbank stehen
 
 WORKFLOW:
 1. Bei Begrüßung: Freundlich antworten und nach dem Anliegen fragen
@@ -222,37 +188,56 @@ WICHTIGE REGELN:
                 context.userdata.seatable_base_token
             )
             
-            # SeaTable SQL Query - KORRIGIERT mit tatsächlichen Feldnamen
-            sql_query = f"""
-            SELECT Name, Email, Telefon, Kunde_seit, Notizen 
-            FROM Kunden 
-            WHERE Name LIKE '%{query}%' 
-               OR Telefon LIKE '%{query}%'
-               OR Email LIKE '%{query}%'
-            LIMIT 5
-            """
+            # Suche in der vereinheitlichten Tabelle
+            results = await client.query_unified_table("Garage_Gesamtdaten")
             
-            results = await client.query_table(sql_query)
+            # Filtere nach Kundennamen, Email oder Telefon
+            matching_customers = []
+            seen_customers = set()
             
-            if results:
-                logger.info(f"✅ Found {len(results)} customer results")
+            for row in results:
+                kunde_name = row.get('Kunden_Name', '')
+                email = row.get('Email', '')
+                telefon = row.get('Telefon', '')
+                
+                # Check if query matches
+                if (query.lower() in kunde_name.lower() or 
+                    query.lower() in email.lower() or 
+                    query.lower() in telefon.lower()):
+                    
+                    # Avoid duplicates
+                    if kunde_name not in seen_customers:
+                        seen_customers.add(kunde_name)
+                        matching_customers.append({
+                            'Name': kunde_name,
+                            'Email': email,
+                            'Telefon': telefon,
+                            'Kunde_seit': row.get('Kunde_seit', '-'),
+                            'Notizen': row.get('Notizen', ''),
+                            'Fahrzeuge': row.get('Fahrzeuge_Details', ''),
+                            'Kennzeichen': row.get('Fahrzeuge_Kennzeichen', '')
+                        })
+            
+            if matching_customers:
+                logger.info(f"✅ Found {len(matching_customers)} customer results")
                 
                 response_text = "Ich habe folgende Kundendaten gefunden:\n\n"
-                for customer in results:
-                    response_text += f"**{customer.get('Name', 'Unbekannt')}**\n"
-                    if customer.get('Email'):
-                        response_text += f"- Email: {customer.get('Email')}\n"
-                    if customer.get('Telefon'):
-                        response_text += f"- Telefon: {customer.get('Telefon')}\n"
-                    if customer.get('Kunde_seit'):
-                        response_text += f"- Kunde seit: {customer.get('Kunde_seit')}\n"
-                    if customer.get('Notizen'):
-                        response_text += f"- Notizen: {customer.get('Notizen')}\n"
+                for customer in matching_customers[:5]:
+                    response_text += f"**{customer['Name']}**\n"
+                    response_text += f"- Email: {customer['Email']}\n"
+                    response_text += f"- Telefon: {customer['Telefon']}\n"
+                    response_text += f"- Kunde seit: {customer['Kunde_seit']}\n"
+                    if customer['Fahrzeuge']:
+                        response_text += f"- Fahrzeuge: {customer['Fahrzeuge']}\n"
+                    if customer['Kennzeichen']:
+                        response_text += f"- Kennzeichen: {customer['Kennzeichen']}\n"
+                    if customer['Notizen']:
+                        response_text += f"- Notizen: {customer['Notizen']}\n"
                     response_text += "\n"
                 
                 # Speichere Kundennamen
-                if len(results) == 1:
-                    context.userdata.authenticated_user = results[0].get('Name')
+                if len(matching_customers) == 1:
+                    context.userdata.authenticated_user = matching_customers[0]['Name']
                 
                 return response_text
             else:
@@ -274,7 +259,7 @@ WICHTIGE REGELN:
         """
         logger.info(f"🚗 Searching vehicle data for: {query}")
         
-        if len(query) < 3:
+        if len(query) < 2:
             return "Bitte geben Sie mir ein Kennzeichen oder einen Kundennamen."
         
         try:
@@ -283,35 +268,56 @@ WICHTIGE REGELN:
                 context.userdata.seatable_base_token
             )
             
-            sql_query = f"""
-            SELECT Kennzeichen, Marke, Modell, Baujahr, 
-                   Besitzer, Kilometerstand, Letzte_Inspektion, Farbe, Kraftstoff
-            FROM Fahrzeuge 
-            WHERE Kennzeichen LIKE '%{query}%' 
-               OR Besitzer LIKE '%{query}%'
-            LIMIT 5
-            """
+            # Suche in der vereinheitlichten Tabelle
+            results = await client.query_unified_table("Garage_Gesamtdaten")
             
-            results = await client.query_table(sql_query)
+            # Filtere nach Kennzeichen oder Besitzer
+            matching_vehicles = []
+            seen_vehicles = set()
             
-            if results:
-                logger.info(f"✅ Found {len(results)} vehicle results")
+            for row in results:
+                kennzeichen = row.get('Kennzeichen', '')
+                besitzer = row.get('Besitzer_Name', '')
+                
+                # Check if query matches
+                if (query.lower() in kennzeichen.lower() or 
+                    query.lower() in besitzer.lower()):
+                    
+                    # Avoid duplicates
+                    vehicle_key = f"{kennzeichen}_{besitzer}"
+                    if vehicle_key not in seen_vehicles:
+                        seen_vehicles.add(vehicle_key)
+                        matching_vehicles.append({
+                            'Kennzeichen': kennzeichen,
+                            'Besitzer': besitzer,
+                            'Marke': row.get('Marke', '-'),
+                            'Modell': row.get('Modell', '-'),
+                            'Baujahr': row.get('Baujahr', '-'),
+                            'Farbe': row.get('Farbe', '-'),
+                            'Kraftstoff': row.get('Kraftstoff', '-'),
+                            'Kilometerstand': row.get('Kilometerstand', '-'),
+                            'Letzte_Inspektion': row.get('Letzte_Inspektion', '-'),
+                            'VIN': row.get('VIN', '-')
+                        })
+            
+            if matching_vehicles:
+                logger.info(f"✅ Found {len(matching_vehicles)} vehicle results")
                 
                 response_text = "Hier sind die Fahrzeugdaten:\n\n"
-                for vehicle in results:
-                    response_text += f"**{vehicle.get('Kennzeichen', '-')}**\n"
-                    response_text += f"- Besitzer: {vehicle.get('Besitzer', '-')}\n"
-                    response_text += f"- Marke/Modell: {vehicle.get('Marke', '-')} {vehicle.get('Modell', '-')}\n"
-                    response_text += f"- Baujahr: {vehicle.get('Baujahr', '-')}\n"
-                    response_text += f"- Farbe: {vehicle.get('Farbe', '-')}\n"
-                    response_text += f"- Kraftstoff: {vehicle.get('Kraftstoff', '-')}\n"
-                    response_text += f"- Kilometerstand: {vehicle.get('Kilometerstand', '-')} km\n"
-                    response_text += f"- Letzte Inspektion: {vehicle.get('Letzte_Inspektion', '-')}\n"
+                for vehicle in matching_vehicles[:5]:
+                    response_text += f"**{vehicle['Kennzeichen']}**\n"
+                    response_text += f"- Besitzer: {vehicle['Besitzer']}\n"
+                    response_text += f"- Marke/Modell: {vehicle['Marke']} {vehicle['Modell']}\n"
+                    response_text += f"- Baujahr: {vehicle['Baujahr']}\n"
+                    response_text += f"- Farbe: {vehicle['Farbe']}\n"
+                    response_text += f"- Kraftstoff: {vehicle['Kraftstoff']}\n"
+                    response_text += f"- Kilometerstand: {vehicle['Kilometerstand']} km\n"
+                    response_text += f"- Letzte Inspektion: {vehicle['Letzte_Inspektion']}\n"
                     response_text += "\n"
                 
                 return response_text
             else:
-                return "Ich konnte keine Fahrzeugdaten zu Ihrer Anfrage finden. Bitte geben Sie das vollständige Kennzeichen an."
+                return "Ich konnte keine Fahrzeugdaten zu Ihrer Anfrage finden. Bitte geben Sie das vollständige Kennzeichen oder den Namen des Besitzers an."
                 
         except Exception as e:
             logger.error(f"Vehicle search error: {e}")
@@ -329,7 +335,7 @@ WICHTIGE REGELN:
         """
         logger.info(f"🔧 Searching service history for: {query}")
         
-        if len(query) < 3:
+        if len(query) < 2:
             return "Bitte geben Sie mir einen Namen, ein Kennzeichen oder ein Datum."
         
         try:
@@ -338,35 +344,59 @@ WICHTIGE REGELN:
                 context.userdata.seatable_base_token
             )
             
-            # KORRIGIERT: Service statt Reparaturen, richtige Feldnamen
-            sql_query = f"""
-            SELECT Datum, Kunde, Fahrzeug_Kennzeichen, Status, 
-                   Beschreibung, Kosten, Mechaniker, Dauer_Stunden
-            FROM Service 
-            WHERE Kunde LIKE '%{query}%' 
-               OR Fahrzeug_Kennzeichen LIKE '%{query}%'
-               OR Datum LIKE '%{query}%'
-            ORDER BY Datum DESC
-            LIMIT 5
-            """
+            # Suche in der vereinheitlichten Tabelle
+            results = await client.query_unified_table("Garage_Gesamtdaten")
             
-            results = await client.query_table(sql_query)
+            # Filtere nach Service-Einträgen
+            matching_services = []
             
-            if results:
-                logger.info(f"✅ Found {len(results)} service results")
+            for row in results:
+                kunde = row.get('Kunden_Name', '')
+                kennzeichen = row.get('Kennzeichen', '')
+                service_datum = row.get('Service_Datum', '')
+                service_beschreibung = row.get('Service_Beschreibung', '')
+                
+                # Skip rows without service data
+                if not service_datum or not service_beschreibung:
+                    continue
+                
+                # Check if query matches
+                if (query.lower() in kunde.lower() or 
+                    query.lower() in kennzeichen.lower() or 
+                    query.lower() in str(service_datum).lower()):
+                    
+                    matching_services.append({
+                        'Datum': service_datum,
+                        'Kunde': kunde,
+                        'Kennzeichen': kennzeichen,
+                        'Marke_Modell': f"{row.get('Marke', '')} {row.get('Modell', '')}",
+                        'Beschreibung': service_beschreibung,
+                        'Kosten': row.get('Service_Kosten', 0),
+                        'Mechaniker': row.get('Service_Mechaniker', '-'),
+                        'Status': row.get('Service_Status', '-')
+                    })
+            
+            # Sort by date (newest first)
+            matching_services.sort(key=lambda x: x['Datum'], reverse=True)
+            
+            if matching_services:
+                logger.info(f"✅ Found {len(matching_services)} service results")
                 
                 response_text = "Hier ist die Service-Historie:\n\n"
-                for service in results[:3]:
-                    response_text += f"**Service vom {service.get('Datum', '-')}**\n"
-                    response_text += f"- Fahrzeug: {service.get('Fahrzeug_Kennzeichen', '-')}\n"
-                    response_text += f"- Beschreibung: {service.get('Beschreibung', '-')}\n"
-                    response_text += f"- Status: {service.get('Status', '-')}\n"
-                    response_text += f"- Mechaniker: {service.get('Mechaniker', '-')}\n"
-                    if service.get('Kosten'):
-                        response_text += f"- Kosten: {service.get('Kosten')} Franken\n"
-                    if service.get('Dauer_Stunden'):
-                        response_text += f"- Dauer: {service.get('Dauer_Stunden')} Stunden\n"
+                for service in matching_services[:5]:
+                    response_text += f"**Service vom {service['Datum']}**\n"
+                    response_text += f"- Fahrzeug: {service['Kennzeichen']} ({service['Marke_Modell']})\n"
+                    response_text += f"- Beschreibung: {service['Beschreibung']}\n"
+                    response_text += f"- Status: {service['Status']}\n"
+                    response_text += f"- Mechaniker: {service['Mechaniker']}\n"
+                    if service['Kosten']:
+                        response_text += f"- Kosten: {service['Kosten']} Franken\n"
                     response_text += "\n"
+                
+                # Berechne Gesamtkosten für diesen Kunden
+                if len(set(s['Kunde'] for s in matching_services)) == 1:
+                    total_cost = sum(float(s['Kosten']) for s in matching_services if s['Kosten'])
+                    response_text += f"\n**Gesamtkosten aller Services: {total_cost} Franken**"
                 
                 return response_text
             else:
@@ -377,19 +407,16 @@ WICHTIGE REGELN:
             return "Die Service-Datenbank ist momentan nicht verfügbar."
 
     @function_tool
-    async def search_appointments(self, 
-                                context: RunContext[GarageUserData],
-                                query: str) -> str:
+    async def get_price_information(self, 
+                                  context: RunContext[GarageUserData],
+                                  service_type: str) -> str:
         """
-        Sucht nach Terminen in der Datenbank.
+        Sucht nach Preisinformationen für bestimmte Services.
         
         Args:
-            query: Kundenname, Kennzeichen oder Datum
+            service_type: Art des Services (z.B. "Ölwechsel", "Inspektion")
         """
-        logger.info(f"📅 Searching appointments for: {query}")
-        
-        if len(query) < 3:
-            return "Bitte geben Sie mir einen Namen, ein Kennzeichen oder ein Datum."
+        logger.info(f"💰 Searching price information for: {service_type}")
         
         try:
             client = SeaTableClient(
@@ -397,41 +424,64 @@ WICHTIGE REGELN:
                 context.userdata.seatable_base_token
             )
             
-            sql_query = f"""
-            SELECT Termin_ID, Datum, Uhrzeit, Kunde, Fahrzeug, 
-                   Service_Art, Mechaniker, Status, Geschätzte_Dauer
-            FROM Termine 
-            WHERE Kunde LIKE '%{query}%' 
-               OR Fahrzeug LIKE '%{query}%'
-               OR Datum LIKE '%{query}%'
-            ORDER BY Datum DESC
-            LIMIT 5
-            """
+            # Suche in der vereinheitlichten Tabelle nach ähnlichen Services
+            results = await client.query_unified_table("Garage_Gesamtdaten")
             
-            results = await client.query_table(sql_query)
+            # Filtere nach Service-Typ
+            matching_services = []
             
-            if results:
-                logger.info(f"✅ Found {len(results)} appointment results")
+            for row in results:
+                service_beschreibung = row.get('Service_Beschreibung', '')
+                service_kosten = row.get('Service_Kosten', 0)
                 
-                response_text = "Hier sind die Termine:\n\n"
-                for termin in results[:3]:
-                    response_text += f"**Termin am {termin.get('Datum', '-')} um {termin.get('Uhrzeit', '-')} Uhr**\n"
-                    response_text += f"- Kunde: {termin.get('Kunde', '-')}\n"
-                    response_text += f"- Fahrzeug: {termin.get('Fahrzeug', '-')}\n"
-                    response_text += f"- Service: {termin.get('Service_Art', '-')}\n"
-                    response_text += f"- Mechaniker: {termin.get('Mechaniker', '-')}\n"
-                    response_text += f"- Status: {termin.get('Status', '-')}\n"
-                    if termin.get('Geschätzte_Dauer'):
-                        response_text += f"- Geschätzte Dauer: {termin.get('Geschätzte_Dauer')}\n"
+                # Skip rows without service data
+                if not service_beschreibung or not service_kosten:
+                    continue
+                
+                # Check if service type matches
+                if service_type.lower() in service_beschreibung.lower():
+                    matching_services.append({
+                        'Beschreibung': service_beschreibung,
+                        'Kosten': service_kosten,
+                        'Datum': row.get('Service_Datum', '-'),
+                        'Fahrzeug': f"{row.get('Marke', '')} {row.get('Modell', '')}"
+                    })
+            
+            if matching_services:
+                logger.info(f"✅ Found {len(matching_services)} price examples")
+                
+                # Gruppiere nach Service-Typ und berechne Durchschnitt
+                from collections import defaultdict
+                service_groups = defaultdict(list)
+                
+                for service in matching_services:
+                    service_groups[service['Beschreibung']].append(float(service['Kosten']))
+                
+                response_text = f"Hier sind Beispiele für '{service_type}' aus unserer Historie:\n\n"
+                
+                for beschreibung, kosten_liste in service_groups.items():
+                    avg_cost = sum(kosten_liste) / len(kosten_liste)
+                    min_cost = min(kosten_liste)
+                    max_cost = max(kosten_liste)
+                    
+                    response_text += f"**{beschreibung}**\n"
+                    if len(kosten_liste) > 1:
+                        response_text += f"- Durchschnittspreis: {avg_cost:.2f} Franken\n"
+                        response_text += f"- Preisspanne: {min_cost:.2f} - {max_cost:.2f} Franken\n"
+                        response_text += f"- Anzahl Services: {len(kosten_liste)}\n"
+                    else:
+                        response_text += f"- Preis: {kosten_liste[0]} Franken\n"
                     response_text += "\n"
+                
+                response_text += "\n⚠️ **Hinweis**: Dies sind historische Preise. Für aktuelle Preise und ein individuelles Angebot kontaktieren Sie uns bitte direkt."
                 
                 return response_text
             else:
-                return "Ich konnte keine Termine zu Ihrer Anfrage finden."
+                return f"Ich konnte keine Preisbeispiele für '{service_type}' in unserer Historie finden. Bitte rufen Sie uns für eine individuelle Preisauskunft an."
                 
         except Exception as e:
-            logger.error(f"Appointment search error: {e}")
-            return "Die Termin-Datenbank ist momentan nicht verfügbar."
+            logger.error(f"Price search error: {e}")
+            return "Die Preisdatenbank ist momentan nicht verfügbar."
 
 
 async def request_handler(ctx: JobContext):
