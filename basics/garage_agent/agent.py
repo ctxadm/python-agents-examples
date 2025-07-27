@@ -18,9 +18,11 @@ from livekit.plugins import openai, silero
 
 load_dotenv()
 
-# Logging
-logger = logging.getLogger("garage-agent")
-logger.setLevel(logging.INFO)
+# Import zusätzlich am Anfang
+from qdrant_client import AsyncQdrantClient
+from typing import Optional, List, Dict, Any
+
+# Nach den anderen Imports fügen Sie diese Helper-Klasse ein:
 
 # Agent Name für Multi-Worker Setup
 AGENT_NAME = os.getenv("AGENT_NAME", "agent-garage-1")
