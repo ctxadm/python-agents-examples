@@ -128,14 +128,45 @@ ALWAYS RESPOND IN GERMAN!""")
         
         try:
             async with httpx.AsyncClient() as client:
+                # Erstelle Filter für präzisere Suche
+                filter_conditions = None
+                
+                # Bei Kennzeichen-Suche: Verwende exakten Filter
+                if kennzeichen_match:
+                    kennzeichen_normalized = kennzeichen_match.group().replace(" ", "").upper()
+                    filter_conditions = {
+                        "should": [
+                            {
+                                "key": "search_fields.license_plate_normalized",
+                                "match": {"value": kennzeichen_normalized}
+                            },
+                            {
+                                "key": "kennzeichen",
+                                "match": {"value": kennzeichen_with_space}
+                            },
+                            {
+                                "key": "license_plate", 
+                                "match": {"value": kennzeichen_with_space}
+                            }
+                        ]
+                    }
+                    logger.info(f"🔍 Verwende Kennzeichen-Filter: {kennzeichen_normalized}")
+                
+                # Baue Request
+                search_request = {
+                    "query": query,
+                    "agent_type": "garage",
+                    "top_k": 5,
+                    "collection": "garage_management"
+                }
+                
+                # Füge Filter hinzu wenn vorhanden
+                if filter_conditions:
+                    search_request["filter"] = filter_conditions
+                
                 response = await client.post(
                     f"{context.userdata.rag_url}/search",
-                    json={
-                        "query": query,
-                        "agent_type": "garage",
-                        "top_k": 5,  # Mehr Ergebnisse für bessere Trefferchance
-                        "collection": "garage_management"
-                    }
+                    json=search_request
                 )
                 
                 if response.status_code == 200:
