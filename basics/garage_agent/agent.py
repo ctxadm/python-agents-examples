@@ -32,6 +32,7 @@ class GarageUserData:
     current_customer_id: Optional[str] = None
     active_repair_id: Optional[str] = None
     user_language: str = "de"
+    greeting_sent: bool = False  # Track ob Begrüßung gesendet wurde
 
 
 class GarageAssistant(Agent):
@@ -53,6 +54,7 @@ KRITISCHE REGEL FÜR BEGRÜSSUNGEN:
 - Bei einfachen Begrüßungen wie "Hallo", "Guten Tag", "Hi" etc. antworte NUR mit einer freundlichen Begrüßung
 - Nutze NIEMALS Suchfunktionen bei einer einfachen Begrüßung
 - Warte IMMER auf eine konkrete Anfrage des Kunden bevor du suchst
+- Die ERSTE Antwort sollte IMMER eine Begrüßung mit Namensabfrage sein
 
 ABSOLUT KRITISCHE REGEL - NIEMALS DATEN ERFINDEN:
 - NIEMALS Informationen erfinden, raten oder halluzinieren!
@@ -63,7 +65,7 @@ ABSOLUT KRITISCHE REGEL - NIEMALS DATEN ERFINDEN:
 - Gib NUR Informationen weiter, die DIREKT aus der Datenbank kommen
 
 WORKFLOW:
-1. Bei Begrüßung: Freundlich antworten und nach dem Anliegen fragen
+1. Bei Begrüßung: Freundlich antworten und nach dem Namen des Kunden fragen
 2. Höre aufmerksam zu und identifiziere das konkrete Anliegen
 3. NUR bei konkreten Anfragen: Nutze die passende Suchfunktion
 4. Gib NUR präzise Auskünfte basierend auf den tatsächlichen Datenbankdaten
@@ -85,6 +87,11 @@ WICHTIGE REGELN:
 - NIEMALS Daten erfinden wenn keine gefunden wurden""")
         logger.info("✅ GarageAssistant initialized")
 
+    async def on_enter(self):
+        """Wird aufgerufen wenn der Agent die Session betritt"""
+        logger.info("🎯 Agent on_enter called")
+        # Die initiale Begrüßung erfolgt im entrypoint nach session.start()
+
     @function_tool
     async def search_customer_data(self, 
                                  context: RunContext[GarageUserData],
@@ -98,7 +105,7 @@ WICHTIGE REGELN:
         logger.info(f"🔍 Searching customer data for: {query}")
         
         # GUARD gegen falsche Suchen bei Begrüßungen
-        if len(query) < 5 or query.lower() in ["hallo", "guten tag", "hi", "hey", "servus", "grüezi"]:
+        if len(query) < 5 or query.lower() in ["hallo", "guten tag", "hi", "hey", "servus", "grüezi", "guten morgen", "guten abend"]:
             logger.warning(f"⚠️ Ignoring greeting search: {query}")
             return "Bitte geben Sie mir Ihren Namen, Ihre Telefonnummer oder Ihre Autonummer, damit ich Ihre Kundendaten finden kann."
         
@@ -412,19 +419,20 @@ async def entrypoint(ctx: JobContext):
         )
         logger.info(f"🤖 [{session_id}] Using Llama 3.2 via Ollama")
         
-        # 5. Create session
+        # 5. Create session mit optimierten VAD-Settings
         session = AgentSession[GarageUserData](
             userdata=GarageUserData(
                 authenticated_user=None,
                 rag_url=rag_url,
                 current_customer_id=None,
                 active_repair_id=None,
-                user_language="de"
+                user_language="de",
+                greeting_sent=False
             ),
             llm=llm,
             vad=silero.VAD.load(
-                min_silence_duration=0.6,  # Etwas schneller als Medical
-                min_speech_duration=0.2
+                min_silence_duration=0.5,  # Reduziert für schnellere Reaktion
+                min_speech_duration=0.15   # Reduziert für schnellere Erkennung
             ),
             stt=openai.STT(
                 model="whisper-1",
@@ -433,21 +441,22 @@ async def entrypoint(ctx: JobContext):
             tts=openai.TTS(
                 model="tts-1",
                 voice="nova"  # Freundliche Stimme für Kundenkontakt
-            )
+            ),
+            min_endpointing_delay=0.3,  # Schnellere Reaktion
+            max_endpointing_delay=4.0   # Kürzere maximale Wartezeit
         )
         
         # 6. Create agent
         agent = GarageAssistant()
         
         # 7. Start session
-        await asyncio.sleep(0.5)
         logger.info(f"🏁 [{session_id}] Starting session...")
         await session.start(
             room=ctx.room,
             agent=agent
         )
         
-        # Event handlers (simplified)
+        # Event handlers MÜSSEN NACH session.start() registriert werden!
         @session.on("user_input_transcribed")
         def on_user_input(event):
             logger.info(f"[{session_id}] 🎤 User: {event.transcript} (final: {event.is_final})")
@@ -460,31 +469,38 @@ async def entrypoint(ctx: JobContext):
         def on_user_state(event):
             logger.info(f"[{session_id}] 👤 User state changed")
         
-        # 8. Initial greeting - OHNE TOOL NUTZUNG
-        await asyncio.sleep(1.0)
+        # 8. Initial greeting - MIT session.say() für direktere Kontrolle
+        await asyncio.sleep(1.5)  # Kurze Pause für Audio-Stabilisierung
         
-        initial_instructions = """ABSOLUT KRITISCHE ANWEISUNG: 
-       
-- IGNORIERE alle vorherigen Nachrichten
-- Dies ist eine NEUE Unterhaltung
-- KEINE Entschuldigungen
-- KEINE Bezüge zu früherem
-
-Sage NUR:
-"Guten Tag und willkommen bei der Garage Müller! Ich bin Pia, Ihr digitaler Assistent. Wie kann ich Ihnen heute helfen?"
-
-NICHTS ANDERES! KEINE ENTSCHULDIGUNGEN!"""
-    
-        logger.info(f"📢 [{session_id}] Generating initial greeting...")
+        logger.info(f"📢 [{session_id}] Sending initial greeting...")
         
         try:
-            await session.generate_reply(
-                instructions=initial_instructions,
-                tool_choice="none"  # WICHTIG: Keine Tools bei Begrüßung!
+            # Verwende session.say() für die initiale Begrüßung
+            greeting_text = "Guten Tag und willkommen bei der Garage Müller! Ich bin Pia, Ihr digitaler Assistent. Darf ich nach Ihrem Namen fragen?"
+            
+            # Markiere dass Begrüßung gesendet wurde
+            session.userdata.greeting_sent = True
+            
+            # Sende die Begrüßung
+            speech_handle = await session.say(
+                greeting_text,
+                allow_interruptions=True,
+                add_to_chat_ctx=True
             )
-            logger.info(f"✅ [{session_id}] Initial greeting sent")
+            
+            logger.info(f"✅ [{session_id}] Initial greeting sent successfully")
+            
         except Exception as e:
-            logger.warning(f"[{session_id}] Could not send initial greeting: {e}")
+            logger.error(f"[{session_id}] Error sending initial greeting: {e}")
+            # Fallback auf generate_reply mit expliziten Instructions
+            try:
+                await session.generate_reply(
+                    instructions="Begrüße den Kunden freundlich als Pia von der Garage Müller und frage nach seinem Namen. KEINE TOOLS VERWENDEN!",
+                    tool_choice="none"  # WICHTIG: Keine Tools bei Begrüßung!
+                )
+                logger.info(f"✅ [{session_id}] Initial greeting sent via generate_reply")
+            except Exception as e2:
+                logger.error(f"[{session_id}] Failed to send greeting: {e2}")
         
         logger.info(f"✅ [{session_id}] Garage Agent ready and listening!")
         
