@@ -323,12 +323,22 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
         
         try:
             async with httpx.AsyncClient() as client:
+                # Wichtig: Spezifiziere die richtige Collection!
+                search_payload = {
+                    "query": query,
+                    "type": "customer",
+                    "collection": "garage_management",  # WICHTIG: Richtige Collection
+                    "top_k": 5
+                }
+                
                 response = await client.post(
                     "http://localhost:8000/search",
-                    json={"query": query, "type": "customer"},
+                    json=search_payload,
                     timeout=5.0
                 )
                 result = response.json()
+                
+                logger.info(f"Search response: {json.dumps(result, indent=2)[:500]}...")  # Debug log
                 
                 if result.get("results"):
                     logger.info(f"✅ Found {len(result['results'])} results")
@@ -337,6 +347,12 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                     results_list = result.get("results", [])
                     if not results_list:
                         return "Ich habe keine passenden Daten gefunden. Können Sie mir bitte Ihre Fahrzeug-ID (z.B. F001), Ihren vollständigen Namen oder Ihr Autokennzeichen nennen?"
+                    
+                    # Check if we're getting the wrong collection
+                    collection_used = result.get("collection_used", "")
+                    if collection_used != "garage_management":
+                        logger.error(f"Wrong collection returned: {collection_used}")
+                        return "Es gab ein Problem mit der Datenbank-Verbindung. Bitte versuchen Sie es erneut."
                     
                     # Format response based on actual data structure
                     response_text = "Ich habe folgende Daten gefunden:\n"
@@ -353,13 +369,17 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                     # Store vehicle data in context
                     context.userdata.current_vehicle_data = vehicle_data
                     
-                    # Format the response with actual data
+                    # Format the response with actual data - check different possible field names
                     if 'fahrzeug_id' in vehicle_data:
                         response_text += f"\n**Fahrzeug-ID**: {vehicle_data['fahrzeug_id']}\n"
                     if 'besitzer' in vehicle_data:
                         response_text += f"**Besitzer**: {vehicle_data['besitzer']}\n"
+                    elif 'owner_name' in vehicle_data:
+                        response_text += f"**Besitzer**: {vehicle_data['owner_name']}\n"
                     if 'kennzeichen' in vehicle_data:
                         response_text += f"**Kennzeichen**: {vehicle_data['kennzeichen']}\n"
+                    elif 'license_plate' in vehicle_data:
+                        response_text += f"**Kennzeichen**: {vehicle_data['license_plate']}\n"
                     if 'marke' in vehicle_data and 'modell' in vehicle_data:
                         response_text += f"**Fahrzeug**: {vehicle_data['marke']} {vehicle_data['modell']}\n"
                     if 'baujahr' in vehicle_data:
@@ -382,7 +402,10 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                     
                     # If we still only have the header, something went wrong
                     if response_text == "Ich habe folgende Daten gefunden:\n":
-                        logger.error(f"Data structure issue. Result: {result}")
+                        logger.error(f"Data structure issue. First result: {first_result}")
+                        # Try to show raw content if available
+                        if 'content' in first_result:
+                            return f"Gefundene Daten: {first_result['content']}"
                         return "Es gab ein Problem beim Abrufen der Daten. Bitte versuchen Sie es erneut."
                             
                     return response_text
@@ -421,9 +444,17 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
             
         try:
             async with httpx.AsyncClient() as client:
+                # Wichtig: Spezifiziere die richtige Collection!
+                search_payload = {
+                    "query": search_query,
+                    "type": "invoice",
+                    "collection": "garage_management",  # WICHTIG: Richtige Collection
+                    "top_k": 5
+                }
+                
                 response = await client.post(
                     "http://localhost:8000/search",
-                    json={"query": search_query, "type": "invoice"},
+                    json=search_payload,
                     timeout=5.0
                 )
                 result = response.json()
@@ -497,9 +528,17 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
             
         try:
             async with httpx.AsyncClient() as client:
+                # Wichtig: Spezifiziere die richtige Collection!
+                search_payload = {
+                    "query": search_query,
+                    "type": "repair",
+                    "collection": "garage_management",  # WICHTIG: Richtige Collection
+                    "top_k": 5
+                }
+                
                 response = await client.post(
                     "http://localhost:8000/search",
-                    json={"query": search_query, "type": "repair"},
+                    json=search_payload,
                     timeout=5.0
                 )
                 result = response.json()
