@@ -5,9 +5,10 @@ import httpx
 import asyncio
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+from enum import Enum
 from dotenv import load_dotenv
 from livekit import agents, rtc
 from livekit.agents import JobContext, WorkerOptions, cli, RunContext
@@ -24,6 +25,42 @@ logger.setLevel(logging.INFO)
 # Agent Name für Multi-Worker Setup
 AGENT_NAME = os.getenv("AGENT_NAME", "agent-garage-1")
 
+class ConversationState(Enum):
+    """State Machine für Konversationsphasen"""
+    GREETING = "greeting"
+    AWAITING_REQUEST = "awaiting_request"
+    COLLECTING_LICENSE_PLATE = "collecting_license_plate"
+    SEARCHING = "searching"
+    PROVIDING_INFO = "providing_info"
+
+@dataclass
+class LicensePlateContext:
+    """Kontext für Kennzeichen-Erfassung"""
+    canton_letters: Optional[str] = None
+    numbers: Optional[str] = None
+    complete_plate: Optional[str] = None
+    attempts: int = 0
+    
+    def is_complete(self) -> bool:
+        """Prüft ob Kennzeichen vollständig ist"""
+        return self.complete_plate is not None
+    
+    def combine(self) -> Optional[str]:
+        """Kombiniert Canton und Zahlen zu vollständigem Kennzeichen"""
+        if self.canton_letters and self.numbers:
+            canton = self.canton_letters.replace(".", "").replace(" ", "").upper()
+            numbers = self.numbers.replace(" ", "")
+            self.complete_plate = f"{canton} {numbers}"
+            return self.complete_plate
+        return None
+    
+    def reset(self):
+        """Reset des Kontexts"""
+        self.canton_letters = None
+        self.numbers = None
+        self.complete_plate = None
+        self.attempts = 0
+
 @dataclass
 class GarageUserData:
     """User data context für den Garage Agent"""
@@ -33,66 +70,171 @@ class GarageUserData:
     active_repair_id: Optional[str] = None
     user_language: str = "de"
     greeting_sent: bool = False
-    customer_name: Optional[str] = None  # Speichere den Kundennamen
-    partial_license_plate: Optional[str] = None  # Für buchstabierte Kennzeichen
+    customer_name: Optional[str] = None
+    conversation_state: ConversationState = ConversationState.GREETING
+    license_plate_context: LicensePlateContext = field(default_factory=LicensePlateContext)
+    last_search_query: Optional[str] = None
+    hallucination_count: int = 0
+
+
+class HalluccinationDetector:
+    """Erkennt und verhindert Halluzinationen"""
+    
+    EXAMPLE_PLATES = ["LU 234567", "ZH 123456", "BE 987654"]
+    SWISS_CANTONS = ["AG", "AI", "AR", "BE", "BL", "BS", "FR", "GE", "GL", "GR", 
+                     "JU", "LU", "NE", "NW", "OW", "SG", "SH", "SO", "SZ", "TG", 
+                     "TI", "UR", "VD", "VS", "ZG", "ZH"]
+    
+    @classmethod
+    def is_hallucinated_plate(cls, plate: str) -> bool:
+        """Prüft ob ein Kennzeichen halluziniert ist"""
+        if not plate:
+            return False
+        
+        # Check gegen bekannte Beispiele
+        normalized_plate = plate.replace(" ", "").upper()
+        for example in cls.EXAMPLE_PLATES:
+            if normalized_plate == example.replace(" ", ""):
+                logger.warning(f"⚠️ Halluziniertes Beispiel-Kennzeichen erkannt: {plate}")
+                return True
+        
+        # Prüfe auf unrealistische Muster
+        if re.match(r'^[A-Z]{2}\s*123456$', plate):
+            logger.warning(f"⚠️ Verdächtiges Kennzeichen-Muster: {plate}")
+            return True
+            
+        return False
+    
+    @classmethod
+    def validate_canton(cls, canton: str) -> bool:
+        """Validiert Schweizer Kanton-Kürzel"""
+        return canton.upper() in cls.SWISS_CANTONS
+    
+    @classmethod
+    def extract_intent_from_input(cls, user_input: str) -> Dict[str, Any]:
+        """Extrahiert Intent und Daten aus User-Input"""
+        input_lower = user_input.lower().strip()
+        
+        # Greetings
+        greetings = ["hallo", "guten tag", "hi", "hey", "servus", "grüezi", "guten morgen", "guten abend"]
+        if any(g in input_lower for g in greetings):
+            return {"intent": "greeting", "data": None}
+        
+        # Canton letters (z.B. "A.G.", "AG", "A G")
+        canton_patterns = [
+            r'^([A-Z])\s*\.?\s*([A-Z])\.?$',  # A.G. oder A G
+            r'^([A-Z]{2})$',  # AG
+        ]
+        
+        for pattern in canton_patterns:
+            match = re.match(pattern, user_input.upper().strip())
+            if match:
+                if len(match.groups()) == 2:
+                    canton = match.group(1) + match.group(2)
+                else:
+                    canton = match.group(1)
+                
+                if cls.validate_canton(canton):
+                    return {"intent": "canton_provided", "data": canton}
+        
+        # Numbers only (z.B. "5 6 7 8 9" oder "56789")
+        if re.match(r'^[\d\s]+$', user_input.strip()):
+            numbers = user_input.replace(" ", "")
+            if 3 <= len(numbers) <= 6:
+                return {"intent": "numbers_provided", "data": numbers}
+        
+        # Complete license plate
+        plate_match = re.search(r'([A-Z]{2})\s*(\d{3,6})', user_input.upper())
+        if plate_match:
+            canton = plate_match.group(1)
+            numbers = plate_match.group(2)
+            if cls.validate_canton(canton):
+                return {"intent": "complete_plate", "data": f"{canton} {numbers}"}
+        
+        # Check for repair/service/cost keywords
+        if any(word in input_lower for word in ["reparatur", "service", "status", "kosten", "rechnung"]):
+            return {"intent": "service_query", "data": user_input}
+        
+        # Default: general query
+        return {"intent": "general_query", "data": user_input}
 
 
 class GarageAssistant(Agent):
     """Garage Assistant für Kundenverwaltung und Reparaturen"""
     
     def __init__(self) -> None:
-        # VERSTÄRKTE Instructions für Llama 3.2
+        # VERBESSERTE Instructions mit Few-Shot Examples und Anti-Halluzination
         super().__init__(instructions="""You are Pia, the digital assistant of Garage Müller. RESPOND ONLY IN GERMAN.
 
-CRITICAL RULES - FOLLOW EXACTLY:
+CRITICAL ANTI-HALLUCINATION RULES:
+1. NEVER use example license plates like "LU 234567" or "ZH 123456"
+2. ONLY use the ACTUAL input provided by the user
+3. When combining canton and numbers, use EXACTLY what the user said
+4. If unsure, ASK for clarification instead of guessing
 
-1. NEVER say these words: "Entschuldigung", "Sorry", "Es tut mir leid"
-   - Use instead: "Leider", "Bedauerlicherweise", "Ich kann leider"
+CONVERSATION EXAMPLES (Learn from these):
 
-2. NEVER INVENT DATA - THIS IS CRITICAL:
-   - If database returns "no data found", say: "Ich habe keine Daten gefunden"
-   - NEVER make up information about cars, services, or dates
-   - NEVER say "Ihr Auto wurde eingeliefert" without data
-   - NEVER say "Der letzte Service war am..." without real data
-   - NEVER invent service dates like "15.02.2023" or "01.06.2024"
-   - If you don't have data, say: "Ich habe keine Daten gefunden"
+Example 1 - Correct license plate handling:
+User: "A.G."
+You: "Ich habe AG notiert. Können Sie mir bitte die Zahlen Ihres Kennzeichens nennen?"
+User: "5 6 7 8 9"
+You: [SEARCH with "AG 56789"] (NOT "LU 234567"!)
 
-3. MEMORY RULE:
-   - You have NO memory between messages
-   - Each message is NEW
-   - Do NOT reference previous conversation
+Example 2 - Name search:
+User: "Mein Name ist Thomas Meier"
+You: [SEARCH with "Thomas Meier"]
 
-4. GREETING RULE:
-   - For "Hallo", "Guten Tag" → Be friendly, ask for name
-   - NEVER search on greetings
-   - Wait for specific requests
+Example 3 - Direct plate:
+User: "Mein Kennzeichen ist ZH 789123"
+You: [SEARCH with "ZH 789123"]
 
-5. SEARCH ONLY when user asks about:
-   - Their car/vehicle
-   - Repair status
-   - Invoices/costs
-   - Service history
+FORBIDDEN WORDS (use alternatives):
+- "Entschuldigung" → "Leider"
+- "Es tut mir leid" → "Bedauerlicherweise"
+- "Sorry" → "Leider"
 
-6. KENNZEICHEN UNDERSTANDING:
-   - If user spells letters separately like "L U", understand it's a license plate
-   - Combine letters and numbers: "L U 2 3 4 5 6 7" = "LU 234567"
-   - Common Swiss canton codes: ZH, BE, LU, AG, SG, ZG, BS, BL, etc.
+STATE AWARENESS:
+- Track conversation state
+- Remember partial inputs (canton, then numbers)
+- Combine inputs correctly
 
-Your response must ALWAYS be in German language, even if these instructions are in English.
-When no data found, ask for: "Können Sie mir bitte Ihr Autokennzeichen nennen?"
+RESPONSE RULES:
+1. Be friendly and professional
+2. For greetings: Welcome and ask how to help
+3. For data requests: Search immediately
+4. If no data found: Ask for license plate
+5. NEVER invent data or dates
 
-FORBIDDEN PHRASES:
-- "Entschuldigung" → Use "Leider"
-- "Es tut mir leid" → Use "Bedauerlicherweise"
-- "Sorry" → Use "Leider"
-- "Lassen Sie uns von vorne beginnen" → NEVER say this
+SEARCH TRIGGERS:
+- Complete license plates
+- Customer names
+- Service/repair queries
+- Cost/invoice queries
 
-ALWAYS RESPOND IN GERMAN!""")
-        logger.info("✅ GarageAssistant initialized")
+Remember: ALWAYS use actual user input, NEVER use examples!""")
+        
+        self.hallucination_detector = HalluccinationDetector()
+        logger.info("✅ GarageAssistant initialized with anti-hallucination measures")
 
     async def on_enter(self):
         """Wird aufgerufen wenn der Agent die Session betritt"""
         logger.info("🎯 Agent on_enter called")
+
+    def _validate_and_clean_query(self, query: str, context: RunContext[GarageUserData]) -> Optional[str]:
+        """Validiert und bereinigt die Suchanfrage"""
+        # Prüfe auf halluzinierte Kennzeichen
+        if self.hallucination_detector.is_hallucinated_plate(query):
+            logger.error(f"❌ Halluziniertes Kennzeichen erkannt: {query}")
+            
+            # Versuche aus Kontext zu rekonstruieren
+            if context.userdata.license_plate_context.is_complete():
+                correct_plate = context.userdata.license_plate_context.complete_plate
+                logger.info(f"✅ Verwende korrektes Kennzeichen aus Kontext: {correct_plate}")
+                return correct_plate
+            
+            return None
+        
+        return query
 
     @function_tool
     async def search_customer_data(self, 
@@ -104,95 +246,73 @@ ALWAYS RESPOND IN GERMAN!""")
         Args:
             query: Suchbegriff (Name, Telefonnummer oder Autokennzeichen)
         """
-        logger.info(f"🔍 Searching customer data for: {query}")
+        logger.info(f"🔍 Original search query: {query}")
         
-        # Speichere den Kundennamen wenn er genannt wird
-        if context.userdata.customer_name is None and len(query.split()) <= 3:
-            # Könnte ein Name sein
-            context.userdata.customer_name = query
+        # Validiere Query gegen Halluzinationen
+        validated_query = self._validate_and_clean_query(query, context)
+        if validated_query is None:
+            return "Ich konnte das Kennzeichen nicht korrekt erfassen. Bitte nennen Sie es mir noch einmal."
         
-        # GUARD gegen Begrüßungen
-        greetings = ["hallo", "guten tag", "hi", "hey", "servus", "grüezi", "guten morgen", "guten abend"]
-        if query.lower().strip() in greetings:
+        query = validated_query
+        context.userdata.last_search_query = query
+        
+        # Intent-Erkennung
+        intent_result = self.hallucination_detector.extract_intent_from_input(query)
+        intent = intent_result["intent"]
+        data = intent_result["data"]
+        
+        logger.info(f"📊 Intent: {intent}, Data: {data}")
+        
+        # Handle verschiedene Intents
+        if intent == "greeting":
             return "Für die Suche benötige ich Ihren Namen oder Ihr Autokennzeichen."
         
-        # GUARD gegen zu kurze Suchen - ABER prüfe auf Buchstabierung
-        if len(query) < 3:
-            # Prüfe ob es Teil eines Kennzeichens sein könnte
-            if re.match(r'^[A-Z]{1,2}$', query.upper()):
-                return "Bitte geben Sie mir das vollständige Kennzeichen mit den Zahlen (z.B. LU 234567)."
-            return "Bitte geben Sie mir Ihren vollständigen Namen oder Ihr Autokennzeichen (z.B. ZH 123456)."
+        elif intent == "canton_provided":
+            # Speichere Canton im Kontext
+            context.userdata.license_plate_context.canton_letters = data
+            context.userdata.conversation_state = ConversationState.COLLECTING_LICENSE_PLATE
+            return f"Danke, ich habe {data} notiert. Wie lauten die Zahlen Ihres Kennzeichens?"
         
-        # VERBESSERTE Kennzeichen-Erkennung
-        # Erkenne verschiedene Formate:
-        # - "LU 234567" (normal)
-        # - "L U 2 3 4 5 6 7" (buchstabiert mit Leerzeichen)
-        # - "L.U. 234567" (mit Punkten)
-        # - "2 3 4 5 6 7" (nur Zahlen - könnte Teil eines Kennzeichens sein)
+        elif intent == "numbers_provided":
+            # Prüfe ob wir bereits einen Canton haben
+            if context.userdata.license_plate_context.canton_letters:
+                context.userdata.license_plate_context.numbers = data
+                complete_plate = context.userdata.license_plate_context.combine()
+                
+                if complete_plate:
+                    logger.info(f"✅ Kennzeichen komplett: {complete_plate}")
+                    # Rekursiver Aufruf mit vollständigem Kennzeichen
+                    return await self.search_customer_data(context, complete_plate)
+            else:
+                return "Mir fehlt noch der Kanton (die zwei Buchstaben). Bitte nennen Sie mir das vollständige Kennzeichen."
         
-        # Normalisiere die Query für bessere Kennzeichen-Erkennung
-        normalized_query = query.upper()
+        elif intent == "complete_plate":
+            # Speichere vollständiges Kennzeichen
+            context.userdata.license_plate_context.complete_plate = data
+            query = data
         
-        # Entferne Punkte und extra Leerzeichen
-        normalized_query = normalized_query.replace(".", "")
-        normalized_query = re.sub(r'\s+', ' ', normalized_query)
-        
-        # Versuche buchstabierte Kennzeichen zu erkennen
-        # Z.B. "L U 2 3 4 5 6 7" -> "LU 234567"
-        buchstabiert_pattern = r'^([A-Z])\s+([A-Z])\s+((?:\d\s+){5,6}\d)$'
-        buchstabiert_match = re.match(buchstabiert_pattern, normalized_query)
-        
-        if buchstabiert_match:
-            # Rekonstruiere das Kennzeichen
-            kanton = buchstabiert_match.group(1) + buchstabiert_match.group(2)
-            zahlen = buchstabiert_match.group(3).replace(" ", "")
-            normalized_query = f"{kanton} {zahlen}"
-            logger.info(f"🔤 Buchstabiertes Kennzeichen erkannt: {normalized_query}")
-        
-        # Wenn nur Zahlen gegeben wurden, frage nach dem Kanton
-        if re.match(r'^[\d\s]+$', query):
-            return "Ich sehe die Zahlen, aber mir fehlt der Kantons-Code. Bitte nennen Sie mir die zwei Buchstaben am Anfang des Kennzeichens (z.B. ZH, BE, LU)."
-        
-        # Standard Kennzeichen-Pattern
-        kennzeichen_pattern = r'[A-Z]{2}\s*\d{3,6}'
-        kennzeichen_match = re.search(kennzeichen_pattern, normalized_query)
-        
-        if kennzeichen_match:
-            # Erstelle beide Varianten für die Suche
-            kennzeichen_raw = kennzeichen_match.group()
-            kennzeichen_with_space = re.sub(r'([A-Z]{2})(\d+)', r'\1 \2', kennzeichen_raw)
-            kennzeichen_without_space = kennzeichen_raw.replace(" ", "")
-            
-            logger.info(f"📋 Kennzeichen erkannt: {kennzeichen_with_space}")
-            
-            # Erweitere Query mit beiden Varianten
-            query = f"{kennzeichen_with_space} {kennzeichen_without_space} {query}"
-        
+        # Führe die eigentliche Suche durch
         try:
             async with httpx.AsyncClient() as client:
                 # Erstelle Filter für präzisere Suche
                 filter_conditions = None
                 
-                # Bei Kennzeichen-Suche: Verwende exakten Filter
-                if kennzeichen_match:
-                    kennzeichen_normalized = kennzeichen_match.group().replace(" ", "").upper()
+                # Bei Kennzeichen-Suche
+                if re.match(r'^[A-Z]{2}\s*\d{3,6}$', query.upper()):
+                    kennzeichen_normalized = query.replace(" ", "").upper()
                     filter_conditions = {
                         "should": [
                             {
-                                "key": "search_fields.license_plate_normalized",
-                                "match": {"value": kennzeichen_normalized}
+                                "key": "license_plate",
+                                "match": {"value": query.upper()}
                             },
                             {
                                 "key": "kennzeichen",
-                                "match": {"value": kennzeichen_with_space}
-                            },
-                            {
-                                "key": "license_plate", 
-                                "match": {"value": kennzeichen_with_space}
+                                "match": {"value": query.upper()}
                             }
                         ]
                     }
-                    logger.info(f"🔍 Verwende Kennzeichen-Filter: {kennzeichen_normalized}")
+                    logger.info(f"🔍 Suche mit Kennzeichen-Filter: {query}")
                 
                 # Baue Request
                 search_request = {
@@ -202,7 +322,6 @@ ALWAYS RESPOND IN GERMAN!""")
                     "collection": "garage_management"
                 }
                 
-                # Füge Filter hinzu wenn vorhanden
                 if filter_conditions:
                     search_request["filter"] = filter_conditions
                 
@@ -217,6 +336,9 @@ ALWAYS RESPOND IN GERMAN!""")
                     if results:
                         logger.info(f"✅ Found {len(results)} results")
                         
+                        # Update conversation state
+                        context.userdata.conversation_state = ConversationState.PROVIDING_INFO
+                        
                         # Sammle relevante Ergebnisse
                         relevant_results = []
                         
@@ -224,51 +346,31 @@ ALWAYS RESPOND IN GERMAN!""")
                             content = result.get("content", "").strip()
                             payload = result.get("payload", {})
                             
-                            # Skip offensichtlich falsche Ergebnisse
+                            # Skip irrelevante Ergebnisse
                             if not content or any(word in content.lower() for word in ["mhz", "bakom", "funk", "frequenz"]):
                                 continue
                             
-                            # Prüfe auf vehicle_complete Daten
+                            # Bei vehicle_complete Daten
                             if payload.get("data_type") == "vehicle_complete":
-                                # Bei Kennzeichen-Suche: Exakte Übereinstimmung prüfen
-                                if kennzeichen_match:
-                                    search_kz = kennzeichen_without_space.upper()
-                                    
-                                    # Prüfe verschiedene Felder
-                                    payload_kz = payload.get("kennzeichen", payload.get("license_plate", ""))
-                                    payload_kz_clean = payload_kz.replace(" ", "").upper()
-                                    
-                                    # Prüfe auch search_fields
-                                    search_fields = payload.get("search_fields", {})
-                                    normalized_kz = search_fields.get("license_plate_normalized", "").upper()
-                                    
-                                    if search_kz == payload_kz_clean or search_kz == normalized_kz:
-                                        logger.info(f"✅ Exakte Kennzeichen-Übereinstimmung: {payload_kz}")
-                                        content = self._format_garage_data(content)
-                                        relevant_results.insert(0, content)  # An den Anfang
-                                        continue
-                                
-                                # Formatiere und füge hinzu
                                 # Verwende searchable_text wenn vorhanden
                                 if payload.get("searchable_text"):
                                     content = payload["searchable_text"]
+                                
                                 content = self._format_garage_data(content)
                                 relevant_results.append(content)
                         
                         if relevant_results:
-                            # Gib die besten Ergebnisse zurück
-                            return "\n\n".join(relevant_results[:2])  # Max 2 Ergebnisse
+                            # Reset license plate context nach erfolgreicher Suche
+                            context.userdata.license_plate_context.reset()
+                            return "\n\n".join(relevant_results[:2])
                         else:
-                            logger.warning("⚠️ No relevant results found")
-                            
-                            # Klare Nachricht ohne "Entschuldigung"
-                            if kennzeichen_match:
-                                return f"Ich habe keine Daten zum Kennzeichen {kennzeichen_with_space} gefunden. Bitte prüfen Sie, ob das Kennzeichen korrekt ist."
-                            else:
-                                return "Ich habe keine Daten zu diesem Namen gefunden. Können Sie mir bitte Ihr Autokennzeichen nennen?"
+                            return "Ich habe keine passenden Daten gefunden. Können Sie mir bitte Ihr Autokennzeichen nennen?"
                     
-                    # Keine Ergebnisse gefunden
-                    return "Ich habe keine Kundendaten gefunden. Bitte nennen Sie mir Ihr Autokennzeichen (z.B. ZH 123456)."
+                    # Keine Ergebnisse
+                    if re.match(r'^[A-Z]{2}\s*\d{3,6}$', query.upper()):
+                        return f"Ich habe keine Daten zum Kennzeichen {query} gefunden. Bitte prüfen Sie, ob das Kennzeichen korrekt ist."
+                    else:
+                        return "Ich habe keine Kundendaten gefunden. Bitte nennen Sie mir Ihr Autokennzeichen."
                     
                 else:
                     logger.error(f"Search failed: {response.status_code}")
@@ -289,6 +391,13 @@ ALWAYS RESPOND IN GERMAN!""")
             query: Kundenname, Autokennzeichen oder Auftragsnummer
         """
         logger.info(f"🔧 Searching repair status for: {query}")
+        
+        # Validierung
+        validated_query = self._validate_and_clean_query(query, context)
+        if validated_query is None:
+            return "Ich konnte die Suchanfrage nicht verarbeiten. Bitte nennen Sie mir Ihr Kennzeichen."
+        
+        query = validated_query
         
         if len(query) < 3:
             return "Für die Reparatursuche benötige ich einen Namen oder ein Autokennzeichen."
@@ -318,6 +427,7 @@ ALWAYS RESPOND IN GERMAN!""")
                                 relevant_results.append(content)
                         
                         if relevant_results:
+                            context.userdata.license_plate_context.reset()
                             return "\n\n".join(relevant_results[:2])
                         else:
                             return "Ich habe keine Reparaturdaten gefunden. Bitte nennen Sie mir Ihr Autokennzeichen."
@@ -343,12 +453,18 @@ ALWAYS RESPOND IN GERMAN!""")
         """
         logger.info(f"💰 Searching invoice/cost data for: {query}")
         
+        # Validierung
+        validated_query = self._validate_and_clean_query(query, context)
+        if validated_query is None:
+            return "Ich konnte die Suchanfrage nicht verarbeiten. Bitte nennen Sie mir Ihr Kennzeichen."
+        
+        query = validated_query
+        
         if len(query) < 3:
             return "Für die Rechnungssuche benötige ich einen Namen oder ein Autokennzeichen."
         
         try:
             async with httpx.AsyncClient() as client:
-                # Suche nach Kosten und Rechnungen
                 response = await client.post(
                     f"{context.userdata.rag_url}/search",
                     json={
@@ -369,16 +485,15 @@ ALWAYS RESPOND IN GERMAN!""")
                             content = result.get("content", "").strip()
                             payload = result.get("payload", {})
                             
-                            # Verwende searchable_text wenn vorhanden
                             if payload.get("searchable_text") and payload.get("data_type") == "vehicle_complete":
                                 content = payload["searchable_text"]
                             
-                            # Suche nach Kosten-Informationen
                             if content and any(word in content.lower() for word in ["kosten", "franken", "chf", "rechnung", "service"]):
                                 content = self._format_garage_data(content)
                                 cost_results.append(content)
                         
                         if cost_results:
+                            context.userdata.license_plate_context.reset()
                             return "\n\n".join(cost_results[:2])
                         else:
                             return "Ich habe keine Kosteninformationen gefunden. Bitte nennen Sie mir Ihr Autokennzeichen."
@@ -466,17 +581,20 @@ async def entrypoint(ctx: JobContext):
                 
             await asyncio.sleep(1)
         
-        # 4. Configure LLM
+        # 4. Configure LLM mit optimierten Settings für Llama 3.2
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
         
-        # Verwende Llama 3.2 mit optimierten Settings
+        # OPTIMIERTE Llama 3.2 Konfiguration
         llm = openai.LLM(
-            model="llama3.2:latest",  # WICHTIG: Zurück zu 3.2, nicht 3.1!
+            model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
             api_key="ollama",
-            temperature=0.1  # Noch niedriger für weniger Halluzinationen!
+            temperature=0.0,  # Minimale Temperatur für maximale Konsistenz
+            top_p=0.9,
+            frequency_penalty=0.1,  # Leichte Penalty für Wiederholungen
+            presence_penalty=0.1
         )
-        logger.info(f"🤖 [{session_id}] Using Llama 3.2 via Ollama")
+        logger.info(f"🤖 [{session_id}] Using Llama 3.2 with anti-hallucination settings")
         
         # 5. Create session mit optimierten VAD-Settings
         session = AgentSession[GarageUserData](
@@ -487,11 +605,15 @@ async def entrypoint(ctx: JobContext):
                 active_repair_id=None,
                 user_language="de",
                 greeting_sent=False,
-                customer_name=None
+                customer_name=None,
+                conversation_state=ConversationState.GREETING,
+                license_plate_context=LicensePlateContext(),
+                last_search_query=None,
+                hallucination_count=0
             ),
             llm=llm,
             vad=silero.VAD.load(
-                min_silence_duration=0.4,  # Etwas schneller
+                min_silence_duration=0.4,
                 min_speech_duration=0.15
             ),
             stt=openai.STT(
@@ -503,7 +625,7 @@ async def entrypoint(ctx: JobContext):
                 voice="nova"
             ),
             min_endpointing_delay=0.3,
-            max_endpointing_delay=3.0  # Kürzer für schnellere Reaktion
+            max_endpointing_delay=3.0
         )
         
         # 6. Create agent
@@ -520,10 +642,19 @@ async def entrypoint(ctx: JobContext):
         @session.on("user_input_transcribed")
         def on_user_input(event):
             logger.info(f"[{session_id}] 🎤 User: {event.transcript}")
+            
+            # Intent-Erkennung für besseres State Management
+            intent_result = HalluccinationDetector.extract_intent_from_input(event.transcript)
+            logger.info(f"[{session_id}] 📊 Detected intent: {intent_result['intent']}")
         
         @session.on("agent_state_changed")
         def on_state_changed(event):
-            logger.info(f"[{session_id}] 🤖 Agent state changed")
+            logger.info(f"[{session_id}] 🤖 Agent state: {event}")
+        
+        @session.on("function_call")
+        def on_function_call(event):
+            """Log function calls für Debugging"""
+            logger.info(f"[{session_id}] 🔧 Function call: {event}")
         
         # 8. Initial greeting
         await asyncio.sleep(1.5)
@@ -534,6 +665,7 @@ async def entrypoint(ctx: JobContext):
             greeting_text = "Guten Tag und herzlich willkommen bei der Garage Müller! Ich bin Pia, Ihre digitale Assistentin. Wie kann ich Ihnen heute helfen?"
             
             session.userdata.greeting_sent = True
+            session.userdata.conversation_state = ConversationState.AWAITING_REQUEST
             
             # Verwende say() für die Begrüßung
             await session.say(
@@ -546,7 +678,7 @@ async def entrypoint(ctx: JobContext):
             
         except Exception as e:
             logger.error(f"[{session_id}] Greeting error: {e}")
-            # Fallback ohne tool_choice
+            # Fallback
             try:
                 await session.generate_reply(
                     instructions="Begrüße den Kunden als Pia von Garage Müller. Frage wie du helfen kannst. Auf Deutsch!"
@@ -554,7 +686,7 @@ async def entrypoint(ctx: JobContext):
             except:
                 pass
         
-        logger.info(f"✅ [{session_id}] Garage Agent ready!")
+        logger.info(f"✅ [{session_id}] Garage Agent ready with anti-hallucination measures!")
         
         # Wait for disconnect
         disconnect_event = asyncio.Event()
