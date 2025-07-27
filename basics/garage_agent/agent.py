@@ -49,10 +49,13 @@ CRITICAL RULES - FOLLOW EXACTLY:
 1. NEVER say these words: "Entschuldigung", "Sorry", "Es tut mir leid"
    - Use instead: "Leider", "Bedauerlicherweise", "Ich kann leider"
 
-2. NEVER INVENT DATA:
+2. NEVER INVENT DATA - THIS IS CRITICAL:
    - If database returns "no data found", say: "Ich habe keine Daten gefunden"
    - NEVER make up information about cars, services, or dates
    - NEVER say "Ihr Auto wurde eingeliefert" without data
+   - NEVER say "Der letzte Service war am..." without real data
+   - NEVER invent service dates like "15.02.2023" or "01.06.2024"
+   - If you don't have data, say: "Ich habe keine Daten gefunden"
 
 3. MEMORY RULE:
    - You have NO memory between messages
@@ -432,10 +435,10 @@ async def entrypoint(ctx: JobContext):
         
         # Verwende Llama 3.2 mit optimierten Settings
         llm = openai.LLM(
-            model="llama3.1:latest",
+            model="llama3.2:latest",  # WICHTIG: Zurück zu 3.2, nicht 3.1!
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
             api_key="ollama",
-            temperature=0.3  # Noch niedriger für konsistentere Antworten
+            temperature=0.1  # Noch niedriger für weniger Halluzinationen!
         )
         logger.info(f"🤖 [{session_id}] Using Llama 3.2 via Ollama")
         
