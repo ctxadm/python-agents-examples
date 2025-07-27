@@ -333,38 +333,57 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                 if result.get("results"):
                     logger.info(f"✅ Found {len(result['results'])} results")
                     
+                    # Check if results contain actual data
+                    results_list = result.get("results", [])
+                    if not results_list:
+                        return "Ich habe keine passenden Daten gefunden. Können Sie mir bitte Ihre Fahrzeug-ID (z.B. F001), Ihren vollständigen Namen oder Ihr Autokennzeichen nennen?"
+                    
                     # Format response based on actual data structure
                     response_text = "Ich habe folgende Daten gefunden:\n"
                     
-                    for r in result['results'][:1]:  # Take first result
-                        # Store vehicle data in context
-                        context.userdata.current_vehicle_data = r
-                        
-                        if 'fahrzeug_id' in r:
-                            response_text += f"\n**Fahrzeug-ID**: {r['fahrzeug_id']}\n"
-                        if 'besitzer' in r:
-                            response_text += f"**Besitzer**: {r['besitzer']}\n"
-                        if 'kennzeichen' in r:
-                            response_text += f"**Kennzeichen**: {r['kennzeichen']}\n"
-                        if 'marke' in r and 'modell' in r:
-                            response_text += f"**Fahrzeug**: {r['marke']} {r['modell']}\n"
-                        if 'baujahr' in r:
-                            response_text += f"**Baujahr**: {r['baujahr']}\n"
-                        if 'kilometerstand' in r:
-                            response_text += f"**Kilometerstand**: {r['kilometerstand']} km\n"
-                        
-                        # Show latest service if available
-                        if 'letzte_services' in r and r['letzte_services']:
-                            latest_service = r['letzte_services'][0]
-                            response_text += f"\n**Letzter Service** ({latest_service.get('datum', 'unbekannt')}):\n"
-                            response_text += f"- Typ: {latest_service.get('service_typ', 'unbekannt')}\n"
-                            response_text += f"- Kosten: CHF {latest_service.get('kosten', 0):.2f}\n"
-                        
-                        # Show current problems if any
-                        if 'aktuelle_probleme' in r and r['aktuelle_probleme']:
-                            response_text += f"\n**Aktuelle Probleme**:\n"
-                            for problem in r['aktuelle_probleme']:
-                                response_text += f"- {problem}\n"
+                    # Take first result - it might have 'payload' wrapper
+                    first_result = results_list[0]
+                    
+                    # Extract the actual data (might be in 'payload' field)
+                    if isinstance(first_result, dict) and 'payload' in first_result:
+                        vehicle_data = first_result['payload']
+                    else:
+                        vehicle_data = first_result
+                    
+                    # Store vehicle data in context
+                    context.userdata.current_vehicle_data = vehicle_data
+                    
+                    # Format the response with actual data
+                    if 'fahrzeug_id' in vehicle_data:
+                        response_text += f"\n**Fahrzeug-ID**: {vehicle_data['fahrzeug_id']}\n"
+                    if 'besitzer' in vehicle_data:
+                        response_text += f"**Besitzer**: {vehicle_data['besitzer']}\n"
+                    if 'kennzeichen' in vehicle_data:
+                        response_text += f"**Kennzeichen**: {vehicle_data['kennzeichen']}\n"
+                    if 'marke' in vehicle_data and 'modell' in vehicle_data:
+                        response_text += f"**Fahrzeug**: {vehicle_data['marke']} {vehicle_data['modell']}\n"
+                    if 'baujahr' in vehicle_data:
+                        response_text += f"**Baujahr**: {vehicle_data['baujahr']}\n"
+                    if 'kilometerstand' in vehicle_data:
+                        response_text += f"**Kilometerstand**: {vehicle_data['kilometerstand']} km\n"
+                    
+                    # Show latest service if available
+                    if 'letzte_services' in vehicle_data and vehicle_data['letzte_services']:
+                        latest_service = vehicle_data['letzte_services'][0]
+                        response_text += f"\n**Letzter Service** ({latest_service.get('datum', 'unbekannt')}):\n"
+                        response_text += f"- Typ: {latest_service.get('service_typ', 'unbekannt')}\n"
+                        response_text += f"- Kosten: CHF {latest_service.get('kosten', 0):.2f}\n"
+                    
+                    # Show current problems if any
+                    if 'aktuelle_probleme' in vehicle_data and vehicle_data['aktuelle_probleme']:
+                        response_text += f"\n**Aktuelle Probleme**:\n"
+                        for problem in vehicle_data['aktuelle_probleme']:
+                            response_text += f"- {problem}\n"
+                    
+                    # If we still only have the header, something went wrong
+                    if response_text == "Ich habe folgende Daten gefunden:\n":
+                        logger.error(f"Data structure issue. Result: {result}")
+                        return "Es gab ein Problem beim Abrufen der Daten. Bitte versuchen Sie es erneut."
                             
                     return response_text
                 else:
@@ -411,7 +430,19 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                 
                 if result.get("results") or context.userdata.current_vehicle_data:
                     # Use current vehicle data if available
-                    vehicle_data = context.userdata.current_vehicle_data or result['results'][0]
+                    if context.userdata.current_vehicle_data:
+                        vehicle_data = context.userdata.current_vehicle_data
+                    else:
+                        # Extract from results with proper structure handling
+                        results_list = result.get("results", [])
+                        if not results_list:
+                            return "Ich habe keine Kosteninformationen gefunden. Bitte nennen Sie mir Ihre Fahrzeug-ID, Ihren Namen oder Ihr Kennzeichen."
+                        
+                        first_result = results_list[0]
+                        if isinstance(first_result, dict) and 'payload' in first_result:
+                            vehicle_data = first_result['payload']
+                        else:
+                            vehicle_data = first_result
                     
                     response_text = "Hier sind die Kosteninformationen:\n"
                     
@@ -475,7 +506,19 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                 
                 if result.get("results") or context.userdata.current_vehicle_data:
                     # Use current vehicle data if available
-                    vehicle_data = context.userdata.current_vehicle_data or result['results'][0]
+                    if context.userdata.current_vehicle_data:
+                        vehicle_data = context.userdata.current_vehicle_data
+                    else:
+                        # Extract from results with proper structure handling
+                        results_list = result.get("results", [])
+                        if not results_list:
+                            return "Ich habe keine Reparaturdaten gefunden. Bitte nennen Sie mir Ihre Fahrzeug-ID, Ihren Namen oder Ihr Kennzeichen."
+                        
+                        first_result = results_list[0]
+                        if isinstance(first_result, dict) and 'payload' in first_result:
+                            vehicle_data = first_result['payload']
+                        else:
+                            vehicle_data = first_result
                     
                     response_text = "Hier ist der Status Ihres Fahrzeugs:\n"
                     
