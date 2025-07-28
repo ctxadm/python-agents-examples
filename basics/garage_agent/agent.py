@@ -843,7 +843,34 @@ async def entrypoint(ctx: JobContext):
             agent=agent
         )
         
-        # Event handlers
+        # 8. AUTOMATISCHE BEGRÜSSUNG - DIREKT NACH START!
+        logger.info(f"📢 [{session_id}] Sending initial greeting...")
+        
+        try:
+            # Set state BEFORE greeting
+            session.userdata.greeting_sent = True
+            session.userdata.conversation_state = ConversationState.AWAITING_REQUEST
+            
+            # Wait a moment for session to fully initialize
+            await asyncio.sleep(0.5)
+            
+            # SEND THE GREETING using generate_reply!
+            await session.generate_reply(
+                instructions="""Begrüße den Kunden freundlich als Pia von der Autowerkstatt Zürich. 
+                Erkläre, dass du für eine schnelle Bearbeitung eine der folgenden Informationen benötigst:
+                - Die Fahrzeug-ID (zum Beispiel F001)
+                - Den vollständigen Namen
+                - Das Autokennzeichen
+                
+                Frage dann, wie du heute helfen kannst."""
+            )
+            
+            logger.info(f"✅ [{session_id}] Initial greeting sent successfully")
+            
+        except Exception as e:
+            logger.error(f"[{session_id}] Greeting error: {e}")
+        
+        # Event handlers NACH der Begrüßung
         @session.on("user_input_transcribed")
         def on_user_input(event):
             logger.info(f"[{session_id}] 🎤 User: {event.transcript}")
@@ -860,32 +887,6 @@ async def entrypoint(ctx: JobContext):
         def on_function_call(event):
             """Log function calls für Debugging"""
             logger.info(f"[{session_id}] 🔧 Function call: {event}")
-        
-        # 8. AUTOMATISCHE BEGRÜSSUNG - CRITICAL FIX!
-        await asyncio.sleep(1.5)
-        
-        logger.info(f"📢 [{session_id}] Sending initial greeting...")
-        
-        try:
-            # Using generate_reply for LiveKit 1.0.23 compatibility
-            session.userdata.greeting_sent = True
-            session.userdata.conversation_state = ConversationState.AWAITING_REQUEST
-            
-            # SEND THE GREETING using generate_reply!
-            await session.generate_reply(
-                instructions="""Begrüße den Kunden freundlich als Pia von der Autowerkstatt Zürich. 
-                Erkläre, dass du für eine schnelle Bearbeitung eine der folgenden Informationen benötigst:
-                - Die Fahrzeug-ID (zum Beispiel F001)
-                - Den vollständigen Namen
-                - Das Autokennzeichen
-                
-                Frage dann, wie du heute helfen kannst."""
-            )
-            
-            logger.info(f"✅ [{session_id}] Initial greeting sent successfully using generate_reply")
-            
-        except Exception as e:
-            logger.error(f"[{session_id}] Greeting error: {e}")
         
         logger.info(f"✅ [{session_id}] Garage Agent ready with automatic greeting!")
         
