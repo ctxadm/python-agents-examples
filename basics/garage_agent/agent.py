@@ -47,38 +47,17 @@ class GarageUserData:
     greeting_sent: bool = False
     customer_name: Optional[str] = None
 
-# Klare deutsche Instructions für Llama 3.2
-LLAMA32_INSTRUCTIONS = """Du bist Pia von der Autowerkstatt Zürich. Du sprichst NUR Deutsch.
+# Einfachere Instructions für bessere Kompatibilität
+LLAMA32_INSTRUCTIONS = """Du bist Pia von der Autowerkstatt Zürich.
 
-WICHTIGSTE REGEL - BEGRÜSSUNG:
-Bei "Hallo" oder ähnlichen Begrüßungen antworte IMMER:
-"Guten Tag! Ich bin Pia von der Autowerkstatt Zürich. Wie kann ich Ihnen heute helfen?"
+Wenn jemand dich begrüßt oder das Gespräch beginnt, sage:
+"Guten Tag und herzlich willkommen bei der Autowerkstatt Zürich! Ich bin Pia, Ihre digitale Assistentin. Wie kann ich Ihnen heute helfen?"
 
-VERBOTENE WÖRTER (NIEMALS verwenden):
-- Entschuldigung
-- Sorry
-- Es tut mir leid
-- Leider
+Antworte IMMER auf Deutsch.
+Verwende NIE die Wörter: Entschuldigung, Sorry, Leider.
+Erfinde KEINE Daten - wenn du nichts findest, sage das ehrlich.
 
-Stattdessen sage:
-- "Ich habe keine Daten gefunden"
-- "Die Information liegt mir nicht vor"
-- "Bitte nennen Sie mir..."
-
-FUNKTIONEN:
-Nutze die Suchfunktionen NUR wenn der Kunde nach konkreten Dingen fragt:
-- Seinem Auto/Fahrzeug
-- Reparaturstatus
-- Kosten/Rechnungen
-- Servicehistorie
-
-NICHT bei Begrüßungen!
-
-WENN KEINE DATEN:
-"Ich habe keine Daten gefunden. Bitte nennen Sie mir Ihr Autokennzeichen (z.B. ZH 123456)."
-
-ERFINDE NIEMALS Informationen!
-Jede Nachricht ist NEU - du hast kein Gedächtnis."""
+Nutze Suchfunktionen nur bei konkreten Fragen nach Fahrzeugen, Reparaturen oder Kosten."""
 
 class GarageAssistant(Agent):
     """Garage Assistant für die Autowerkstatt Zürich"""
@@ -302,16 +281,14 @@ async def entrypoint(ctx: JobContext):
                 break
             await asyncio.sleep(1)
         
-        # 4. Configure LLM - KRITISCH: Verwende with_ollama()!
+        # 4. Configure LLM - KRITISCH: Korrekte Ollama Integration!
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
         
+        # WICHTIG: Keine zusätzlichen Parameter bei with_ollama!
         llm = openai.LLM.with_ollama(
             model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
-            temperature=0.0,  # Absolut 0 für Konsistenz
-            top_p=0.1,        # Sehr fokussiert
-            top_k=1,          # Nur das wahrscheinlichste Token
-            seed=42           # Reproduzierbarkeit
+            temperature=0.0  # Absolut 0 für Konsistenz
         )
         logger.info(f"🤖 [{session_id}] Using Llama 3.2 via Ollama (temp=0.0)")
         
@@ -376,36 +353,27 @@ async def entrypoint(ctx: JobContext):
         def on_agent_speech(event):
             logger.info(f"[{session_id}] 🤖 Agent: {event}")
         
-        # 10. AUTOMATISCHE BEGRÜSSUNG
+        # 10. AUTOMATISCHE BEGRÜSSUNG - Vereinfacht
         await asyncio.sleep(3.0)  # Wichtig: 3 Sekunden warten!
         
         logger.info(f"📢 [{session_id}] Sending automatic greeting...")
         
         try:
-            # Primäre Methode: generate_reply mit klaren Anweisungen
-            await session.generate_reply(
-                instructions=(
-                    "Begrüße den Kunden. Sage GENAU diesen Text: "
-                    "'Guten Tag und herzlich willkommen bei der Autowerkstatt Zürich! "
-                    "Ich bin Pia, Ihre digitale Assistentin. "
-                    "Wie kann ich Ihnen heute bei Ihrem Fahrzeug helfen?' "
-                    "NICHTS ANDERES!"
-                )
-            )
+            # Einfachste Methode ohne spezielle Parameter
+            await session.generate_reply()
             
             session.userdata.greeting_sent = True
-            logger.info(f"✅ [{session_id}] Greeting sent successfully!")
+            logger.info(f"✅ [{session_id}] Default greeting triggered!")
             
         except Exception as e:
-            logger.error(f"❌ [{session_id}] Primary greeting failed: {e}")
+            logger.error(f"❌ [{session_id}] Default greeting failed: {e}")
             
-            # Fallback: Simuliere User-Input
+            # Alternative: Mit expliziter Instruction
             try:
                 await session.generate_reply(
-                    user_input="Hallo",
-                    instructions="Antworte mit der Standard-Begrüßung der Autowerkstatt Zürich."
+                    instructions="Begrüße den Kunden als Pia von der Autowerkstatt Zürich."
                 )
-                logger.info(f"✅ [{session_id}] Fallback greeting sent")
+                logger.info(f"✅ [{session_id}] Instruction-based greeting sent")
             except Exception as e2:
                 logger.error(f"❌ [{session_id}] All greeting methods failed: {e2}")
         
