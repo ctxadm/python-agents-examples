@@ -269,17 +269,23 @@ async def entrypoint(ctx: JobContext):
         participant = await ctx.wait_for_participant()
         logger.info(f"✅ [{session_id}] Participant joined: {participant.identity}")
         
-        # 3. Wait for audio track
+        # 3. Wait for audio track mit besserer Fehlerbehandlung
         audio_track_received = False
         for i in range(10):
             for track_pub in participant.track_publications.values():
                 if track_pub.kind == rtc.TrackKind.KIND_AUDIO:
-                    logger.info(f"✅ [{session_id}] Audio track found")
-                    audio_track_received = True
+                    if track_pub.subscribed:
+                        logger.info(f"✅ [{session_id}] Audio track found and subscribed")
+                        audio_track_received = True
+                    else:
+                        logger.warning(f"⚠️ [{session_id}] Audio track found but not subscribed")
                     break
             if audio_track_received:
                 break
             await asyncio.sleep(1)
+            
+        if not audio_track_received:
+            logger.warning(f"⚠️ [{session_id}] No audio track after 10s - continuing anyway")
         
         # 4. Configure LLM - KRITISCH: Korrekte Ollama Integration!
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
@@ -292,7 +298,7 @@ async def entrypoint(ctx: JobContext):
         )
         logger.info(f"🤖 [{session_id}] Using Llama 3.2 via Ollama (temp=0.0)")
         
-        # 5. Create session
+        # 5. Create session mit Audio-Konfiguration
         session = AgentSession[GarageUserData](
             userdata=GarageUserData(
                 authenticated_user=None,
@@ -305,17 +311,24 @@ async def entrypoint(ctx: JobContext):
             ),
             llm=llm,
             vad=silero.VAD.load(
-                min_silence_duration=0.4,
-                min_speech_duration=0.15
+                min_silence_duration=0.5,
+                min_speech_duration=0.2,
+                padding_duration=0.3  # Wichtig für Audio-Buffer
             ),
             stt=openai.STT(
+                api_key=os.getenv("OPENAI_API_KEY"),  # Explizit setzen
                 model="whisper-1",
                 language="de"
             ),
             tts=openai.TTS(
+                api_key=os.getenv("OPENAI_API_KEY"),  # Explizit setzen
                 model="tts-1",
                 voice="nova"
-            )
+            ),
+            # Audio-spezifische Einstellungen
+            min_endpointing_delay=0.5,
+            max_endpointing_delay=3.0,
+            interrupt_speech_duration=0.3
         )
         
         # 6. Create agent
@@ -353,29 +366,34 @@ async def entrypoint(ctx: JobContext):
         def on_agent_speech(event):
             logger.info(f"[{session_id}] 🤖 Agent: {event}")
         
-        # 10. AUTOMATISCHE BEGRÜSSUNG - Vereinfacht
+        # 10. AUTOMATISCHE BEGRÜSSUNG - Mit Audio-Check
         await asyncio.sleep(3.0)  # Wichtig: 3 Sekunden warten!
         
         logger.info(f"📢 [{session_id}] Sending automatic greeting...")
         
+        # Prüfe ob Session bereit ist
+        if not hasattr(session, 'llm') or session.llm is None:
+            logger.error(f"❌ [{session_id}] Session not properly initialized")
+            return
+            
         try:
-            # Einfachste Methode ohne spezielle Parameter
+            # Test mit direktem Text für TTS
+            test_message = "Guten Tag und herzlich willkommen bei der Autowerkstatt Zürich! Ich bin Pia, Ihre digitale Assistentin. Wie kann ich Ihnen heute helfen?"
+            
+            # Füge die Nachricht zum Chat-Kontext hinzu
+            session._chat_ctx.append(
+                role="assistant",
+                text=test_message
+            )
+            
+            # Trigger die Antwort
             await session.generate_reply()
             
             session.userdata.greeting_sent = True
-            logger.info(f"✅ [{session_id}] Default greeting triggered!")
+            logger.info(f"✅ [{session_id}] Greeting added to context and triggered!")
             
         except Exception as e:
-            logger.error(f"❌ [{session_id}] Default greeting failed: {e}")
-            
-            # Alternative: Mit expliziter Instruction
-            try:
-                await session.generate_reply(
-                    instructions="Begrüße den Kunden als Pia von der Autowerkstatt Zürich."
-                )
-                logger.info(f"✅ [{session_id}] Instruction-based greeting sent")
-            except Exception as e2:
-                logger.error(f"❌ [{session_id}] All greeting methods failed: {e2}")
+            logger.error(f"❌ [{session_id}] Greeting failed: {e}", exc_info=True)
         
         logger.info(f"✅ [{session_id}] Garage Agent ready!")
         
