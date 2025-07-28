@@ -47,17 +47,17 @@ class GarageUserData:
     greeting_sent: bool = False
     customer_name: Optional[str] = None
 
-# Einfachere Instructions für bessere Kompatibilität
+# Klare Instructions für Llama 3.2
 LLAMA32_INSTRUCTIONS = """Du bist Pia von der Autowerkstatt Zürich.
 
-Wenn jemand dich begrüßt oder das Gespräch beginnt, sage:
+WICHTIGSTE REGEL: Bei der ersten Nachricht oder wenn du gebeten wirst zu grüßen, sage IMMER GENAU:
 "Guten Tag und herzlich willkommen bei der Autowerkstatt Zürich! Ich bin Pia, Ihre digitale Assistentin. Wie kann ich Ihnen heute helfen?"
 
-Antworte IMMER auf Deutsch.
-Verwende NIE die Wörter: Entschuldigung, Sorry, Leider.
-Erfinde KEINE Daten - wenn du nichts findest, sage das ehrlich.
-
-Nutze Suchfunktionen nur bei konkreten Fragen nach Fahrzeugen, Reparaturen oder Kosten."""
+Weitere Regeln:
+- Antworte IMMER auf Deutsch
+- Verwende NIE: Entschuldigung, Sorry, Leider
+- Erfinde KEINE Daten
+- Nutze Suchfunktionen nur bei konkreten Fragen"""
 
 class GarageAssistant(Agent):
     """Garage Assistant für die Autowerkstatt Zürich"""
@@ -294,7 +294,8 @@ async def entrypoint(ctx: JobContext):
         llm = openai.LLM.with_ollama(
             model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
-            temperature=0.0
+            temperature=0.0,  # Absolut 0 für konsistente Antworten
+            max_tokens=150   # Limitiere die Antwortlänge
         )
         logger.info(f"🤖 [{session_id}] Using Llama 3.2 via Ollama (temp=0.0)")
         
@@ -370,20 +371,35 @@ async def entrypoint(ctx: JobContext):
             )
         ]
         
-        # 11. AUTOMATISCHE BEGRÜSSUNG mit generate_reply
-        await asyncio.sleep(1.0)  # Kurze Pause für Audio-Stabilität
+        # 11. AUTOMATISCHE BEGRÜSSUNG - VERBESSERTE VERSION
+        await asyncio.sleep(1.0)
         
         if not session.userdata.greeting_sent:
             logger.info(f"📢 [{session_id}] Sending automatic greeting...")
             try:
-                # Verwende generate_reply statt say für bessere Kompatibilität
-                await session.generate_reply(
-                    instructions="Begrüße den Kunden freundlich und stelle dich als Pia von der Autowerkstatt Zürich vor. Frage wie du helfen kannst."
+                # Option 1: Direkt mit say() für garantierte Ausgabe
+                greeting_text = "Guten Tag und herzlich willkommen bei der Autowerkstatt Zürich! Ich bin Pia, Ihre digitale Assistentin. Wie kann ich Ihnen heute helfen?"
+                
+                await session.say(
+                    text=greeting_text,
+                    allow_interruptions=True,
+                    add_to_chat_ctx=True
                 )
+                
                 session.userdata.greeting_sent = True
-                logger.info(f"✅ [{session_id}] Greeting sent successfully!")
+                logger.info(f"✅ [{session_id}] Greeting sent successfully via say()!")
+                
             except Exception as e:
                 logger.error(f"❌ [{session_id}] Greeting failed: {e}", exc_info=True)
+                # Fallback: Versuche generate_reply
+                try:
+                    await session.generate_reply(
+                        user_message="",
+                        instructions="Sage GENAU diesen Text: 'Guten Tag und herzlich willkommen bei der Autowerkstatt Zürich! Ich bin Pia, Ihre digitale Assistentin. Wie kann ich Ihnen heute helfen?'"
+                    )
+                    session.userdata.greeting_sent = True
+                except:
+                    pass
         
         logger.info(f"✅ [{session_id}] Garage Agent ready!")
         
