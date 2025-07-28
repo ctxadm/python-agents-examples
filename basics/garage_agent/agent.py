@@ -602,22 +602,18 @@ async def entrypoint(ctx: JobContext):
         llm = openai.LLM.with_ollama(
             model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
-            temperature=0.0,        # Absolut deterministisch
-            top_k=5,               # Noch strikter - nur Top 5 Token
-            top_p=0.05,            # Extrem konservativ - nur 5% Wahrscheinlichkeitsmasse
-            repeat_penalty=2.0,     # Stark gegen Wiederholungen
-            num_ctx=4096,          # Context window
-            num_predict=200,       # Kürzere, fokussierte Antworten
-            seed=42,               # Deterministischer Seed
-            # Zusätzliche Ollama-spezifische Parameter
-            options={
-                "mirostat": 2,          # Perplexity-basierte Kontrolle
-                "mirostat_tau": 2.0,    # Ziel-Perplexity
-                "mirostat_eta": 0.1,    # Lernrate für Mirostat
-                "num_thread": 8,        # CPU threads
-                "num_gpu": 1,           # GPU layers
-                "penalize_newline": False,
-                "stop": ["User:", "Human:", "###", "Kunde:"],  # Stop-Sequenzen
+            temperature=0.0,
+            top_k=5,
+            top_p=0.05,
+            repeat_penalty=2.0,
+            num_ctx=4096,
+            num_predict=200,
+            seed=42,
+            # Mirostat direkt als Parameter, nicht in options
+            mirostat=2,
+            mirostat_tau=2.0,
+            mirostat_eta=0.1,
+            stop=["User:", "Human:", "###", "Kunde:"],
             }
         )
         logger.info(f"🤖 [{session_id}] Using Llama 3.2 with MAXIMUM anti-hallucination settings")
