@@ -50,7 +50,8 @@ ABSOLUT KRITISCHE MEMORY REGEL:
 
 KRITISCHE REGEL FÜR BEGRÜSSUNGEN:
 - Bei einfachen Begrüßungen wie "Hallo", "Guten Tag", "Hi" etc. antworte NUR mit einer freundlichen Begrüßung
-- Nutze NIEMALS Suchfunktionen bei einer einfachen Begrüßung
+- Nutze NIEMALS Suchfunktionen bei einer einfachen Begrüßung  
+- Sage: "Hallo! Schön, dass Sie da sind. Wie kann ich Ihnen heute bei Ihrem Fahrzeug helfen?"
 - Warte IMMER auf eine konkrete Anfrage des Kunden bevor du suchst
 
 ABSOLUT KRITISCHE REGEL - NIEMALS DATEN ERFINDEN:
@@ -84,6 +85,16 @@ WICHTIGE REGELN:
 - NIEMALS Daten erfinden wenn keine gefunden wurden
 - Du bist von der AUTOWERKSTATT ZÜRICH, nicht Garage Müller!""")
         logger.info("✅ GarageAssistant initialized")
+
+    async def on_enter(self):
+        """Wird aufgerufen wenn der Agent die Session betritt - AUTOMATISCHE BEGRÜSSUNG"""
+        logger.info("🎯 Agent on_enter called - sending greeting")
+        # Verwende self.session für die aktuelle Session
+        self.session.generate_reply(
+            instructions="""Begrüße den Kunden freundlich als Pia von der Autowerkstatt Zürich.
+            Sage genau: 'Guten Tag und willkommen bei der Autowerkstatt Zürich! Ich bin Pia, Ihre digitale Assistentin. Wie kann ich Ihnen heute helfen?'
+            NICHTS ANDERES!"""
+        )
 
     @function_tool
     async def search_customer_data(self, 
