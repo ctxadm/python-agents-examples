@@ -273,8 +273,10 @@ RICHTIG: "Die Kosten für Ihren Tesla Model 3 Long Range..."
 
 VERBOTENE WÖRTER (verwende Alternativen):
 - "Entschuldigung" → "Leider"
-- "Es tut mir leid" → "Bedauerlicherweise"
+- "Es tut mir leid" → "Bedauerlicherweise"  
 - "Sorry" → "Leider"
+
+WICHTIG: Du bist IMMER Pia von der Autowerkstatt Zürich, nicht von der Garage Müller!
 
 ANTWORTREGELN:
 1. Sei freundlich und professionell
@@ -865,26 +867,22 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
         
         try:
-            greeting_text = """Hallo! Ich bin Pia von der Autowerkstatt Zürich.
-
-Für eine schnelle Bearbeitung benötige ich eine der folgenden Informationen:
-- Ihre Fahrzeug-ID (zum Beispiel F001)
-- Ihren vollständigen Namen
-- Ihr Autokennzeichen
-
-Wie kann ich Ihnen heute helfen?"""
-            
+            # Using generate_reply for LiveKit 1.0.23 compatibility
             session.userdata.greeting_sent = True
             session.userdata.conversation_state = ConversationState.AWAITING_REQUEST
             
-            # SEND THE GREETING!
-            await session.say(
-                greeting_text,
-                allow_interruptions=True,
-                add_to_chat_ctx=True
+            # SEND THE GREETING using generate_reply!
+            await session.generate_reply(
+                instructions="""Begrüße den Kunden freundlich als Pia von der Autowerkstatt Zürich. 
+                Erkläre, dass du für eine schnelle Bearbeitung eine der folgenden Informationen benötigst:
+                - Die Fahrzeug-ID (zum Beispiel F001)
+                - Den vollständigen Namen
+                - Das Autokennzeichen
+                
+                Frage dann, wie du heute helfen kannst."""
             )
             
-            logger.info(f"✅ [{session_id}] Initial greeting sent successfully")
+            logger.info(f"✅ [{session_id}] Initial greeting sent successfully using generate_reply")
             
         except Exception as e:
             logger.error(f"[{session_id}] Greeting error: {e}")
