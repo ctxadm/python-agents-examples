@@ -1,4 +1,4 @@
-# LiveKit Agents - Garage Management Agent (FINAL CORRECTED VERSION)
+# LiveKit Agents - Garage Management Agent (FULLY FIXED FOR 1.0.23)
 # Für LiveKit Agents Version 1.0.23 mit Llama 3.2
 import logging
 import os
@@ -18,7 +18,7 @@ from livekit.agents import (
     cli,
     llm,
     RunContext,
-    function_tool  # KORREKTER Import
+    function_tool
 )
 from livekit.agents.voice import AgentSession, Agent
 from livekit.plugins import openai, silero
@@ -261,44 +261,47 @@ async def entrypoint(ctx: JobContext):
     session_closed = False
     
     try:
-        # 1. Connect to room
-        await ctx.connect()
-        logger.info(f"✅ [{session_id}] Connected to room")
+        # 1. Connect to room mit auto_subscribe
+        await ctx.connect(auto_subscribe=rtc.AutoSubscribe.AUDIO_ONLY)
+        logger.info(f"✅ [{session_id}] Connected to room with auto_subscribe")
         
         # 2. Wait for participant
         participant = await ctx.wait_for_participant()
         logger.info(f"✅ [{session_id}] Participant joined: {participant.identity}")
         
-        # 3. Wait for audio track mit besserer Fehlerbehandlung
-        audio_track_received = False
-        for i in range(10):
-            for track_pub in participant.track_publications.values():
-                if track_pub.kind == rtc.TrackKind.KIND_AUDIO:
-                    if track_pub.subscribed:
-                        logger.info(f"✅ [{session_id}] Audio track found and subscribed")
-                        audio_track_received = True
-                    else:
-                        logger.warning(f"⚠️ [{session_id}] Audio track found but not subscribed")
-                    break
-            if audio_track_received:
-                break
-            await asyncio.sleep(1)
-            
-        if not audio_track_received:
-            logger.warning(f"⚠️ [{session_id}] No audio track after 10s - continuing anyway")
+        # 3. WICHTIG: Warte auf Track Subscription
+        max_attempts = 30  # 15 Sekunden warten
+        audio_track = None
         
-        # 4. Configure LLM - KRITISCH: Korrekte Ollama Integration!
+        for attempt in range(max_attempts):
+            for pub in participant.track_publications.values():
+                if pub.kind == rtc.TrackKind.KIND_AUDIO and pub.track is not None:
+                    audio_track = pub.track
+                    logger.info(f"✅ [{session_id}] Audio track subscribed after {attempt*0.5}s")
+                    break
+            
+            if audio_track:
+                break
+                
+            await asyncio.sleep(0.5)
+        
+        if not audio_track:
+            logger.warning(f"⚠️ [{session_id}] No audio track after 15s, continuing anyway")
+        
+        # 4. Configure LLM
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
         
-        # WICHTIG: Keine zusätzlichen Parameter bei with_ollama!
         llm = openai.LLM.with_ollama(
             model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
-            temperature=0.0  # Absolut 0 für Konsistenz
+            temperature=0.0
         )
         logger.info(f"🤖 [{session_id}] Using Llama 3.2 via Ollama (temp=0.0)")
         
-        # 5. Create session mit Audio-Konfiguration
+        # 5. Create agent FIRST
+        agent = GarageAssistant()
+        
+        # 6. Create session with proper configuration
         session = AgentSession[GarageUserData](
             userdata=GarageUserData(
                 authenticated_user=None,
@@ -313,32 +316,42 @@ async def entrypoint(ctx: JobContext):
             vad=silero.VAD.load(
                 min_silence_duration=0.5,
                 min_speech_duration=0.2,
-                padding_duration=0.3  # Wichtig für Audio-Buffer
+                padding_duration=0.3
             ),
             stt=openai.STT(
-                api_key=os.getenv("OPENAI_API_KEY"),  # Explizit setzen
+                api_key=os.getenv("OPENAI_API_KEY"),
                 model="whisper-1",
                 language="de"
             ),
             tts=openai.TTS(
-                api_key=os.getenv("OPENAI_API_KEY"),  # Explizit setzen
+                api_key=os.getenv("OPENAI_API_KEY"),
                 model="tts-1",
                 voice="nova"
             ),
             # Audio-spezifische Einstellungen
             min_endpointing_delay=0.5,
             max_endpointing_delay=3.0,
-            interrupt_speech_duration=0.3
+            min_interruption_duration=0.3,
+            allow_interruptions=True
         )
         
-        # 6. Create agent
-        agent = GarageAssistant()
+        # 7. Event handlers VOR dem Start
+        @session.on("user_speech_committed")
+        def on_user_speech(event):
+            logger.info(f"[{session_id}] 🎤 User: {event}")
         
-        # 7. Start session
+        @session.on("agent_speech_committed")
+        def on_agent_speech(event):
+            logger.info(f"[{session_id}] 🤖 Agent: {event}")
+        
+        # 8. Start session
         logger.info(f"🏁 [{session_id}] Starting session...")
         await session.start(room=ctx.room, agent=agent)
         
-        # 8. WICHTIG: Tools nach dem Start hinzufügen
+        # 9. WICHTIG: Warte bis Session vollständig initialisiert ist
+        await asyncio.sleep(2.0)
+        
+        # 10. Tools hinzufügen
         session.llm.function_tools = [
             llm.FunctionCallInfo(
                 name="search_customer_data",
@@ -357,43 +370,20 @@ async def entrypoint(ctx: JobContext):
             )
         ]
         
-        # 9. Event handlers
-        @session.on("user_speech_committed")
-        def on_user_speech(event):
-            logger.info(f"[{session_id}] 🎤 User: {event}")
+        # 11. AUTOMATISCHE BEGRÜSSUNG mit generate_reply
+        await asyncio.sleep(1.0)  # Kurze Pause für Audio-Stabilität
         
-        @session.on("agent_speech_committed")
-        def on_agent_speech(event):
-            logger.info(f"[{session_id}] 🤖 Agent: {event}")
-        
-        # 10. AUTOMATISCHE BEGRÜSSUNG - Mit Audio-Check
-        await asyncio.sleep(3.0)  # Wichtig: 3 Sekunden warten!
-        
-        logger.info(f"📢 [{session_id}] Sending automatic greeting...")
-        
-        # Prüfe ob Session bereit ist
-        if not hasattr(session, 'llm') or session.llm is None:
-            logger.error(f"❌ [{session_id}] Session not properly initialized")
-            return
-            
-        try:
-            # Test mit direktem Text für TTS
-            test_message = "Guten Tag und herzlich willkommen bei der Autowerkstatt Zürich! Ich bin Pia, Ihre digitale Assistentin. Wie kann ich Ihnen heute helfen?"
-            
-            # Füge die Nachricht zum Chat-Kontext hinzu
-            session._chat_ctx.append(
-                role="assistant",
-                text=test_message
-            )
-            
-            # Trigger die Antwort
-            await session.generate_reply()
-            
-            session.userdata.greeting_sent = True
-            logger.info(f"✅ [{session_id}] Greeting added to context and triggered!")
-            
-        except Exception as e:
-            logger.error(f"❌ [{session_id}] Greeting failed: {e}", exc_info=True)
+        if not session.userdata.greeting_sent:
+            logger.info(f"📢 [{session_id}] Sending automatic greeting...")
+            try:
+                # Verwende generate_reply statt say für bessere Kompatibilität
+                await session.generate_reply(
+                    instructions="Begrüße den Kunden freundlich und stelle dich als Pia von der Autowerkstatt Zürich vor. Frage wie du helfen kannst."
+                )
+                session.userdata.greeting_sent = True
+                logger.info(f"✅ [{session_id}] Greeting sent successfully!")
+            except Exception as e:
+                logger.error(f"❌ [{session_id}] Greeting failed: {e}", exc_info=True)
         
         logger.info(f"✅ [{session_id}] Garage Agent ready!")
         
