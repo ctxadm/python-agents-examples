@@ -310,17 +310,34 @@ ANTWORTE NUR AUF DEUTSCH.""")
                     qdrant_data = qdrant_response.json()
                     points = qdrant_data.get("result", {}).get("points", [])
                     
-                    # Suche nach dem Query
+                    # VERBESSERTE SUCHE MIT NORMALISIERUNG
                     search_lower = query.lower().strip()
+                    search_normalized = search_lower.replace(" ", "")
                     vehicle_data = None
                     
+                    # Debug: Log first few points
+                    logger.info(f"📊 Total points in Qdrant: {len(points)}")
+                    for i, point in enumerate(points[:5]):  # Erste 5 Einträge
+                        payload = point.get("payload", {})
+                        logger.info(f"Point {i}: ID={payload.get('fahrzeug_id')}, Owner={payload.get('besitzer')}, Plate={payload.get('kennzeichen')}")
+                    
+                    # Erweiterte Suche mit Normalisierung
                     for point in points:
                         payload = point.get("payload", {})
-                        # Check verschiedene Felder
-                        if (search_lower in str(payload.get("fahrzeug_id", "")).lower() or
-                            search_lower in str(payload.get("besitzer", "")).lower() or
-                            search_lower in str(payload.get("kennzeichen", "")).lower().replace(" ", "")):
+                        
+                        # Normalisiere alle Vergleichswerte
+                        fahrzeug_id = str(payload.get("fahrzeug_id", "")).lower()
+                        besitzer = str(payload.get("besitzer", "")).lower()
+                        kennzeichen = str(payload.get("kennzeichen", "")).lower().replace(" ", "")
+                        
+                        # Exakte und Teilstring-Suche
+                        if (search_lower == fahrzeug_id or
+                            search_normalized == fahrzeug_id or
+                            search_lower in besitzer or
+                            search_normalized == kennzeichen or
+                            search_lower.replace(" ", "") == kennzeichen):
                             vehicle_data = payload
+                            logger.info(f"✅ MATCH FOUND: {payload.get('fahrzeug_id')} for query: {query}")
                             break
                     
                     if vehicle_data:
@@ -609,12 +626,11 @@ async def entrypoint(ctx: JobContext):
             num_ctx=4096,
             num_predict=200,
             seed=42,
-            # Mirostat direkt als Parameter, nicht in options
+            # Mirostat direkt als Parameter
             mirostat=2,
             mirostat_tau=2.0,
             mirostat_eta=0.1,
-            stop=["User:", "Human:", "###", "Kunde:"],
-            }
+            stop=["User:", "Human:", "###", "Kunde:"]
         )
         logger.info(f"🤖 [{session_id}] Using Llama 3.2 with MAXIMUM anti-hallucination settings")
         
@@ -649,13 +665,7 @@ async def entrypoint(ctx: JobContext):
             min_endpointing_delay=0.3,
             max_endpointing_delay=3.0,
             min_interruption_duration=0.5,  # Prevent accidental interruptions
-            disable_early_inference=True,    # Wait for complete user input
-            # Zusätzliche Session-Parameter für bessere Kontrolle
-            conn_options={
-                "max_retry": 3,
-                "retry_interval": 2.0,
-                "timeout": 10.0
-            }
+            disable_early_inference=True    # Wait for complete user input
         )
         
         # 6. Create agent
