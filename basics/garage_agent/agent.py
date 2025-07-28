@@ -1,4 +1,5 @@
 # LiveKit Agents - Garage Management Agent (Llama 3.2 Optimized)
+# Für LiveKit Agents Version 1.0.23
 import logging
 import os
 import httpx
@@ -12,16 +13,12 @@ from dotenv import load_dotenv
 
 from livekit import agents, rtc
 from livekit.agents import (
-    AutoSubscribe,
-    JobContext,
-    JobRequest,
+    JobContext, 
     WorkerOptions,
     cli,
-    llm,
-    stt,
-    tts,
-    voice_assistant
+    llm
 )
+from livekit.agents.voice import AgentSession, Agent
 from livekit.plugins import openai as lkopenai
 from livekit.plugins import silero
 
@@ -49,6 +46,7 @@ class GarageUserData:
     repair_history: List[Dict] = None
     current_repair: Optional[Dict] = None
     invoices: List[Dict] = None
+    greeting_sent: bool = False
     
     def __post_init__(self):
         if self.repair_history is None:
@@ -110,7 +108,36 @@ MOCK_DATABASE = {
     }
 }
 
-def search_customer_data(query: str) -> str:
+# Optimized instructions for Llama 3.2
+LLAMA32_OPTIMIZED_INSTRUCTIONS = """Du bist Pia, der digitale Assistent der Autowerkstatt Zürich.
+
+KRITISCHE REGELN FÜR LLAMA 3.2:
+1. Antworte IMMER auf Deutsch
+2. Bei Begrüßungen wie "Hallo" sage NUR: "Hallo! Ich bin Pia von der Autowerkstatt Zürich. Wie kann ich Ihnen heute helfen?"
+3. Verwende NIEMALS die Wörter: Entschuldigung, Sorry, Leider
+4. Verwende KEINE Beispiel-Kennzeichen wie "LU 234567"
+
+FÜR BEGRÜSSUNGEN:
+User: "Hallo"
+Du: "Hallo! Ich bin Pia von der Autowerkstatt Zürich. Wie kann ich Ihnen heute helfen?"
+
+FÜR SUCHEN:
+- Nutze die Funktionen NUR bei konkreten Anfragen
+- NICHT bei Begrüßungen
+
+WENN KEINE DATEN GEFUNDEN:
+Sage klar: "Ich habe keine Daten gefunden. Bitte nennen Sie mir Ihren Namen oder Ihr Kennzeichen."
+
+NIEMALS DATEN ERFINDEN!"""
+
+class GarageAgent(Agent):
+    """Garage Assistant für die Autowerkstatt Zürich"""
+    
+    def __init__(self) -> None:
+        super().__init__(instructions=LLAMA32_OPTIMIZED_INSTRUCTIONS)
+        logger.info("✅ GarageAgent initialized for Llama 3.2")
+
+async def search_customer_data(query: str) -> str:
     """Search for customer data in the garage database."""
     logger.info(f"🔍 Searching customer data for: {query}")
     
@@ -146,7 +173,7 @@ def search_customer_data(query: str) -> str:
     
     return "Keine Kundendaten gefunden. Bitte überprüfen Sie die Eingabe oder geben Sie weitere Informationen an."
 
-def search_repair_status(query: str) -> str:
+async def search_repair_status(query: str) -> str:
     """Search for repair status and orders."""
     logger.info(f"🔧 Searching repair status for: {query}")
     
@@ -177,7 +204,7 @@ def search_repair_status(query: str) -> str:
     
     return "Keine Reparaturaufträge gefunden. Bitte geben Sie einen Kundennamen oder eine Auftragsnummer an."
 
-def search_invoice_data(query: str) -> str:
+async def search_invoice_data(query: str) -> str:
     """Search for invoice information."""
     logger.info(f"📄 Searching invoice data for: {query}")
     
@@ -198,60 +225,18 @@ def search_invoice_data(query: str) -> str:
     
     return "Keine Rechnungsdaten gefunden. Bitte geben Sie einen Kundennamen an."
 
-# Optimized instructions for Llama 3.2
-LLAMA32_OPTIMIZED_INSTRUCTIONS = """Du bist Pia, der digitale Assistent der Autowerkstatt Zürich.
-
-KRITISCHE REGELN FÜR LLAMA 3.2:
-1. Antworte IMMER auf Deutsch
-2. Bei Begrüßungen wie "Hallo" sage NUR: "Hallo! Ich bin Pia von der Autowerkstatt Zürich. Wie kann ich Ihnen heute helfen?"
-3. Verwende NIEMALS die Wörter: Entschuldigung, Sorry, Leider
-4. Verwende KEINE Beispiel-Kennzeichen wie "LU 234567"
-
-FÜR BEGRÜSSUNGEN:
-User: "Hallo"
-Du: "Hallo! Ich bin Pia von der Autowerkstatt Zürich. Wie kann ich Ihnen heute helfen?"
-
-FÜR SUCHEN:
-- Nutze die Funktionen NUR bei konkreten Anfragen
-- NICHT bei Begrüßungen
-
-WENN KEINE DATEN GEFUNDEN:
-Sage klar: "Ich habe keine Daten gefunden. Bitte nennen Sie mir Ihren Namen oder Ihr Kennzeichen."
-
-NIEMALS DATEN ERFINDEN!"""
-
-class GarageVoiceAssistant(voice_assistant.VoiceAssistant):
-    """Voice Assistant für die Autowerkstatt Zürich"""
-    
-    def __init__(self, vad, stt, llm, tts):
-        super().__init__(
-            vad=vad,
-            stt=stt, 
-            llm=llm,
-            tts=tts,
-            chat_ctx=llm.ChatContext().append(
-                role="system",
-                text=LLAMA32_OPTIMIZED_INSTRUCTIONS
-            )
-        )
-        logger.info("✅ GarageVoiceAssistant initialized for Llama 3.2")
-
-async def request_handler(job_request: JobRequest) -> None:
+async def request_handler(ctx: JobContext) -> None:
     """Handle incoming job requests"""
-    logger.info(f"🎯 Accepting job: {job_request}")
-    await job_request.accept(
-        name="garage-agent",
-        identity="garage_assistant",
-        metadata={"agent_type": "garage_support"}
-    )
+    logger.info(f"🎯 Accepting job: {ctx}")
+    await ctx.accept()
 
-async def agent_entry(ctx: JobContext):
+async def entrypoint(ctx: JobContext):
     """Main entry point for the agent"""
     logger.info(f"🚀 Starting Garage Agent for room: {ctx.room.name}")
     
     try:
         # 1. Connect to room
-        await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+        await ctx.connect()
         logger.info(f"✅ Connected to room: {ctx.room.name}")
         
         # 2. Wait for participant
@@ -259,74 +244,52 @@ async def agent_entry(ctx: JobContext):
         logger.info(f"👤 Participant joined: {participant.identity}")
         
         # 3. Configure Ollama with Llama 3.2 - OPTIMIZED SETTINGS
-        llm_config = {
-            "model": "llama3.2:latest",
-            "base_url": "http://172.16.0.146:11434/v1",
-            "api_key": "ollama",
-            "temperature": 0.0,  # CRITICAL: Set to 0.0 for consistency
-            "top_p": 0.5,        # Reduced for more focused output
-            "top_k": 10,         # Reduced for more conservative choices
-            "repeat_penalty": 1.1 # Prevent repetition
-        }
+        llm_config = lkopenai.LLM.with_ollama(
+            model="llama3.2:latest",
+            base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
+            temperature=0.0,  # CRITICAL: Set to 0.0 for consistency
+            top_p=0.5,        # Reduced for more focused output
+            top_k=10,         # Reduced for more conservative choices
+            repetition_penalty=1.1  # Prevent repetition
+        )
         
-        # 4. Configure tools for Llama 3.2
+        logger.info(f"🤖 Using Llama 3.2 with optimized settings (temp=0.0)")
+        
+        # 4. Configure tools
         tools = [
             llm.FunctionCallInfo(
                 name="search_customer_data",
                 description="Sucht nach Kundendaten. Nutze diese Funktion NUR bei konkreten Anfragen, NICHT bei Begrüßungen.",
-                callable=search_customer_data,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string", 
-                            "description": "Name, Telefonnummer oder Autonummer"
-                        }
-                    },
-                    "required": ["query"]
-                }
+                callable=search_customer_data
             ),
             llm.FunctionCallInfo(
                 name="search_invoice_data",
                 description="Sucht nach Rechnungsinformationen.",
-                callable=search_invoice_data,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Kundenname"
-                        }
-                    },
-                    "required": ["query"]
-                }
+                callable=search_invoice_data
             ),
             llm.FunctionCallInfo(
                 name="search_repair_status",
                 description="Sucht nach Reparaturstatus.",
-                callable=search_repair_status,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Kundenname oder Auftragsnummer"
-                        }
-                    },
-                    "required": ["query"]
-                }
+                callable=search_repair_status
             )
         ]
         
-        # 5. Create Voice Assistant with optimized Llama 3.2 config
-        assistant = GarageVoiceAssistant(
+        # 5. Create Agent
+        agent = GarageAgent()
+        
+        # 6. Create Session with all components
+        session = AgentSession(
+            userdata=GarageUserData(
+                name="",
+                greeting_sent=False
+            ),
+            llm=llm_config,
             vad=silero.VAD.load(),
             stt=lkopenai.STT(
                 api_key=API_KEY,
                 model="whisper-1",
                 language="de"
             ),
-            llm=lkopenai.LLM(**llm_config),
             tts=lkopenai.TTS(
                 api_key=API_KEY,
                 model="tts-1",
@@ -334,63 +297,66 @@ async def agent_entry(ctx: JobContext):
             )
         )
         
-        # Add tools to the assistant
-        assistant.llm._fnc_ctx = llm.FunctionContext()
-        for tool in tools:
-            assistant.llm._fnc_ctx.add_function(tool)
+        # 7. Start session
+        await session.start(agent=agent, room=ctx.room)
+        session.llm.function_tools = tools  # Add tools after session start
         
-        # 6. Start the assistant
-        assistant.start(ctx.room)
+        logger.info(f"✅ Session started successfully")
         
-        # Session ID for logging
-        session_id = f"{ctx.room.name}_{participant.sid}"
+        # 8. CRITICAL: Send automatic greeting
+        await asyncio.sleep(2.0)  # Wait for session to be fully ready
         
-        # 7. CRITICAL: Send initial greeting with say()
-        await asyncio.sleep(2.5)  # Increased delay for stability
-        
-        logger.info(f"📢 [{session_id}] Sending automatic greeting...")
+        logger.info(f"📢 Sending automatic greeting...")
         
         try:
-            # Use say() for reliable greeting
+            # Use session.say() for direct TTS greeting
             greeting_message = (
                 "Guten Tag und herzlich willkommen bei der Autowerkstatt Zürich! "
                 "Ich bin Pia, Ihre digitale Assistentin. "
                 "Wie kann ich Ihnen heute bei Ihrem Fahrzeug helfen?"
             )
             
-            await assistant.say(greeting_message, allow_interruptions=True)
-            logger.info(f"✅ [{session_id}] Greeting sent successfully!")
+            await session.say(
+                greeting_message,
+                allow_interruptions=True,
+                add_to_chat_ctx=True
+            )
+            
+            session.userdata.greeting_sent = True
+            logger.info(f"✅ Greeting sent successfully via session.say()")
             
         except Exception as e:
-            logger.error(f"❌ [{session_id}] Greeting failed: {e}")
-            # Fallback: Try with shorter message
+            logger.error(f"❌ session.say() failed: {e}")
+            
+            # Fallback with generate_reply
             try:
-                await assistant.say("Hallo! Ich bin Pia von der Autowerkstatt Zürich.", allow_interruptions=True)
-                logger.info(f"✅ [{session_id}] Fallback greeting sent")
+                await session.generate_reply(
+                    instructions="Begrüße den Kunden als Pia von der Autowerkstatt Zürich. Sage genau: 'Guten Tag und herzlich willkommen bei der Autowerkstatt Zürich! Ich bin Pia, Ihre digitale Assistentin. Wie kann ich Ihnen heute helfen?'"
+                )
+                logger.info(f"✅ Fallback greeting via generate_reply sent")
             except Exception as e2:
-                logger.error(f"❌ [{session_id}] Both greetings failed: {e2}")
+                logger.error(f"❌ Both greeting methods failed: {e2}")
         
-        # 8. Monitor events
-        @assistant.on("user_speech_committed")
-        def on_user_speech(text: str):
-            logger.info(f"[{session_id}] 🎤 User: {text}")
+        # 9. Event handlers
+        @session.on("user_speech_committed")
+        def on_user_speech(event):
+            logger.info(f"🎤 User: {event}")
         
-        @assistant.on("agent_speech_committed")
-        def on_agent_speech(text: str):
-            logger.info(f"[{session_id}] 🤖 Agent: {text}")
+        @session.on("agent_speech_committed") 
+        def on_agent_speech(event):
+            logger.info(f"🤖 Agent: {event}")
             # Check for hallucinations
-            if "LU 234567" in text or "Entschuldigung" in text:
-                logger.warning(f"⚠️ [{session_id}] HALLUCINATION DETECTED: {text}")
+            if isinstance(event, str) and ("LU 234567" in event or "Entschuldigung" in event):
+                logger.warning(f"⚠️ HALLUCINATION DETECTED: {event}")
         
-        @assistant.on("function_calls_finished")
-        def on_function_calls(calls):
-            logger.info(f"[{session_id}] 🛠️ Function calls: {[c.name for c in calls]}")
+        @session.on("function_calls_finished")
+        def on_function_calls(event):
+            logger.info(f"🛠️ Function calls finished: {event}")
         
-        logger.info(f"✅ [{session_id}] Garage Agent ready with Llama 3.2 optimizations!")
+        logger.info(f"✅ Garage Agent ready with Llama 3.2 optimizations!")
         
-        # Keep the agent running
-        while ctx.room.connection_state == "connected":
-            await asyncio.sleep(1)
+        # Keep the session running
+        # The session will automatically handle the conversation
         
     except Exception as e:
         logger.error(f"❌ Fatal error in agent: {e}", exc_info=True)
@@ -399,13 +365,13 @@ async def agent_entry(ctx: JobContext):
 def run_agent():
     """Run the agent with proper worker options"""
     worker_options = WorkerOptions(
-        entrypoint_fnc=agent_entry,
+        entrypoint_fnc=entrypoint,
         request_fnc=request_handler,
         port=8080,
         host="0.0.0.0"
     )
     
-    logger.info("🏭 Starting Garage Agent Worker (Llama 3.2 Optimized)...")
+    logger.info("🏭 Starting Garage Agent Worker (Llama 3.2 Optimized for v1.0.23)...")
     cli.run_app(worker_options)
 
 if __name__ == "__main__":
