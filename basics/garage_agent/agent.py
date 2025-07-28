@@ -28,6 +28,9 @@ AGENT_NAME = os.getenv("AGENT_NAME", "agent-garage-1")
 class ConversationState(Enum):
     """State Machine für Konversationsphasen"""
     GREETING = "greeting"
+    COLLECTING_MODEL = "collecting_model"
+    COLLECTING_ID = "collecting_id"
+    CONFIRMING_DATA = "confirming_data"
     AWAITING_REQUEST = "awaiting_request"
     COLLECTING_IDENTIFIER = "collecting_identifier"
     SEARCHING = "searching"
@@ -37,6 +40,7 @@ class ConversationState(Enum):
 class CustomerContext:
     """Kontext für Kunden-Identifikation"""
     fahrzeug_id: Optional[str] = None  # z.B. F001, F002
+    vehicle_model: Optional[str] = None  # z.B. BMW X3, VW Golf
     canton_letters: Optional[str] = None
     numbers: Optional[str] = None
     complete_plate: Optional[str] = None
@@ -46,6 +50,10 @@ class CustomerContext:
     def has_identifier(self) -> bool:
         """Prüft ob eine Identifikation vorhanden ist"""
         return bool(self.fahrzeug_id or self.complete_plate or self.customer_name)
+    
+    def has_complete_info(self) -> bool:
+        """Prüft ob Fahrzeugmodell und ID vorhanden sind"""
+        return bool(self.vehicle_model and self.fahrzeug_id)
     
     def get_search_query(self) -> Optional[str]:
         """Gibt die beste Suchanfrage zurück"""
@@ -69,6 +77,7 @@ class CustomerContext:
     def reset(self):
         """Reset des Kontexts"""
         self.fahrzeug_id = None
+        self.vehicle_model = None
         self.canton_letters = None
         self.numbers = None
         self.complete_plate = None
@@ -96,12 +105,23 @@ class IdentifierExtractor:
                      "JU", "LU", "NE", "NW", "OW", "SG", "SH", "SO", "SZ", "TG", 
                      "TI", "UR", "VD", "VS", "ZG", "ZH"]
     
+    CAR_BRANDS = ["BMW", "Mercedes", "Mercedes-Benz", "Audi", "VW", "Volkswagen", 
+                  "Tesla", "Opel", "Ford", "Toyota", "Honda", "Mazda", "Nissan",
+                  "Renault", "Peugeot", "Citroen", "Fiat", "Alfa Romeo", "Porsche",
+                  "Skoda", "Seat", "Hyundai", "Kia", "Suzuki", "Mitsubishi"]
+    
     @classmethod
     def extract_intent_from_input(cls, user_input: str) -> Dict[str, Any]:
         """Extrahiert Intent und Daten aus User-Input"""
         input_lower = user_input.lower().strip()
         
-        # Check for specific service queries FIRST
+        # Check for vehicle model FIRST (for structured collection)
+        for brand in cls.CAR_BRANDS:
+            if brand.lower() in input_lower:
+                # Try to extract the full model
+                return {"intent": "vehicle_model", "data": user_input}
+        
+        # Check for specific service queries
         if any(word in input_lower for word in ["letzte service", "letzten service", "service historie", "servicehistorie"]):
             return {"intent": "service_history", "data": user_input}
         
@@ -167,7 +187,21 @@ class GarageAssistant(Agent):
     
     def __init__(self) -> None:
         # MAXIMALE Anti-Halluzinations-Instructions
-        super().__init__(instructions="""Du bist Pia von der Garage Müller. KRITISCHE REGELN:
+        super().__init__(instructions="""Du bist Pia von der Autowerkstatt Zürich. KRITISCHE REGELN:
+
+BEGRÜSSUNGS- UND IDENTIFIKATIONSPROZESS:
+1. BEIM SESSION START: Begrüße mit "Hallo, ich bin Pia von der Autowerkstatt Zürich"
+2. FRAGE GEZIELT nach:
+   - Fahrzeugmodell (Marke + Modell, z.B. "BMW X3")
+   - Fahrzeug-ID (z.B. "F001")
+3. WARTE auf beide Informationen bevor du suchst
+4. BESTÄTIGE die Eingaben: "Sie fahren einen [Marke Modell] mit der ID [ID], korrekt?"
+5. ERST DANN starte die Suche
+
+GESPRÄCHSFÜHRUNG:
+- Führe den Kunden Schritt für Schritt
+- Frage gezielt nach fehlenden Informationen
+- Vermeide Überforderung mit zu vielen Optionen
 
 🚨 ABSOLUTE PRIORITÄT - NIEMALS VERLETZEN:
 1. WENN das Tool "Ich habe folgende Daten gefunden" zurückgibt, MUSST du diese Daten BESTÄTIGEN
@@ -289,6 +323,11 @@ ANTWORTE NUR AUF DEUTSCH.""")
         elif intent == "license_plate_complete":
             context.userdata.customer_context.complete_plate = data
             query = data
+        elif intent == "vehicle_model":
+            context.userdata.customer_context.vehicle_model = data
+            # Don't search yet if we're collecting structured data
+            if context.userdata.conversation_state == ConversationState.COLLECTING_MODEL:
+                return "Fahrzeugmodell gespeichert. Bitte geben Sie nun Ihre Fahrzeug-ID an."
         
         # Store search query
         context.userdata.last_search_query = query
@@ -686,6 +725,14 @@ async def entrypoint(ctx: JobContext):
             # Intent detection
             intent_result = IdentifierExtractor.extract_intent_from_input(event.transcript)
             logger.info(f"[{session_id}] 📊 Detected intent: {intent_result['intent']}")
+            
+            # Update conversation state based on intent
+            if session.userdata.conversation_state == ConversationState.COLLECTING_MODEL and intent_result['intent'] == 'vehicle_model':
+                session.userdata.customer_context.vehicle_model = intent_result['data']
+                session.userdata.conversation_state = ConversationState.COLLECTING_ID
+            elif session.userdata.conversation_state == ConversationState.COLLECTING_ID and intent_result['intent'] == 'fahrzeug_id':
+                session.userdata.customer_context.fahrzeug_id = intent_result['data']
+                session.userdata.conversation_state = ConversationState.CONFIRMING_DATA
         
         @session.on("agent_state_changed")
         def on_state_changed(event):
@@ -732,18 +779,17 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
         
         try:
-            greeting_text = """Guten Tag und herzlich willkommen bei der Garage Müller! 
-Ich bin Pia, Ihre digitale Assistentin. 
+            greeting_text = """Hallo, ich bin Pia von der Autowerkstatt Zürich!
 
-Für eine schnelle Bearbeitung benötige ich eine der folgenden Informationen:
-- Ihre Fahrzeug-ID (z.B. F001)
-- Ihren vollständigen Namen
-- Ihr Autokennzeichen
+Damit ich Ihnen optimal helfen kann, benötige ich zwei Informationen von Ihnen:
 
-Wie kann ich Ihnen heute helfen?"""
+1. Welches Fahrzeugmodell fahren Sie? (z.B. BMW X3, VW Golf)
+2. Wie lautet Ihre Fahrzeug-ID? (z.B. F001)
+
+Beginnen wir mit Ihrem Fahrzeugmodell - welches Auto fahren Sie?"""
             
             session.userdata.greeting_sent = True
-            session.userdata.conversation_state = ConversationState.AWAITING_REQUEST
+            session.userdata.conversation_state = ConversationState.COLLECTING_MODEL
             
             await session.say(
                 greeting_text,
