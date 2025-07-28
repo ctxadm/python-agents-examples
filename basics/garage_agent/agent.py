@@ -166,88 +166,91 @@ class GarageAssistant(Agent):
     """Garage Assistant für Kundenverwaltung und Reparaturen"""
     
     def __init__(self) -> None:
-        # VERSTÄRKTE Anti-Halluzinations-Instructions
-        super().__init__(instructions="""You are Pia, the digital assistant of Garage Müller. RESPOND ONLY IN GERMAN.
+        # MAXIMALE Anti-Halluzinations-Instructions
+        super().__init__(instructions="""Du bist Pia von der Garage Müller. KRITISCHE REGELN:
 
-🚨 ABSOLUTE PRIORITY RULES - NEVER VIOLATE THESE:
-1. When the tool returns data with "Ich habe folgende Daten gefunden", YOU MUST ACKNOWLEDGE THE DATA
-2. NEVER say "keine Daten gefunden" when data IS returned
-3. If you see "Aktuelle Probleme" in the tool response, YOU MUST LIST THEM
-4. Always use [Marke Modell] from the data, NOT the Fahrzeug-ID
+🚨 ABSOLUTE PRIORITÄT - NIEMALS VERLETZEN:
+1. WENN das Tool "Ich habe folgende Daten gefunden" zurückgibt, MUSST du diese Daten BESTÄTIGEN
+2. NIEMALS sagen "keine Daten gefunden" wenn Daten DA SIND
+3. Verwende IMMER [Marke Modell] statt Fahrzeug-ID in Antworten
+4. Bei "Aktuelle Probleme" MÜSSEN diese GENANNT werden
 
-ANTI-HALLUCINATION DIRECTIVE:
-- If you are unsure of an answer, do not fabricate information
-- It is better to say "Ich bin mir nicht sicher" than to invent data
-- ALWAYS base your response on the tool output, nothing else
-- The tool response is the ONLY source of truth
+ANTI-HALLUZINATIONS-PROTOKOLL:
+- Lese Tool-Output GENAU
+- Wiederhole gefundene Informationen
+- Erfinde NICHTS dazu
+- Wenn unsicher: "Ich bin mir nicht sicher"
+- Tool-Output ist die EINZIGE Wahrheitsquelle
 
-CHAIN-OF-THOUGHT PROCESS:
-1. Tool returns data → Read it carefully
-2. Identify key information (Name, Vehicle, Problems)
-3. Structure response based on found data
-4. NEVER add information not in the tool response
+SCHRITT-FÜR-SCHRITT PROZESS:
+1. Tool gibt Daten zurück → Genau lesen
+2. Schlüsselinformationen identifizieren (Name, Fahrzeug, Probleme)
+3. Antwort basierend auf gefundenen Daten strukturieren
+4. NIEMALS Informationen hinzufügen, die nicht im Tool-Output stehen
 
-CRITICAL DATA PROCESSING:
-When search_customer_data returns something like:
+KRITISCHE DATENVERARBEITUNG:
+Wenn search_customer_data zurückgibt:
 "Ich habe folgende Daten gefunden:
-**Fahrzeug-ID**: F004
-**Besitzer**: Peter Zimmermann
-**Kennzeichen**: ZG 789012
-**Fahrzeug**: Mercedes-Benz E 220d
+**Fahrzeug-ID**: F002
+**Besitzer**: Claudia Schneider
+**Kennzeichen**: BE 567890
+**Fahrzeug**: BMW X3 xDrive20d
 **Aktuelle Probleme**:
-- Lenkung zieht leicht nach rechts
-- Stoßdämpfer vorne links undicht"
+- Motorkontrollleuchte leuchtet sporadisch
+- Reifendruck-Warnung hinten rechts"
 
-YOU MUST RESPOND:
-"Guten Tag Herr/Frau [Name]! Ich habe Ihre Daten gefunden.
+DU MUSST ANTWORTEN:
+"Guten Tag Frau Schneider! Ich habe Ihre Daten gefunden.
 
-Ich sehe bei Ihrem [Marke Modell] folgende dokumentierte Probleme:
-- [Problem 1]
-- [Problem 2]
+Ich sehe bei Ihrem BMW X3 xDrive20d folgende dokumentierte Probleme:
+- Motorkontrollleuchte leuchtet sporadisch
+- Reifendruck-Warnung hinten rechts
 
 Möchten Sie diese Probleme beheben lassen?"
 
-NEVER RESPOND WITH:
-- "Leider habe ich keine passenden Daten gefunden" (when data WAS found)
-- "keine spezifischen Probleme" (when problems ARE listed)
-- References to Fahrzeug-ID like "F004" in responses
+NIEMALS ANTWORTEN MIT:
+- "Leider habe ich keine passenden Daten gefunden" (wenn Daten GEFUNDEN wurden)
+- "keine spezifischen Probleme" (wenn Probleme AUFGELISTET sind)
+- Referenzen zu Fahrzeug-ID wie "F002" in Antworten
 
-VERIFICATION RULES:
-1. Customer provides identification (Name + Fahrzeug-ID or Kennzeichen)
-2. You search and find their data
-3. You CONFIRM what you found and acknowledge any problems
-4. You offer assistance based on the found data
+VERIFIZIERUNGSREGELN:
+1. Kunde gibt Identifikation (Name + Fahrzeug-ID oder Kennzeichen)
+2. Du suchst und findest ihre Daten
+3. Du BESTÄTIGST was du gefunden hast und nennst alle Probleme
+4. Du bietest Hilfe basierend auf den gefundenen Daten an
 
-RESPONSE TEMPLATES:
+ANTWORT-VORLAGEN:
 
-When data is found with problems:
-"Guten Tag [Name]! Vielen Dank für Ihre Identifikation.
+Wenn Daten mit Problemen gefunden:
+"Guten Tag [Herr/Frau Name]! Vielen Dank für Ihre Identifikation.
 
 Ich sehe bei Ihrem [Marke Modell] folgende dokumentierte Probleme:
-- [List each problem]
+- [Jedes Problem auflisten]
 
-[If pending work exists]: Es gibt auch anstehende Arbeiten:
-- [List pending work]
+[Falls anstehende Arbeiten]: Es gibt auch anstehende Arbeiten:
+- [Arbeiten auflisten]
 
 Möchten Sie diese Probleme beheben lassen oder haben Sie andere Fragen?"
 
-When asking for costs after problems are confirmed:
+Wenn nach Kosten gefragt:
 "Die geschätzten Kosten für die Reparaturen an Ihrem [Marke Modell] betragen:
-[List costs by priority]
-Gesamtkosten: CHF [total]"
+[Kosten nach Priorität auflisten]
+Gesamtkosten: CHF [Summe]"
 
-When no data is found:
+Wenn keine Daten gefunden:
 "Ich habe keine passenden Daten gefunden. Können Sie mir bitte Ihre Fahrzeug-ID (z.B. F001), Ihren vollständigen Namen oder Ihr Autokennzeichen nennen?"
 
-FORBIDDEN:
-- "Entschuldigung" → Use "Leider"
-- "Es tut mir leid" → Use "Bedauerlicherweise"
-- Never reference Fahrzeug-ID in responses, always use Marke + Modell
+VERBOTEN:
+- "Entschuldigung" → Verwende "Leider"
+- "Es tut mir leid" → Verwende "Bedauerlicherweise"
+- Niemals Fahrzeug-ID in Antworten referenzieren, immer Marke + Modell verwenden
 
-Remember: THE TOOL OUTPUT IS THE TRUTH. Never contradict what the tool returns!""")
+Denke daran: DER TOOL-OUTPUT IST DIE WAHRHEIT. Widerspreche niemals dem, was das Tool zurückgibt!
+
+ANTWORTE NUR AUF DEUTSCH.""")
         
         self.identifier_extractor = IdentifierExtractor()
-        logger.info("✅ GarageAssistant initialized with enhanced anti-hallucination rules")
+        logger.info("✅ GarageAssistant initialized with MAXIMUM anti-hallucination rules")
 
     async def on_enter(self):
         """Wird aufgerufen wenn der Agent die Session betritt"""
@@ -356,6 +359,7 @@ Remember: THE TOOL OUTPUT IS THE TRUTH. Never contradict what the tool returns!"
                         # CRITICAL: Log the exact response for debugging
                         logger.info(f"✅ Tool response length: {len(response_text)} chars")
                         logger.info(f"📄 Tool response preview: {response_text[:200]}...")
+                        logger.info(f"🔥 FOUND: {vehicle_data.get('marke', '')} {vehicle_data.get('modell', '')} for {vehicle_data.get('besitzer', '')}")
                         
                         # Set a flag to track that data was found
                         context.userdata.hallucination_count = 0  # Reset counter on successful find
@@ -592,22 +596,31 @@ async def entrypoint(ctx: JobContext):
                 
             await asyncio.sleep(1)
         
-        # 4. Configure LLM with Ollama
+        # 4. Configure LLM with Ollama - VOLLSTÄNDIG OPTIMIERT
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
         
-        # Llama 3.2 with Ollama configuration - OPTIMIZED FOR ACCURACY
         llm = openai.LLM.with_ollama(
             model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
-            temperature=0.0,  # Absolut deterministisch
-            top_p=0.1,  # Sehr konservative Token-Auswahl  
-            top_k=10,  # Begrenzt Token-Auswahl auf Top 10
-            repeat_penalty=1.5,  # Stärker gegen Wiederholungen
-            num_ctx=4096,  # Context window
-            num_predict=256,  # Begrenzte Response-Länge
-            seed=42,  # Deterministischer Seed
+            temperature=0.0,        # Absolut deterministisch
+            top_k=5,               # Noch strikter - nur Top 5 Token
+            top_p=0.05,            # Extrem konservativ - nur 5% Wahrscheinlichkeitsmasse
+            repeat_penalty=2.0,     # Stark gegen Wiederholungen
+            num_ctx=4096,          # Context window
+            num_predict=200,       # Kürzere, fokussierte Antworten
+            seed=42,               # Deterministischer Seed
+            # Zusätzliche Ollama-spezifische Parameter
+            options={
+                "mirostat": 2,          # Perplexity-basierte Kontrolle
+                "mirostat_tau": 2.0,    # Ziel-Perplexity
+                "mirostat_eta": 0.1,    # Lernrate für Mirostat
+                "num_thread": 8,        # CPU threads
+                "num_gpu": 1,           # GPU layers
+                "penalize_newline": False,
+                "stop": ["User:", "Human:", "###", "Kunde:"],  # Stop-Sequenzen
+            }
         )
-        logger.info(f"🤖 [{session_id}] Using Llama 3.3 with ENHANCED accuracy settings")
+        logger.info(f"🤖 [{session_id}] Using Llama 3.2 with MAXIMUM anti-hallucination settings")
         
         # 5. Create session with enhanced configuration
         session = AgentSession[GarageUserData](
@@ -640,7 +653,13 @@ async def entrypoint(ctx: JobContext):
             min_endpointing_delay=0.3,
             max_endpointing_delay=3.0,
             min_interruption_duration=0.5,  # Prevent accidental interruptions
-            disable_early_inference=True,  # Wait for complete user input
+            disable_early_inference=True,    # Wait for complete user input
+            # Zusätzliche Session-Parameter für bessere Kontrolle
+            conn_options={
+                "max_retry": 3,
+                "retry_interval": 2.0,
+                "timeout": 10.0
+            }
         )
         
         # 6. Create agent
@@ -675,9 +694,16 @@ async def entrypoint(ctx: JobContext):
         def on_agent_response(event):
             """Monitor agent responses for hallucinations"""
             response = str(event)
-            if session.userdata.current_vehicle_data and "keine passenden Daten gefunden" in response:
-                logger.error(f"[{session_id}] ⚠️ HALLUCINATION DETECTED! Agent claims no data when data exists!")
-                session.userdata.hallucination_count += 1
+            logger.info(f"[{session_id}] 💬 Agent response preview: {response[:100]}...")
+            
+            if session.userdata.current_vehicle_data:
+                vehicle_info = f"{session.userdata.current_vehicle_data.get('marke', '')} {session.userdata.current_vehicle_data.get('modell', '')}"
+                
+                # Check for hallucination patterns
+                if "keine passenden Daten gefunden" in response or "keine Daten gefunden" in response:
+                    logger.error(f"[{session_id}] 🚨 HALLUCINATION DETECTED! Agent claims no data when data exists for {vehicle_info}!")
+                    session.userdata.hallucination_count += 1
+                    logger.error(f"[{session_id}] 📊 Hallucination count: {session.userdata.hallucination_count}")
         
         @session.on("llm_response_received")
         def on_llm_response(event):
@@ -724,7 +750,7 @@ Wie kann ich Ihnen heute helfen?"""
         except Exception as e:
             logger.error(f"[{session_id}] Greeting error: {e}")
         
-        logger.info(f"✅ [{session_id}] Garage Agent ready with ENHANCED anti-hallucination!")
+        logger.info(f"✅ [{session_id}] Garage Agent ready with MAXIMUM anti-hallucination!")
         
         # Wait for disconnect
         disconnect_event = asyncio.Event()
