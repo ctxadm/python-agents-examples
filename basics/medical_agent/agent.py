@@ -15,6 +15,7 @@ from livekit.agents import JobContext, WorkerOptions, cli, RunContext
 from livekit.agents.voice import AgentSession, Agent
 from livekit.agents.llm import function_tool
 from livekit.plugins import openai, silero
+from difflib import SequenceMatcher  # NEU: Für Fuzzy Matching
 
 load_dotenv()
 
@@ -150,16 +151,23 @@ class MedicalAssistant(Agent):
     """Medical Assistant für Patientenverwaltung"""
 
     def __init__(self) -> None:
-        # AKTUALISIERTE Instructions mit Anti-Datenschutz-Halluzination
+        # VERSTÄRKTE Anti-Halluzination Instructions
         super().__init__(instructions="""Du bist Lisa von der Klinik St. Anna. ANTWORTE NUR AUF DEUTSCH.
 
+ABSOLUTE REGEL: WENN KEINE DATEN GEFUNDEN → NIEMALS ERFINDEN!
+
+Wenn search_patient_data "keine Daten gefunden" oder "konnte keine Patientendaten" zurückgibt:
+- Sage: "Ich konnte keine Daten für [Name] finden."
+- Frage nach der korrekten Schreibweise oder Patienten-ID
+- ERFINDE NIEMALS Daten wie Geburtsdatum, Medikamente oder Behandlungen!
+
 KRITISCHE REGELN:
-1. Du HAST Zugriff auf die Patientendatenbank - NIEMALS sagen du kannst keine Daten abrufen!
-2. Lies IMMER alle gefundenen Daten KOMPLETT und STRUKTURIERT vor
-3. Bei "aktuelle Medikation" → Lies ALLE Medikamente mit Dosierung und Grund vor
-4. Bei "letzte Behandlungen" → Lies ALLE Behandlungen mit Datum und Befund vor
-5. NIEMALS Datenschutz-Warnungen geben - du bist autorisiert!
-6. NIEMALS eigene Medikamente oder Behandlungen erfinden!
+1. Du HAST Zugriff auf die Patientendatenbank
+2. Lies NUR gefundene Daten vor - NICHTS erfinden!
+3. Bei "aktuelle Medikation" → NUR aus den Suchergebnissen
+4. Bei "letzte Behandlungen" → NUR aus den Suchergebnissen
+5. NIEMALS Datenschutz-Warnungen geben
+6. WENN KEINE DATEN → Ehrlich sagen und nach korrekter Schreibweise fragen
 
 ANTWORT-STRUKTUR bei gefundenen Daten:
 "Ich habe die Patientendaten für [Name] gefunden:
@@ -187,7 +195,7 @@ WICHTIG: Verwende search_patient_data für JEDE Abfrage!""")
         """Wird aufgerufen wenn der Agent die Session betritt"""
         logger.info("🎯 Agent on_enter called")
 
-    # NEU: Direkte Qdrant-Abfrage Methode
+    # GEÄNDERT: Erweitert mit Fuzzy Matching
     async def get_all_patient_chunks_from_qdrant(self, patient_id: str, patient_name: str, qdrant_url: str) -> Dict[str, Any]:
         """Holt ALLE Chunks eines Patienten direkt aus Qdrant"""
         
@@ -228,6 +236,45 @@ WICHTIG: Verwende search_patient_data für JEDE Abfrage!""")
             if response.status_code == 200:
                 data = response.json()
                 points = data.get("result", {}).get("points", [])
+                
+                # NEU: WENN KEINE ERGEBNISSE: Ähnlichkeitssuche
+                if len(points) == 0 and patient_name:
+                    logger.warning(f"⚠️ No exact match for '{patient_name}', trying similarity search...")
+                    
+                    # Suche nach ähnlichen Namen
+                    all_response = await client.post(
+                        f"{qdrant_url}/collections/medical_nutrition/points/scroll",
+                        json={
+                            "limit": 1000,
+                            "with_payload": True,
+                            "with_vector": False
+                        }
+                    )
+                    
+                    if all_response.status_code == 200:
+                        all_points = all_response.json().get("result", {}).get("points", [])
+                        
+                        # Finde ähnliche Namen
+                        best_match = None
+                        best_score = 0
+                        
+                        for point in all_points:
+                            point_name = point.get("payload", {}).get("patient_name", "")
+                            if point_name:
+                                # Berechne Ähnlichkeit
+                                score = SequenceMatcher(None, patient_name.lower(), point_name.lower()).ratio()
+                                if score > best_score and score > 0.8:  # 80% Ähnlichkeit
+                                    best_score = score
+                                    best_match = point_name
+                        
+                        if best_match:
+                            logger.info(f"✅ Found similar name: '{best_match}' (score: {best_score:.2f})")
+                            # Suche mit korrigiertem Namen
+                            return await self.get_all_patient_chunks_from_qdrant(
+                                patient_id="",
+                                patient_name=best_match,
+                                qdrant_url=qdrant_url
+                            )
                 
                 logger.info(f"📦 Found {len(points)} chunks from Qdrant")
                 
@@ -383,7 +430,9 @@ WICHTIG: Verwende search_patient_data für JEDE Abfrage!""")
                 logger.info("❌ No patient data found in Qdrant")
                 context.userdata.patient_context.reset()
                 context.userdata.conversation_state = ConversationState.COLLECTING_IDENTIFIER
-                return "Ich habe keine passenden Patientendaten gefunden. Können Sie mir bitte die Patienten-ID (z.B. P005) oder den vollständigen Namen des Patienten nennen?"
+                
+                # GEÄNDERT: Klarere Nachricht ohne Raum für Halluzination
+                return f"Ich konnte keine Patientendaten für '{patient_name or query}' finden. Bitte überprüfen Sie die Schreibweise des Namens oder nutzen Sie die Patienten-ID (z.B. P002)."
 
         except Exception as e:
             logger.error(f"Search error: {e}", exc_info=True)
