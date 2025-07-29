@@ -63,6 +63,7 @@ class MedicalUserData:
     """User data context für den Medical Agent"""
     authenticated_doctor: Optional[str] = None
     rag_url: str = "http://localhost:8000"
+    qdrant_url: str = "http://172.16.0.108:6333"  # NEU: Direkte Qdrant URL
     current_patient_data: Optional[Dict[str, Any]] = None
     greeting_sent: bool = False
     conversation_state: ConversationState = ConversationState.GREETING
@@ -157,6 +158,7 @@ KRITISCHE REGELN:
 2. Bei "aktuelle Medikation" → Lies ALLE Medikamente mit Dosierung vor
 3. Bei "letzte Behandlungen" → Lies ALLE Behandlungen mit Datum vor
 4. NIEMALS sagen "keine Daten gefunden" wenn Daten da sind!
+5. NIEMALS eigene Medikamente oder Behandlungen erfinden!
 
 PATIENTENIDENTIFIKATION:
 - Patienten-ID (P001, P002, etc.) 
@@ -172,20 +174,77 @@ Struktur klar vorlesen:
 WICHTIG: Verwende search_patient_data für JEDE Abfrage!""")
 
         self.identifier_extractor = IdentifierExtractor()
-        logger.info("✅ MedicalAssistant initialized with simplified instructions")
+        logger.info("✅ MedicalAssistant initialized with Qdrant direct access")
 
     async def on_enter(self):
         """Wird aufgerufen wenn der Agent die Session betritt"""
         logger.info("🎯 Agent on_enter called")
+
+    async def get_all_patient_chunks_from_qdrant(self, patient_id: str, patient_name: str, qdrant_url: str) -> Dict[str, Any]:
+        """Holt ALLE Chunks eines Patienten direkt aus Qdrant"""
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Suche mit patient_id ODER patient_name
+            response = await client.post(
+                f"{qdrant_url}/collections/medical_nutrition/points/scroll",
+                json={
+                    "filter": {
+                        "should": [
+                            {
+                                "key": "patient_id",
+                                "match": {"value": patient_id}
+                            },
+                            {
+                                "key": "patient_name",
+                                "match": {"value": patient_name}
+                            }
+                        ]
+                    },
+                    "limit": 100,
+                    "with_payload": True,
+                    "with_vector": False
+                }
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                points = data.get("result", {}).get("points", [])
+                
+                logger.info(f"📦 Found {len(points)} chunks from Qdrant for {patient_id}/{patient_name}")
+                
+                # Organisiere nach data_type
+                organized_data = {
+                    "patient_info": None,
+                    "medication": None,
+                    "treatments": []
+                }
+                
+                for point in points:
+                    payload = point.get("payload", {})
+                    data_type = payload.get("data_type", "")
+                    content = payload.get("content", "")
+                    
+                    logger.info(f"  - Chunk type: {data_type}, content length: {len(content)}")
+                    
+                    if data_type == "patient_info":
+                        organized_data["patient_info"] = content
+                    elif data_type == "medication":
+                        organized_data["medication"] = content
+                    elif data_type == "treatment":
+                        organized_data["treatments"].append(content)
+                
+                return organized_data
+            else:
+                logger.error(f"❌ Qdrant error: {response.status_code}")
+                return {}
 
     @function_tool
     async def search_patient_data(self,
                                  context: RunContext[MedicalUserData],
                                  query: str) -> str:
         """
-        Sucht nach Patientendaten in der medizinischen Datenbank basierend auf Patienten-ID oder Namen.
-        Diese Funktion wird vom LLM aufgerufen, wenn nach Patientendaten gesucht werden soll.
-
+        Sucht nach Patientendaten direkt in Qdrant basierend auf Patienten-ID oder Namen.
+        
         Args:
             query: Suchbegriff (Patienten-ID oder Name)
 
@@ -201,83 +260,100 @@ WICHTIG: Verwende search_patient_data für JEDE Abfrage!""")
 
         logger.info(f"📊 Intent: {intent}, Data: {data}")
 
+        # Extract patient ID and name
+        patient_id = ""
+        patient_name = query  # Default to full query
+        
+        # Try to find patient ID
+        patient_id_match = re.search(r'P\d{3}', query.upper())
+        if patient_id_match:
+            patient_id = patient_id_match.group()
+            context.userdata.patient_context.patient_id = patient_id
+            logger.info(f"✅ Found patient ID: {patient_id}")
+        
         # Store identification in context
         if intent == "patient_id":
             context.userdata.patient_context.patient_id = data
-            query = data
+            patient_id = data
         elif intent == "patient_name":
             context.userdata.patient_context.patient_name = data
-            query = data
+            patient_name = data
 
         # Process queries for common speech-to-text errors
         processed_query = self._process_patient_id(query)
         if processed_query != query:
             logger.info(f"✅ Corrected query from '{query}' to '{processed_query}'")
-            query = processed_query
+            # Re-extract patient ID from corrected query
+            patient_id_match = re.search(r'P\d{3}', processed_query.upper())
+            if patient_id_match:
+                patient_id = patient_id_match.group()
 
         # Store search query
         context.userdata.last_search_query = query
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{context.userdata.rag_url}/search",
-                    json={
-                        "query": query,
-                        "agent_type": "medical",
-                        "top_k": 20,
-                        "collection": "medical_nutrition"  # Medical collection
-                    }
-                )
-
-                if response.status_code == 200:
-                    results = response.json().get("results", [])
-
-                    if results:
-                        logger.info(f"✅ Found {len(results)} results")
-
-                        # Store current patient ID if found
-                        patient_match = re.search(r'P\d{3}', query)
-                        if patient_match:
-                            context.userdata.active_patient = patient_match.group()
-                            context.userdata.patient_context.patient_id = patient_match.group()
-
-                        # VERBESSERTE Formatierung für Llama 3.2 3B
-                        formatted = []
-                        for i, result in enumerate(results[:3]):
-                            content = result.get("content", "").strip()
-                            if content:
-                                # Neue strukturierte Formatierung
-                                content = self._format_medical_data_structured(content)
-                                formatted.append(content)
-
-                        # EXPLIZITE Anweisungen bei spezifischen Queries
-                        response_text = ""
-                        
-                        if "medikation" in query.lower() or "medikamente" in query.lower():
-                            response_text = "WICHTIG: Bitte ALLE Medikamente vollständig vorlesen!\n\n"
-                        elif "behandlung" in query.lower():
-                            response_text = "WICHTIG: Bitte ALLE Behandlungen vollständig vorlesen!\n\n"
-                        
-                        response_text += "Patientendaten gefunden:\n\n"
-                        response_text += "\n\n".join(formatted)
-                        
-                        # Update conversation state
-                        context.userdata.conversation_state = ConversationState.PROVIDING_INFO
-                        
-                        return response_text
-
-                    else:
-                        logger.info("❌ No results found")
-                        context.userdata.patient_context.reset()
-                        context.userdata.conversation_state = ConversationState.COLLECTING_IDENTIFIER
-                        return "Ich habe keine passenden Patientendaten gefunden. Können Sie mir bitte die Patienten-ID (z.B. P001) oder den vollständigen Namen des Patienten nennen?"
+            # NEUE STRATEGIE: Direkt von Qdrant holen
+            logger.info(f"🔄 Fetching directly from Qdrant for: {patient_id or patient_name}")
+            
+            all_chunks = await self.get_all_patient_chunks_from_qdrant(
+                patient_id=patient_id,
+                patient_name=patient_name,
+                qdrant_url=context.userdata.qdrant_url
+            )
+            
+            if all_chunks and any(all_chunks.values()):
+                # Store active patient
+                if patient_id:
+                    context.userdata.active_patient = patient_id
+                
+                # Build comprehensive response
+                response_parts = []
+                
+                # 1. Patient Info
+                if all_chunks["patient_info"]:
+                    response_parts.append("📋 PATIENTENDATEN:")
+                    response_parts.append(all_chunks["patient_info"])
+                
+                # 2. Medication - WICHTIG!
+                if all_chunks["medication"]:
+                    response_parts.append("\n💊 AKTUELLE MEDIKATION:")
+                    response_parts.append(all_chunks["medication"])
                 else:
-                    logger.error(f"Search failed: {response.status_code}")
-                    return "Es gab ein Problem mit der Datenbank-Verbindung. Bitte versuchen Sie es erneut."
+                    logger.warning("⚠️ Keine Medikationsdaten gefunden!")
+                
+                # 3. Treatments - ALLE!
+                if all_chunks["treatments"]:
+                    response_parts.append("\n🏥 LETZTE BEHANDLUNGEN:")
+                    for treatment in sorted(all_chunks["treatments"], reverse=True):  # Neueste zuerst
+                        response_parts.append(treatment)
+                else:
+                    logger.warning("⚠️ Keine Behandlungsdaten gefunden!")
+                
+                final_response = "\n".join(response_parts)
+                
+                # Extra validation
+                if "medikation" in query.lower() and "Medikation" not in final_response:
+                    logger.error("❌ Medikation requested but not in response!")
+                    final_response += "\n\n⚠️ Hinweis: Medikationsdaten möglicherweise unvollständig."
+                
+                if "behandlung" in query.lower() and "Behandlung" not in final_response:
+                    logger.error("❌ Behandlung requested but not in response!")
+                    final_response += "\n\n⚠️ Hinweis: Behandlungsdaten möglicherweise unvollständig."
+                
+                # Update conversation state
+                context.userdata.conversation_state = ConversationState.PROVIDING_INFO
+                
+                logger.info(f"✅ Returning complete patient data with {len(response_parts)} sections")
+                return final_response
+
+            else:
+                logger.info("❌ No patient data found in Qdrant")
+                context.userdata.patient_context.reset()
+                context.userdata.conversation_state = ConversationState.COLLECTING_IDENTIFIER
+                return "Ich habe keine passenden Patientendaten gefunden. Können Sie mir bitte die Patienten-ID (z.B. P005) oder den vollständigen Namen des Patienten nennen?"
 
         except Exception as e:
-            logger.error(f"Search error: {e}")
+            logger.error(f"Search error: {e}", exc_info=True)
             return "Die Patientendatenbank ist momentan nicht erreichbar. Bitte versuchen Sie es später noch einmal."
 
     def _process_patient_id(self, text: str) -> str:
@@ -427,6 +503,7 @@ async def entrypoint(ctx: JobContext):
 
         # 4. Configure LLM with Ollama - KORREKTE API WIE GARAGE AGENT!
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
+        qdrant_url = os.getenv("QDRANT_URL", "http://172.16.0.108:6333")
 
         # Llama 3.2 with Ollama configuration - GENAU WIE GARAGE AGENT
         llm = openai.LLM.with_ollama(
@@ -434,13 +511,14 @@ async def entrypoint(ctx: JobContext):
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
             temperature=0.0,  # Deterministisch für medizinische Präzision
         )
-        logger.info(f"🤖 [{session_id}] Using Llama 3.2 with anti-hallucination settings")
+        logger.info(f"🤖 [{session_id}] Using Llama 3.2 with direct Qdrant access")
 
         # 5. Create session - EXAKT WIE GARAGE AGENT
         session = AgentSession[MedicalUserData](
             userdata=MedicalUserData(
                 authenticated_doctor=None,
                 rag_url=rag_url,
+                qdrant_url=qdrant_url,  # NEU: Qdrant URL
                 current_patient_data=None,
                 greeting_sent=False,
                 conversation_state=ConversationState.GREETING,
@@ -506,7 +584,7 @@ async def entrypoint(ctx: JobContext):
                 response_lower = str(event).lower() if hasattr(event, '__str__') else ""
                 
                 if "medikation" in query_lower or "medikamente" in query_lower:
-                    if not any(med_indicator in response_lower for med_indicator in ["mg", "hübe", "täglich", "dosierung"]):
+                    if not any(med_indicator in response_lower for med_indicator in ["mg", "µg", "täglich", "dosierung"]):
                         logger.warning("⚠️ Medication details might be missing in response!")
                         
                 if "behandlung" in query_lower:
@@ -542,7 +620,7 @@ Welche Patientendaten benötigen Sie heute, Herr Doktor?"""
         except Exception as e:
             logger.error(f"[{session_id}] Greeting error: {e}", exc_info=True)
 
-        logger.info(f"✅ [{session_id}] Medical Agent ready with enhanced Llama 3.2 3B support!")
+        logger.info(f"✅ [{session_id}] Medical Agent ready with direct Qdrant access!")
 
         # Wait for disconnect
         disconnect_event = asyncio.Event()
