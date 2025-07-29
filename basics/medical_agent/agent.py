@@ -690,11 +690,11 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
 
         try:
-            greeting_text = """Guten Tag und herzlich willkommen bei der Klinik St. Anna!
-Ich bin Lisa, Ihre digitale medizinische Assistentin.
+            greeting_text = """Herzlich willkommen bei der Klinik St. Anna!
+Ich bin Lisa, Ihre digitale Assistentin.
 
 Für eine schnelle Bearbeitung benötige ich eine der folgenden Informationen:
-- Die Patienten-ID (z.B. P001)
+- Die Patienten-ID
 - Den vollständigen Namen des Patienten
 
 Welche Patientendaten benötigen Sie heute, Herr Doktor?"""
