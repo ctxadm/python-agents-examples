@@ -1,4 +1,4 @@
-# LiveKit Agents - Medical Agent mit direkter Qdrant Integration
+# LiveKit Agents - Medical Agent mit separaten Funktionen für Kontext
 import logging
 import os
 import httpx
@@ -74,6 +74,12 @@ class MedicalUserData:
     patient_context: PatientContext = field(default_factory=PatientContext)
     last_search_query: Optional[str] = None
     active_patient: Optional[str] = None
+    # Strukturierte Patientendaten
+    patient_info: Optional[str] = None
+    patient_medication: Optional[str] = None
+    patient_treatments: List[str] = field(default_factory=list)
+    patient_allergies: Optional[str] = None
+    patient_chronic_conditions: Optional[str] = None
 
 
 class IdentifierExtractor:
@@ -154,8 +160,8 @@ class MedicalAssistant(Agent):
     """Medical Assistant für Patientenverwaltung"""
 
     def __init__(self) -> None:
-        # Instructions EXAKT WIE GARAGE AGENT - mit dreifachen Anführungszeichen!
-        super().__init__(instructions="""You are Lisa, the digital assistant of Klinik St. Anna. RESPOND ONLY IN GERMAN.
+        # Instructions erweitert für kontextbewusste Funktionen
+        super().__init__(instructions="""You are Pia, the digital assistant of Klinik St. Anna. RESPOND ONLY IN GERMAN.
 
 CRITICAL ANTI-HALLUCINATION RULES:
 1. NEVER invent data - if search returns "keine passenden Daten", SAY THAT
@@ -164,35 +170,35 @@ CRITICAL ANTI-HALLUCINATION RULES:
 4. When you get "keine passenden Daten", ask for identification again
 5. ALWAYS acknowledge found symptoms when they are listed in the data
 
-WHEN DATA IS FOUND WITH SYMPTOMS:
-If the tool returns data with "Aktuelle Symptome" like:
-- Kopfschmerzen seit 3 Tagen
-- Erhöhte Temperatur
+CONTEXT-AWARE FUNCTION USAGE:
+1. Use 'search_patient_data' ONLY for:
+   - Initial patient lookup (by ID or name)
+   - Switching to a different patient
+   - When explicitly asked to search again
 
-You MUST say something like:
-"Ich sehe bei Patient [Name] folgende dokumentierte Symptome:
-- [Symptom 1]
-- [Symptom 2]
-Möchten Sie weitere Details?"
+2. Use 'get_current_patient_details' for:
+   - Questions about the already loaded patient
+   - Specific details like medication, treatments, allergies
+   - Any follow-up questions about the current patient
 
-NEVER say "keine spezifischen Symptome gefunden" when symptoms ARE listed!
+WORKFLOW EXAMPLE:
+User: "P005"
+You: [Use search_patient_data("P005")]
+User: "Was ist die aktuelle Medikation?"
+You: [Use get_current_patient_details("medication")]
+User: "Welche chronischen Erkrankungen?"
+You: [Use get_current_patient_details("chronic_conditions")]
+
+AVAILABLE DETAIL TYPES for get_current_patient_details:
+- "medication" - Aktuelle Medikation
+- "treatments" - Letzte Behandlungen
+- "allergies" - Allergien
+- "chronic_conditions" - Chronische Erkrankungen
+- "all" - Alle verfügbaren Informationen
 
 PATIENT IDENTIFICATION OPTIONS:
 1. Patienten-ID (z.B. "P001", "P002", etc.) - PREFERRED METHOD
 2. Full name (z.B. "Maria Schmidt")
-
-CONVERSATION EXAMPLES:
-Example 1 - Using Patienten-ID:
-User: "Meine Patienten-ID ist P001"
-You: [SEARCH with "P001"]
-
-Example 2 - When asking for specific data:
-User: "Was ist die aktuelle Diagnose?"
-You: [Use search_patient_data to get diagnosis]
-
-Example 3 - Speech-to-text corrections:
-User: "p null null fünf"
-You: [Automatically correct to "P005" and search]
 
 FORBIDDEN WORDS (use alternatives):
 - "Entschuldigung" → "Leider"
@@ -204,9 +210,9 @@ RESPONSE RULES:
 2. If search returns no data, SAY SO and ask for identification
 3. NEVER invent medical information
 4. Always acknowledge symptoms found in the data
-5. Suggest using Patienten-ID for faster service
+5. Use the context-aware functions appropriately
 
-Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
+Remember: ALWAYS report exactly what the functions return, NEVER invent data!""")
 
         self.identifier_extractor = IdentifierExtractor()
         logger.info("✅ MedicalAssistant initialized with Patient-ID support")
@@ -255,6 +261,13 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
         # Store search query
         context.userdata.last_search_query = query
 
+        # Clear previous patient data
+        context.userdata.patient_info = None
+        context.userdata.patient_medication = None
+        context.userdata.patient_treatments = []
+        context.userdata.patient_allergies = None
+        context.userdata.patient_chronic_conditions = None
+
         try:
             # NEUE DIREKTE QDRANT INTEGRATION
             
@@ -297,7 +310,7 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                             context.userdata.active_patient = query.upper()
                             context.userdata.patient_context.patient_id = query.upper()
                             
-                            # Format results by data type
+                            # Format results by data type and store in context
                             patient_info = None
                             medication = None
                             treatments = []
@@ -309,10 +322,24 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                                 
                                 if data_type == "patient_info":
                                     patient_info = content
+                                    # Extract allergies and chronic conditions
+                                    if "Allergien:" in content:
+                                        allergies_match = re.search(r'Allergien:\s*([^\n]+)', content)
+                                        if allergies_match:
+                                            context.userdata.patient_allergies = allergies_match.group(1)
+                                    if "Chronische Erkrankungen:" in content:
+                                        chronic_match = re.search(r'Chronische Erkrankungen:\s*([^\n]+)', content)
+                                        if chronic_match:
+                                            context.userdata.patient_chronic_conditions = chronic_match.group(1)
                                 elif data_type == "medication":
                                     medication = content
+                                    context.userdata.patient_medication = content
                                 elif data_type == "treatment":
                                     treatments.append(content)
+                            
+                            # Store structured data in context
+                            context.userdata.patient_info = patient_info
+                            context.userdata.patient_treatments = treatments
                             
                             # Build response
                             response_text = "Ich habe folgende Patientendaten gefunden:\n\n"
@@ -355,6 +382,61 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                 return await self._search_via_rag_service(context, query)
             except:
                 return "Die Patientendatenbank ist momentan nicht erreichbar. Bitte versuchen Sie es später noch einmal."
+
+    @function_tool
+    async def get_current_patient_details(self,
+                                        context: RunContext[MedicalUserData],
+                                        detail_type: str) -> str:
+        """
+        Gibt spezifische Details des aktuell geladenen Patienten zurück.
+        Verwenden Sie diese Funktion NUR wenn bereits ein Patient geladen wurde.
+
+        Args:
+            detail_type: Art der gewünschten Information 
+                        ("medication", "treatments", "allergies", "chronic_conditions", "all")
+
+        Returns:
+            Die angeforderten Patientendetails oder eine Fehlermeldung
+        """
+        logger.info(f"📋 Getting current patient details: {detail_type}")
+        
+        # Check if we have a patient loaded
+        if not context.userdata.active_patient:
+            return "Es ist kein Patient geladen. Bitte geben Sie zuerst eine Patienten-ID oder einen Namen an."
+        
+        patient_id = context.userdata.active_patient
+        response_text = f"Details für Patient {patient_id}:\n\n"
+        
+        if detail_type == "medication" or detail_type == "all":
+            if context.userdata.patient_medication:
+                response_text += f"**{context.userdata.patient_medication}\n\n"
+            else:
+                response_text += "**Medikation:** Keine Medikationsdaten gefunden.\n\n"
+        
+        if detail_type == "treatments" or detail_type == "all":
+            if context.userdata.patient_treatments:
+                response_text += "**Letzte Behandlungen:**\n"
+                for treatment in context.userdata.patient_treatments:
+                    response_text += f"{treatment}\n\n"
+            else:
+                response_text += "**Behandlungen:** Keine Behandlungsdaten gefunden.\n\n"
+        
+        if detail_type == "allergies" or detail_type == "all":
+            if context.userdata.patient_allergies:
+                response_text += f"**Allergien:** {context.userdata.patient_allergies}\n\n"
+            else:
+                response_text += "**Allergien:** Keine Allergiedaten gefunden.\n\n"
+        
+        if detail_type == "chronic_conditions" or detail_type == "all":
+            if context.userdata.patient_chronic_conditions:
+                response_text += f"**Chronische Erkrankungen:** {context.userdata.patient_chronic_conditions}\n\n"
+            else:
+                response_text += "**Chronische Erkrankungen:** Keine Daten zu chronischen Erkrankungen gefunden.\n\n"
+        
+        if detail_type not in ["medication", "treatments", "allergies", "chronic_conditions", "all"]:
+            return f"Unbekannter Detail-Typ: {detail_type}. Verfügbare Optionen: medication, treatments, allergies, chronic_conditions, all"
+        
+        return response_text.strip()
 
     async def _search_via_rag_service(self, context: RunContext[MedicalUserData], query: str) -> str:
         """Fallback Suche über RAG Service"""
@@ -519,7 +601,12 @@ async def entrypoint(ctx: JobContext):
                 conversation_state=ConversationState.GREETING,
                 patient_context=PatientContext(),
                 last_search_query=None,
-                active_patient=None
+                active_patient=None,
+                patient_info=None,
+                patient_medication=None,
+                patient_treatments=[],
+                patient_allergies=None,
+                patient_chronic_conditions=None
             ),
             llm=llm,
             vad=silero.VAD.load(
@@ -573,7 +660,7 @@ async def entrypoint(ctx: JobContext):
 
         try:
             greeting_text = """Guten Tag und herzlich willkommen bei der Klinik St. Anna!
-Ich bin Lisa, Ihre digitale medizinische Assistentin.
+Ich bin Pia, Ihre digitale medizinische Assistentin.
 
 Für eine schnelle Bearbeitung benötige ich eine der folgenden Informationen:
 - Die Patienten-ID (z.B. P001)
