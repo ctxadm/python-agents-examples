@@ -180,37 +180,49 @@ WICHTIG: Verwende search_patient_data für JEDE Abfrage!""")
         """Wird aufgerufen wenn der Agent die Session betritt"""
         logger.info("🎯 Agent on_enter called")
 
+    # NEU: Direkte Qdrant-Abfrage Methode
     async def get_all_patient_chunks_from_qdrant(self, patient_id: str, patient_name: str, qdrant_url: str) -> Dict[str, Any]:
         """Holt ALLE Chunks eines Patienten direkt aus Qdrant"""
         
+        logger.info(f"🔍 Direct Qdrant search for ID: {patient_id}, Name: {patient_name}")
+        
         async with httpx.AsyncClient(timeout=30.0) as client:
             # Suche mit patient_id ODER patient_name
+            filter_conditions = []
+            
+            if patient_id:
+                filter_conditions.append({
+                    "key": "patient_id",
+                    "match": {"value": patient_id}
+                })
+            
+            if patient_name:
+                filter_conditions.append({
+                    "key": "patient_name", 
+                    "match": {"value": patient_name}
+                })
+            
+            request_body = {
+                "filter": {
+                    "should": filter_conditions
+                } if len(filter_conditions) > 1 else {
+                    "must": filter_conditions
+                },
+                "limit": 100,
+                "with_payload": True,
+                "with_vector": False
+            }
+            
             response = await client.post(
                 f"{qdrant_url}/collections/medical_nutrition/points/scroll",
-                json={
-                    "filter": {
-                        "should": [
-                            {
-                                "key": "patient_id",
-                                "match": {"value": patient_id}
-                            },
-                            {
-                                "key": "patient_name",
-                                "match": {"value": patient_name}
-                            }
-                        ]
-                    },
-                    "limit": 100,
-                    "with_payload": True,
-                    "with_vector": False
-                }
+                json=request_body
             )
             
             if response.status_code == 200:
                 data = response.json()
                 points = data.get("result", {}).get("points", [])
                 
-                logger.info(f"📦 Found {len(points)} chunks from Qdrant for {patient_id}/{patient_name}")
+                logger.info(f"📦 Found {len(points)} chunks from Qdrant")
                 
                 # Organisiere nach data_type
                 organized_data = {
@@ -224,14 +236,19 @@ WICHTIG: Verwende search_patient_data für JEDE Abfrage!""")
                     data_type = payload.get("data_type", "")
                     content = payload.get("content", "")
                     
-                    logger.info(f"  - Chunk type: {data_type}, content length: {len(content)}")
+                    logger.info(f"  - Chunk: {data_type} ({len(content)} chars)")
                     
                     if data_type == "patient_info":
                         organized_data["patient_info"] = content
                     elif data_type == "medication":
                         organized_data["medication"] = content
+                        logger.info(f"  ✅ Found medication data!")
                     elif data_type == "treatment":
                         organized_data["treatments"].append(content)
+                
+                logger.info(f"📊 Summary: patient_info={bool(organized_data['patient_info'])}, "
+                           f"medication={bool(organized_data['medication'])}, "
+                           f"treatments={len(organized_data['treatments'])}")
                 
                 return organized_data
             else:
@@ -292,8 +309,8 @@ WICHTIG: Verwende search_patient_data für JEDE Abfrage!""")
         context.userdata.last_search_query = query
 
         try:
-            # NEUE STRATEGIE: Direkt von Qdrant holen
-            logger.info(f"🔄 Fetching directly from Qdrant for: {patient_id or patient_name}")
+            # GEÄNDERT: IMMER direkt von Qdrant holen
+            logger.info(f"🔄 Using direct Qdrant fetch for: {patient_id or patient_name}")
             
             all_chunks = await self.get_all_patient_chunks_from_qdrant(
                 patient_id=patient_id,
@@ -503,7 +520,7 @@ async def entrypoint(ctx: JobContext):
 
         # 4. Configure LLM with Ollama - KORREKTE API WIE GARAGE AGENT!
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
-        qdrant_url = os.getenv("QDRANT_URL", "http://172.16.0.108:6333")
+        qdrant_url = os.getenv("QDRANT_URL", "http://172.16.0.108:6333")  # NEU
 
         # Llama 3.2 with Ollama configuration - GENAU WIE GARAGE AGENT
         llm = openai.LLM.with_ollama(
@@ -518,7 +535,7 @@ async def entrypoint(ctx: JobContext):
             userdata=MedicalUserData(
                 authenticated_doctor=None,
                 rag_url=rag_url,
-                qdrant_url=qdrant_url,  # NEU: Qdrant URL
+                qdrant_url=qdrant_url,  # NEU: Qdrant URL hinzugefügt
                 current_patient_data=None,
                 greeting_sent=False,
                 conversation_state=ConversationState.GREETING,
