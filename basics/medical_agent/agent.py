@@ -1,4 +1,4 @@
-# LiveKit Agents - Medical Agent mit korrigierter Kontext-Persistierung
+# LiveKit Agents - Medical Agent mit direkter Qdrant-Abfrage
 import logging
 import os
 import httpx
@@ -22,12 +22,6 @@ load_dotenv()
 logger = logging.getLogger("medical-agent")
 logger.setLevel(logging.INFO)
 
-# Add custom formatter for better debug output
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-handler = logging.StreamHandler()
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-
 # Agent Name für Multi-Worker Setup
 AGENT_NAME = os.getenv("AGENT_NAME", "agent-medical-3")
 
@@ -35,52 +29,15 @@ AGENT_NAME = os.getenv("AGENT_NAME", "agent-medical-3")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://172.16.0.108:6333")
 MEDICAL_COLLECTION = "medical_nutrition"
 
-class ConversationState(Enum):
-    """State Machine für Konversationsphasen"""
-    GREETING = "greeting"
-    AWAITING_REQUEST = "awaiting_request"
-    COLLECTING_IDENTIFIER = "collecting_identifier"
-    SEARCHING = "searching"
-    PROVIDING_INFO = "providing_info"
-
-@dataclass
-class PatientContext:
-    """Kontext für Patienten-Identifikation"""
-    patient_id: Optional[str] = None  # z.B. P001, P002
-    patient_name: Optional[str] = None
-    attempts: int = 0
-
-    def has_identifier(self) -> bool:
-        """Prüft ob eine Identifikation vorhanden ist"""
-        return bool(self.patient_id or self.patient_name)
-
-    def get_search_query(self) -> Optional[str]:
-        """Gibt die beste Suchanfrage zurück"""
-        if self.patient_id:
-            return self.patient_id
-        elif self.patient_name:
-            return self.patient_name
-        return None
-
-    def reset(self):
-        """Reset des Kontexts"""
-        self.patient_id = None
-        self.patient_name = None
-        self.attempts = 0
-
 @dataclass
 class MedicalUserData:
     """User data context für den Medical Agent"""
-    authenticated_doctor: Optional[str] = None
     rag_url: str = "http://localhost:8000"
     qdrant_url: str = QDRANT_URL
-    current_patient_data: Optional[Dict[str, Any]] = None
     greeting_sent: bool = False
-    conversation_state: ConversationState = ConversationState.GREETING
-    patient_context: PatientContext = field(default_factory=PatientContext)
-    last_search_query: Optional[str] = None
+    # Vereinfachte Speicherung
     active_patient: Optional[str] = None
-    # Strukturierte Patientendaten
+    patient_name: Optional[str] = None
     patient_info: Optional[str] = None
     patient_medication: Optional[str] = None
     patient_treatments: List[str] = field(default_factory=list)
@@ -88,402 +45,205 @@ class MedicalUserData:
     patient_chronic_conditions: Optional[str] = None
 
 
-class IdentifierExtractor:
-    """Extrahiert und validiert Patienten-Identifikatoren"""
-
-    @classmethod
-    def extract_intent_from_input(cls, user_input: str) -> Dict[str, Any]:
-        """Extrahiert Intent und Daten aus User-Input"""
-        input_lower = user_input.lower().strip()
-
-        # Check for specific medical queries FIRST
-        if any(word in input_lower for word in ["diagnose", "symptome", "behandlung", "medikation"]):
-            return {"intent": "medical_query", "data": user_input}
-
-        if any(word in input_lower for word in ["labor", "blutwerte", "ergebnisse"]):
-            return {"intent": "lab_results", "data": user_input}
-
-        if any(word in input_lower for word in ["allergie", "unverträglichkeit"]):
-            return {"intent": "allergy_info", "data": user_input}
-
-        # Patienten-ID (P001, P002, etc.) - Check even in longer sentences
-        patient_id_match = re.search(r'\b(P\d{3})\b', user_input.upper())
-        if patient_id_match:
-            return {"intent": "patient_id", "data": patient_id_match.group(1)}
-
-        # Korrigiere Sprache-zu-Text Fehler bei Patienten-IDs
-        patterns = [
-            r'p\s*null\s*null\s*(\w+)',
-            r'patient\s*null\s*null\s*(\w+)',
-            r'p\s*0\s*0\s*(\w+)'
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, input_lower)
-            if match:
-                number = match.group(1)
-                # Deutsche Zahlwörter zu Ziffern
-                number_map = {
-                    'eins': '1', 'zwei': '2', 'drei': '3', 'vier': '4',
-                    'fünf': '5', 'sechs': '6', 'sieben': '7', 'acht': '8',
-                    'neun': '9', 'null': '0', 'zehn': '10'
-                }
-                if number in number_map:
-                    number = number_map[number]
-                corrected_id = f"P{number.zfill(3)}"
-                return {"intent": "patient_id", "data": corrected_id}
-
-        # Greetings - but only if no other important info is present
-        greetings = ["hallo", "guten tag", "hi", "hey", "servus", "grüezi", "guten morgen", "guten abend"]
-        has_greeting = any(g in input_lower for g in greetings)
-
-        # Name detection
-        name_patterns = [
-            r"(?:patient|patientin)\s+(?:heißt|ist)\s+([A-Za-zäöüÄÖÜß\s]+)",
-            r"(?:herr|frau)\s+([A-Za-zäöüÄÖÜß]+(?:\s+[A-Za-zäöüÄÖÜß]+)?)"
-        ]
-
-        for pattern in name_patterns:
-            match = re.search(pattern, user_input, re.IGNORECASE)
-            if match:
-                name = match.group(1).strip()
-                if name.lower() not in ["patient", "patientin", "der", "die", "das"]:
-                    return {"intent": "patient_name", "data": name}
-
-        # If we found a greeting but no other data, return greeting
-        if has_greeting and not patient_id_match:
-            return {"intent": "greeting", "data": None}
-
-        # Medical keywords
-        if any(word in input_lower for word in ["patient", "behandlung", "diagnose", "medikament"]):
-            return {"intent": "medical_query", "data": user_input}
-
-        # Default
-        return {"intent": "general_query", "data": user_input}
-
-
 class MedicalAssistant(Agent):
     """Medical Assistant für Patientenverwaltung"""
 
     def __init__(self) -> None:
-        # Instructions erweitert für kontextbewusste Funktionen
-        super().__init__(instructions="""You are Lisa, the digital assistant of Klinik St. Anna. RESPOND ONLY IN GERMAN.
+        super().__init__(instructions="""Du bist Lisa, die digitale Assistentin der Klinik St. Anna. ANTWORTE NUR AUF DEUTSCH.
 
-CRITICAL ANTI-HALLUCINATION RULES:
-1. NEVER invent data - if search returns "keine passenden Daten", SAY THAT
-2. NEVER claim to have found data when the search failed
-3. NEVER make up diagnoses, treatments, or any medical information
-4. When you get "keine passenden Daten", ask for identification again
-5. ALWAYS acknowledge found symptoms when they are listed in the data
+WICHTIGE REGELN:
+1. Verwende 'search_patient_data' für neue Patientensuchen
+2. Verwende 'get_current_patient_details' für Details des geladenen Patienten
+3. Erfinde NIEMALS Daten - sage wenn keine Daten gefunden wurden
+4. Melde IMMER genau was die Funktionen zurückgeben""")
 
-CONTEXT-AWARE FUNCTION USAGE:
-1. Use 'search_patient_data' ONLY for:
-   - Initial patient lookup (by ID or name)
-   - Switching to a different patient
-   - When explicitly asked to search again
-
-2. Use 'get_current_patient_details' for:
-   - Questions about the already loaded patient
-   - Specific details like medication, treatments, allergies
-   - Any follow-up questions about the current patient
-
-WORKFLOW EXAMPLE:
-User: "P005"
-You: [Use search_patient_data("P005")]
-User: "Was ist die aktuelle Medikation?"
-You: [Use get_current_patient_details("medication")]
-User: "Welche chronischen Erkrankungen?"
-You: [Use get_current_patient_details("chronic_conditions")]
-
-AVAILABLE DETAIL TYPES for get_current_patient_details:
-- "medication" - Aktuelle Medikation
-- "treatments" - Letzte Behandlungen
-- "allergies" - Allergien
-- "chronic_conditions" - Chronische Erkrankungen
-- "all" - Alle verfügbaren Informationen
-
-PATIENT IDENTIFICATION OPTIONS:
-1. Patienten-ID (z.B. "P001", "P002", etc.) - PREFERRED METHOD
-2. Full name (z.B. "Maria Schmidt")
-
-FORBIDDEN WORDS (use alternatives):
-- "Entschuldigung" → "Leider"
-- "Es tut mir leid" → "Bedauerlicherweise"
-- "Sorry" → "Leider"
-
-RESPONSE RULES:
-1. Be professional and precise
-2. If search returns no data, SAY SO and ask for identification
-3. NEVER invent medical information
-4. Always acknowledge symptoms found in the data
-5. Use the context-aware functions appropriately
-
-Remember: ALWAYS report exactly what the functions return, NEVER invent data!""")
-
-        self.identifier_extractor = IdentifierExtractor()
-        logger.info("✅ MedicalAssistant initialized with Patient-ID support")
-
-    async def on_enter(self):
-        """Wird aufgerufen wenn der Agent die Session betritt"""
-        logger.info("🎯 Agent on_enter called")
-
-    def _extract_patient_data_from_content(self, content: str, context: RunContext[MedicalUserData]):
-        """Extrahiert strukturierte Daten aus dem Content und speichert sie im Context"""
-        # Extract patient ID from content
-        patient_id_patterns = [
-            r'Patient:\s*(P\d{3})',
-            r'(P\d{3})\s*\n',
-            r'patient_id["\']?:\s*["\']?(P\d{3})',
-            r'\b(P\d{3})\b'
-        ]
-        
-        for pattern in patient_id_patterns:
-            patient_id_match = re.search(pattern, content, re.IGNORECASE)
-            if patient_id_match:
-                patient_id = patient_id_match.group(1)
-                context.userdata.active_patient = patient_id
-                context.userdata.patient_context.patient_id = patient_id
-                logger.info(f"✅ Extracted patient ID: {patient_id}")
-                break
-        
-        # Extract patient name
-        name_patterns = [
-            r'Name:\s*([^\n]+)',
-            r'Patient:\s*([^P\n][^\n]+)',
-            r'name["\']?:\s*["\']?([^"\']+)',
-            r'für\s+([A-Za-zäöüÄÖÜß\s]+)(?:\n|:)'
-        ]
-        
-        for pattern in name_patterns:
-            name_match = re.search(pattern, content, re.IGNORECASE)
-            if name_match:
-                patient_name = name_match.group(1).strip()
-                if patient_name and not patient_name.startswith('P'):
-                    context.userdata.patient_context.patient_name = patient_name
-                    logger.info(f"✅ Extracted patient name: {patient_name}")
-                    break
-        
-        # Extract allergies
-        allergy_patterns = [
-            r'Allergien:\s*([^\n]+)',
-            r'allergien["\']?:\s*\[([^\]]+)\]',
-            r'Allergie[n]?:\s*([^\n]+)'
-        ]
-        
-        for pattern in allergy_patterns:
-            allergies_match = re.search(pattern, content, re.IGNORECASE)
-            if allergies_match:
-                allergies = allergies_match.group(1).strip()
-                # Clean up JSON-like formatting
-                allergies = allergies.replace('"', '').replace("'", '')
-                context.userdata.patient_allergies = allergies
-                logger.info(f"✅ Extracted allergies: {allergies}")
-                break
-                
-        # Extract chronic conditions
-        chronic_patterns = [
-            r'Chronische Erkrankungen:\s*([^\n]+)',
-            r'chronische_erkrankungen["\']?:\s*\[([^\]]+)\]',
-            r'Erkrankungen:\s*([^\n]+)'
-        ]
-        
-        for pattern in chronic_patterns:
-            chronic_match = re.search(pattern, content, re.IGNORECASE)
-            if chronic_match:
-                conditions = chronic_match.group(1).strip()
-                # Clean up JSON-like formatting
-                conditions = conditions.replace('"', '').replace("'", '')
-                context.userdata.patient_chronic_conditions = conditions
-                logger.info(f"✅ Extracted chronic conditions: {conditions}")
-                break
+        logger.info("✅ MedicalAssistant initialized")
 
     @function_tool
     async def search_patient_data(self,
                                  context: RunContext[MedicalUserData],
                                  query: str) -> str:
         """
-        Sucht nach Patientendaten in der medizinischen Datenbank basierend auf Patienten-ID oder Namen.
-        Diese Funktion wird vom LLM aufgerufen, wenn nach Patientendaten gesucht werden soll.
-
+        Sucht nach Patientendaten - akzeptiert Patienten-ID (P001-P005) oder Namen.
+        
         Args:
-            query: Suchbegriff (Patienten-ID oder Name)
-
+            query: Suchbegriff (ID oder Name)
+            
         Returns:
-            Gefundene Patientendaten oder Fehlermeldung
+            Formatierte Patientendaten oder Fehlermeldung
         """
-        logger.info(f"🔍 Original search query: {query}")
-
-        # Extract intent from query
-        intent_result = self.identifier_extractor.extract_intent_from_input(query)
-        intent = intent_result["intent"]
-        data = intent_result["data"]
-
-        logger.info(f"📊 Intent: {intent}, Data: {data}")
-
-        # Store identification in context
-        if intent == "patient_id":
-            context.userdata.patient_context.patient_id = data
-            query = data
-        elif intent == "patient_name":
-            context.userdata.patient_context.patient_name = data
-            query = data
-
-        # Process queries for common speech-to-text errors
-        processed_query = self._process_patient_id(query)
-        if processed_query != query:
-            logger.info(f"✅ Corrected query from '{query}' to '{processed_query}'")
-            query = processed_query
-
-        # Store search query
-        context.userdata.last_search_query = query
-
-        # Clear previous patient data
+        logger.info(f"🔍 Searching for: {query}")
+        
+        # Reset previous data
+        context.userdata.active_patient = None
+        context.userdata.patient_name = None
         context.userdata.patient_info = None
         context.userdata.patient_medication = None
         context.userdata.patient_treatments = []
         context.userdata.patient_allergies = None
         context.userdata.patient_chronic_conditions = None
-        context.userdata.active_patient = None  # WICHTIG: Reset active patient
-
+        
         try:
-            # NEUE DIREKTE QDRANT INTEGRATION
-            
-            # Check if query is a patient ID (P followed by 3 digits)
-            is_patient_id = bool(re.match(r'^P\d{3}$', query.upper()))
-            
-            if is_patient_id:
-                # Direkte Qdrant-Abfrage für Patienten-IDs
-                logger.info(f"🔍 Direct Qdrant search for patient ID: {query}")
+            # IMMER direkte Qdrant-Abfrage!
+            async with httpx.AsyncClient() as client:
+                # Erste Abfrage: Scroll durch ALLE Dokumente
+                response = await client.post(
+                    f"{context.userdata.qdrant_url}/collections/{MEDICAL_COLLECTION}/points/scroll",
+                    json={
+                        "limit": 100,  # Mehr Ergebnisse holen
+                        "with_payload": True,
+                        "with_vector": False
+                    },
+                    timeout=10.0
+                )
                 
-                async with httpx.AsyncClient() as client:
-                    response = await client.post(
-                        f"{context.userdata.qdrant_url}/collections/{MEDICAL_COLLECTION}/points/scroll",
-                        json={
-                            "filter": {
-                                "must": [
-                                    {
-                                        "key": "patient_id",
-                                        "match": {
-                                            "value": query.upper()
-                                        }
-                                    }
-                                ]
-                            },
-                            "limit": 20,
-                            "with_payload": True,
-                            "with_vector": False
-                        },
-                        timeout=5.0
-                    )
-
-                    if response.status_code == 200:
-                        qdrant_data = response.json()
-                        points = qdrant_data.get("result", {}).get("points", [])
+                if response.status_code == 200:
+                    qdrant_data = response.json()
+                    points = qdrant_data.get("result", {}).get("points", [])
+                    
+                    logger.info(f"📊 Got {len(points)} total documents from Qdrant")
+                    
+                    # Suche in allen Dokumenten
+                    matching_docs = []
+                    found_patient_id = None
+                    found_patient_name = None
+                    
+                    # Normalisiere Suchanfrage
+                    search_normalized = query.upper().strip()
+                    
+                    for point in points:
+                        content = point.get("payload", {}).get("content", "")
+                        metadata = point.get("payload", {}).get("metadata", {})
                         
-                        if points:
-                            logger.info(f"✅ Found {len(points)} results from Qdrant")
-                            
-                            # Store patient ID
-                            context.userdata.active_patient = query.upper()
-                            context.userdata.patient_context.patient_id = query.upper()
-                            
-                            # Format results by data type and store in context
-                            patient_info = None
-                            medication = None
-                            treatments = []
-                            
-                            for point in points:
-                                payload = point.get("payload", {})
-                                data_type = payload.get("data_type", "")
-                                content = payload.get("content", "")
-                                
-                                if data_type == "patient_info":
-                                    patient_info = content
-                                    context.userdata.patient_info = content
-                                    # Extract data from content
-                                    self._extract_patient_data_from_content(content, context)
-                                elif data_type == "medication":
-                                    medication = content
-                                    context.userdata.patient_medication = content
-                                elif data_type == "treatment":
-                                    treatments.append(content)
-                            
-                            # Store treatments
-                            context.userdata.patient_treatments = treatments
-                            
-                            # Build response
-                            response_text = "Ich habe folgende Patientendaten gefunden:\n\n"
-                            
-                            if patient_info:
-                                response_text += f"**Patientendaten:**\n{patient_info}\n\n"
-                            
-                            if medication:
-                                response_text += f"**{medication}\n\n"
-                            
-                            if treatments:
-                                response_text += "**Behandlungen:**\n"
-                                for treatment in treatments[:3]:  # Limit to 3 most recent
-                                    response_text += f"{treatment}\n\n"
-                            
-                            # Update conversation state
-                            context.userdata.conversation_state = ConversationState.PROVIDING_INFO
-                            
-                            return response_text.strip()
-                        
+                        # Suche nach Patient ID
+                        if re.match(r'^P\d{3}$', search_normalized):
+                            # Suche nach exakter Patient ID
+                            if search_normalized in content:
+                                matching_docs.append(point)
+                                found_patient_id = search_normalized
                         else:
-                            logger.info("❌ No results found in Qdrant")
-                            context.userdata.patient_context.reset()
-                            return "Ich habe keine Patientendaten für diese ID gefunden. Bitte überprüfen Sie die Patienten-ID."
+                            # Suche nach Namen (case-insensitive)
+                            if query.lower() in content.lower():
+                                matching_docs.append(point)
+                                # Extrahiere Patient ID aus Content
+                                id_match = re.search(r'(P\d{3})', content)
+                                if id_match and not found_patient_id:
+                                    found_patient_id = id_match.group(1)
+                                # Extrahiere Namen
+                                if not found_patient_name and "Patient:" in content:
+                                    name_match = re.search(r'Patient:\s*([^\n]+)', content)
+                                    if name_match:
+                                        found_patient_name = name_match.group(1).strip()
+                    
+                    if matching_docs:
+                        logger.info(f"✅ Found {len(matching_docs)} matching documents")
+                        
+                        # Setze aktiven Patienten
+                        if found_patient_id:
+                            context.userdata.active_patient = found_patient_id
+                            logger.info(f"✅ Set active patient: {found_patient_id}")
+                        
+                        if found_patient_name:
+                            context.userdata.patient_name = found_patient_name
+                            logger.info(f"✅ Found patient name: {found_patient_name}")
+                        
+                        # Verarbeite Dokumente nach Typ
+                        patient_info = None
+                        medication = None
+                        treatments = []
+                        
+                        for doc in matching_docs:
+                            content = doc.get("payload", {}).get("content", "")
+                            metadata = doc.get("payload", {}).get("metadata", {})
+                            data_type = metadata.get("data_type", "")
+                            
+                            # Bestimme Typ aus Content wenn metadata leer
+                            if not data_type:
+                                if "Geburtsdatum:" in content or "Blutgruppe:" in content:
+                                    data_type = "patient_info"
+                                elif "Medikation" in content:
+                                    data_type = "medication"
+                                elif "Behandlung:" in content:
+                                    data_type = "treatment"
+                            
+                            if data_type == "patient_info" and not patient_info:
+                                patient_info = content
+                                context.userdata.patient_info = content
+                                # Extrahiere Details
+                                if "Allergien:" in content:
+                                    allergies_match = re.search(r'Allergien:\s*([^\n]+)', content)
+                                    if allergies_match:
+                                        context.userdata.patient_allergies = allergies_match.group(1)
+                                if "Chronische Erkrankungen:" in content:
+                                    chronic_match = re.search(r'Chronische Erkrankungen:\s*([^\n]+)', content)
+                                    if chronic_match:
+                                        context.userdata.patient_chronic_conditions = chronic_match.group(1)
+                            
+                            elif data_type == "medication" and not medication:
+                                medication = content
+                                context.userdata.patient_medication = content
+                            
+                            elif data_type == "treatment":
+                                treatments.append(content)
+                        
+                        context.userdata.patient_treatments = treatments
+                        
+                        # Erstelle Antwort
+                        response_text = "Ich habe folgende Patientendaten gefunden:\n\n"
+                        
+                        if patient_info:
+                            response_text += f"**Patientendaten:**\n{patient_info}\n\n"
+                        
+                        if medication:
+                            response_text += f"**{medication}\n\n"
+                        
+                        if treatments:
+                            response_text += "**Behandlungen:**\n"
+                            for treatment in treatments[:3]:
+                                response_text += f"{treatment}\n\n"
+                        
+                        return response_text.strip()
                     
                     else:
-                        logger.error(f"Qdrant error: {response.status_code}")
-                        # Fallback to RAG service
-                        return await self._search_via_rag_service(context, query)
-            
-            else:
-                # Für Namen-Suchen verwenden wir weiterhin den RAG Service (Vektor-Suche)
-                logger.info(f"🔍 Using RAG service for name search: {query}")
-                return await self._search_via_rag_service(context, query)
-
+                        logger.info("❌ No matching documents found")
+                        return f"Ich habe keine Patientendaten für '{query}' gefunden. Bitte überprüfen Sie die Eingabe."
+                
+                else:
+                    logger.error(f"Qdrant error: {response.status_code}")
+                    return "Die Datenbank ist momentan nicht erreichbar. Bitte versuchen Sie es später erneut."
+                    
         except Exception as e:
             logger.error(f"Search error: {e}")
-            # Fallback to RAG service
-            try:
-                return await self._search_via_rag_service(context, query)
-            except:
-                return "Die Patientendatenbank ist momentan nicht erreichbar. Bitte versuchen Sie es später noch einmal."
+            return "Es gab einen Fehler bei der Suche. Bitte versuchen Sie es erneut."
 
     @function_tool
     async def get_current_patient_details(self,
                                         context: RunContext[MedicalUserData],
                                         detail_type: str) -> str:
         """
-        Gibt spezifische Details des aktuell geladenen Patienten zurück.
-        Verwenden Sie diese Funktion NUR wenn bereits ein Patient geladen wurde.
-
+        Gibt Details des aktuell geladenen Patienten zurück.
+        
         Args:
-            detail_type: Art der gewünschten Information 
-                        ("medication", "treatments", "allergies", "chronic_conditions", "all")
-
+            detail_type: "medication", "treatments", "allergies", "chronic_conditions", oder "all"
+            
         Returns:
-            Die angeforderten Patientendetails oder eine Fehlermeldung
+            Die angeforderten Details
         """
-        logger.info(f"📋 Getting current patient details: {detail_type}")
-        logger.info(f"📋 Active patient: {context.userdata.active_patient}")
-        logger.info(f"📋 Patient context ID: {context.userdata.patient_context.patient_id}")
+        logger.info(f"📋 Getting details: {detail_type} for patient: {context.userdata.active_patient}")
         
-        # Check if we have a patient loaded
-        if not context.userdata.active_patient and not context.userdata.patient_context.patient_id:
-            return "Es ist kein Patient geladen. Bitte geben Sie zuerst eine Patienten-ID oder einen Namen an."
+        if not context.userdata.active_patient and not context.userdata.patient_name:
+            return "Es ist kein Patient geladen. Bitte suchen Sie zuerst nach einem Patienten."
         
-        patient_id = context.userdata.active_patient or context.userdata.patient_context.patient_id
-        response_text = f"Details für Patient {patient_id}:\n\n"
+        patient_id = context.userdata.active_patient or "Unbekannt"
+        patient_name = context.userdata.patient_name or "Unbekannt"
+        
+        response_text = f"Details für {patient_name} ({patient_id}):\n\n"
         
         if detail_type == "medication" or detail_type == "all":
             if context.userdata.patient_medication:
                 response_text += f"**{context.userdata.patient_medication}\n\n"
             else:
-                response_text += "**Medikation:** Keine Medikationsdaten gefunden.\n\n"
+                response_text += "**Medikation:** Keine Daten vorhanden.\n\n"
         
         if detail_type == "treatments" or detail_type == "all":
             if context.userdata.patient_treatments:
@@ -491,191 +251,25 @@ Remember: ALWAYS report exactly what the functions return, NEVER invent data!"""
                 for treatment in context.userdata.patient_treatments:
                     response_text += f"{treatment}\n\n"
             else:
-                response_text += "**Behandlungen:** Keine Behandlungsdaten gefunden.\n\n"
+                response_text += "**Behandlungen:** Keine Daten vorhanden.\n\n"
         
         if detail_type == "allergies" or detail_type == "all":
             if context.userdata.patient_allergies:
                 response_text += f"**Allergien:** {context.userdata.patient_allergies}\n\n"
             else:
-                response_text += "**Allergien:** Keine Allergiedaten gefunden.\n\n"
+                response_text += "**Allergien:** Keine Daten vorhanden.\n\n"
         
         if detail_type == "chronic_conditions" or detail_type == "all":
             if context.userdata.patient_chronic_conditions:
                 response_text += f"**Chronische Erkrankungen:** {context.userdata.patient_chronic_conditions}\n\n"
             else:
-                response_text += "**Chronische Erkrankungen:** Keine Daten zu chronischen Erkrankungen gefunden.\n\n"
-        
-        if detail_type not in ["medication", "treatments", "allergies", "chronic_conditions", "all"]:
-            return f"Unbekannter Detail-Typ: {detail_type}. Verfügbare Optionen: medication, treatments, allergies, chronic_conditions, all"
+                response_text += "**Chronische Erkrankungen:** Keine Daten vorhanden.\n\n"
         
         return response_text.strip()
 
-    async def _search_via_rag_service(self, context: RunContext[MedicalUserData], query: str) -> str:
-        """Fallback Suche über RAG Service"""
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{context.userdata.rag_url}/search",
-                json={
-                    "query": query,
-                    "agent_type": "medical",
-                    "top_k": 5,
-                    "collection": "medical_nutrition"
-                }
-            )
-
-            if response.status_code == 200:
-                results = response.json().get("results", [])
-                logger.info(f"📋 RAG Response structure: {json.dumps(response.json(), indent=2, ensure_ascii=False)[:500]}")
-
-                if results:
-                    logger.info(f"✅ Found {len(results)} results from RAG")
-
-                    # Format results
-                    formatted = []
-                    patient_info = None
-                    medication = None
-                    treatments = []
-                    patient_id_found = None
-                    patient_name_found = None
-                    
-                    for i, result in enumerate(results[:5]):
-                        content = result.get("content", "").strip()
-                        metadata = result.get("metadata", {})
-                        data_type = metadata.get("data_type", "")
-                        
-                        logger.info(f"📄 Result {i}: data_type={data_type}, content_preview={content[:100]}...")
-                        
-                        if content:
-                            content = self._format_medical_data(content)
-                            
-                            # Extract patient ID and name from any result
-                            if not patient_id_found:
-                                id_match = re.search(r'(P\d{3})', content)
-                                if id_match:
-                                    patient_id_found = id_match.group(1)
-                            
-                            if not patient_name_found:
-                                # Try different patterns for name extraction
-                                name_patterns = [
-                                    r'Patient:\s*P\d{3}\s*\n?Name:\s*([^\n]+)',
-                                    r'Name:\s*([^\n]+)',
-                                    r'Patient:\s*([^P\n][^\n]+)',  # Name not starting with P
-                                    r'für\s+([A-Za-zäöüÄÖÜß\s]+):'  # "für Emma Fischer:"
-                                ]
-                                for pattern in name_patterns:
-                                    name_match = re.search(pattern, content)
-                                    if name_match:
-                                        patient_name_found = name_match.group(1).strip()
-                                        break
-                        
-                        if content:
-                            content = self._format_medical_data(content)
-                            
-                            # Extract patient ID from any result
-                            if not patient_id_found:
-                                id_match = re.search(r'(P\d{3})', content)
-                                if id_match:
-                                    patient_id_found = id_match.group(1)
-                            
-                            if data_type == "patient_info" and not patient_info:
-                                patient_info = content
-                                context.userdata.patient_info = content
-                                # Extract additional data
-                                self._extract_patient_data_from_content(content, context)
-                            elif data_type == "medication" and not medication:
-                                medication = content
-                                context.userdata.patient_medication = content
-                            elif data_type == "treatment":
-                                treatments.append(content)
-
-                    # CRITICAL: Set active patient if found
-                    if patient_id_found:
-                        context.userdata.active_patient = patient_id_found
-                        context.userdata.patient_context.patient_id = patient_id_found
-                        logger.info(f"✅ Set active patient from RAG results: {patient_id_found}")
-                    
-                    if patient_name_found:
-                        context.userdata.patient_context.patient_name = patient_name_found
-                        logger.info(f"✅ Found patient name: {patient_name_found}")
-
-                    # Store treatments
-                    context.userdata.patient_treatments = treatments
-
-                    # Build structured response
-                    response_text = "Ich habe folgende Patientendaten gefunden:\n\n"
-                    
-                    if patient_info:
-                        response_text += f"**Patientendaten:**\n{patient_info}\n\n"
-                    
-                    if medication:
-                        response_text += f"**{medication}\n\n"
-                    
-                    if treatments:
-                        response_text += "**Behandlungen:**\n"
-                        for treatment in treatments[:3]:
-                            response_text += f"{treatment}\n\n"
-                    
-                    # Update conversation state
-                    context.userdata.conversation_state = ConversationState.PROVIDING_INFO
-                    
-                    logger.info(f"📊 Final state - Active patient: {context.userdata.active_patient}, Name: {context.userdata.patient_context.patient_name}")
-                    
-                    return response_text.strip()
-
-                else:
-                    logger.info("❌ No results found from RAG")
-                    context.userdata.patient_context.reset()
-                    context.userdata.conversation_state = ConversationState.COLLECTING_IDENTIFIER
-                    return "Ich habe keine passenden Patientendaten gefunden. Können Sie mir bitte die Patienten-ID (z.B. P001) oder den vollständigen Namen des Patienten nennen?"
-            else:
-                logger.error(f"RAG search failed: {response.status_code}")
-                return "Es gab ein Problem mit der Datenbank-Verbindung. Bitte versuchen Sie es erneut."
-
-    def _process_patient_id(self, text: str) -> str:
-        """Korrigiert Sprache-zu-Text Fehler bei Patienten-IDs"""
-        # Pattern für verschiedene Varianten
-        patterns = [
-            r'p\s*null\s*null\s*(\w+)',
-            r'patient\s*null\s*null\s*(\w+)',
-            r'p\s*0\s*0\s*(\w+)'
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, text.lower())
-            if match:
-                number = match.group(1)
-
-                # Deutsche Zahlwörter zu Ziffern
-                number_map = {
-                    'eins': '1', 'zwei': '2', 'drei': '3', 'vier': '4',
-                    'fünf': '5', 'sechs': '6', 'sieben': '7', 'acht': '8',
-                    'neun': '9', 'null': '0', 'zehn': '10'
-                }
-
-                if number in number_map:
-                    number = number_map[number]
-
-                # Erstelle korrekte ID
-                corrected_id = f"P{number.zfill(3)}"
-                text = re.sub(pattern, corrected_id, text, flags=re.IGNORECASE)
-                logger.info(f"✅ Corrected patient ID to '{corrected_id}'")
-                break
-
-        return text
-
-    def _format_medical_data(self, content: str) -> str:
-        """Formatiert medizinische Daten für bessere Lesbarkeit"""
-        # Ersetze Unterstriche durch Leerzeichen
-        content = content.replace('_', ' ')
-
-        # Formatiere Währungen
-        content = re.sub(r'(\d+)\.(\d{2})', r'\1 Franken \2', content)
-
-        return content
-
 
 async def request_handler(ctx: JobContext):
-    """Request handler ohne Hash-Assignment"""
+    """Request handler"""
     logger.info(f"[{AGENT_NAME}] 📨 Job request received")
     logger.info(f"[{AGENT_NAME}] Room: {ctx.room.name}")
     await ctx.accept()
@@ -693,15 +287,6 @@ async def entrypoint(ctx: JobContext):
     session = None
     session_closed = False
 
-    # Register disconnect handler FIRST
-    def on_disconnect():
-        nonlocal session_closed
-        logger.info(f"[{session_id}] Room disconnected event received")
-        session_closed = True
-
-    if ctx.room:
-        ctx.room.on("disconnected", on_disconnect)
-
     try:
         # 1. Connect to room
         await ctx.connect()
@@ -711,46 +296,25 @@ async def entrypoint(ctx: JobContext):
         participant = await ctx.wait_for_participant()
         logger.info(f"✅ [{session_id}] Participant joined: {participant.identity}")
 
-        # 3. Wait for audio track
-        audio_track_received = False
-        max_wait_time = 10
-
-        for i in range(max_wait_time):
-            for track_pub in participant.track_publications.values():
-                if track_pub.kind == rtc.TrackKind.KIND_AUDIO:
-                    logger.info(f"✅ [{session_id}] Audio track found")
-                    audio_track_received = True
-                    break
-
-            if audio_track_received:
-                break
-
-            await asyncio.sleep(1)
-
-        # 4. Configure LLM with Ollama - KORREKTE API WIE GARAGE AGENT!
+        # 3. Configure Ollama
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
         qdrant_url = os.getenv("QDRANT_URL", "http://172.16.0.108:6333")
 
-        # Llama 3.2 with Ollama configuration - GENAU WIE GARAGE AGENT
         llm = openai.LLM.with_ollama(
             model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
-            temperature=0.0,  # Deterministisch für medizinische Präzision
+            temperature=0.0,
         )
-        logger.info(f"🤖 [{session_id}] Using Llama 3.2 with anti-hallucination settings")
+        logger.info(f"🤖 [{session_id}] Using Llama 3.2")
 
-        # 5. Create session - EXAKT WIE GARAGE AGENT
+        # 4. Create session
         session = AgentSession[MedicalUserData](
             userdata=MedicalUserData(
-                authenticated_doctor=None,
                 rag_url=rag_url,
                 qdrant_url=qdrant_url,
-                current_patient_data=None,
                 greeting_sent=False,
-                conversation_state=ConversationState.GREETING,
-                patient_context=PatientContext(),
-                last_search_query=None,
                 active_patient=None,
+                patient_name=None,
                 patient_info=None,
                 patient_medication=None,
                 patient_treatments=[],
@@ -774,10 +338,9 @@ async def entrypoint(ctx: JobContext):
             max_endpointing_delay=3.0
         )
 
-        # 6. Create agent
+        # 5. Create and start agent
         agent = MedicalAssistant()
-
-        # 7. Start session
+        
         logger.info(f"🏁 [{session_id}] Starting session...")
         await session.start(
             room=ctx.room,
@@ -789,49 +352,25 @@ async def entrypoint(ctx: JobContext):
         def on_user_input(event):
             logger.info(f"[{session_id}] 🎤 User: {event.transcript}")
 
-            # Intent detection
-            intent_result = IdentifierExtractor.extract_intent_from_input(event.transcript)
-            logger.info(f"[{session_id}] 📊 Detected intent: {intent_result['intent']}")
-
         @session.on("agent_state_changed")
         def on_state_changed(event):
             logger.info(f"[{session_id}] 🤖 Agent state: {event}")
 
-        @session.on("function_call")
-        def on_function_call(event):
-            """Log function calls für Debugging"""
-            logger.info(f"[{session_id}] 🔧 Function call: {event}")
-
-        # 8. Initial greeting
+        # 6. Initial greeting
         await asyncio.sleep(1.5)
 
-        logger.info(f"📢 [{session_id}] Sending initial greeting...")
-
-        try:
-            greeting_text = """Guten Tag und herzlich willkommen bei der Klinik St. Anna!
+        greeting_text = """Guten Tag und herzlich willkommen bei der Klinik St. Anna!
 Ich bin Lisa, Ihre digitale medizinische Assistentin.
 
-Für eine schnelle Bearbeitung benötige ich eine der folgenden Informationen:
-- Die Patienten-ID (z.B. P001)
-- Den vollständigen Namen des Patienten
+Bitte nennen Sie mir die Patienten-ID (z.B. P001) oder den Namen des Patienten."""
 
-Welche Patientendaten benötigen Sie heute, Herr Doktor?"""
+        await session.say(
+            greeting_text,
+            allow_interruptions=True,
+            add_to_chat_ctx=True
+        )
 
-            session.userdata.greeting_sent = True
-            session.userdata.conversation_state = ConversationState.AWAITING_REQUEST
-
-            await session.say(
-                greeting_text,
-                allow_interruptions=True,
-                add_to_chat_ctx=True
-            )
-
-            logger.info(f"✅ [{session_id}] Initial greeting sent")
-
-        except Exception as e:
-            logger.error(f"[{session_id}] Greeting error: {e}", exc_info=True)
-
-        logger.info(f"✅ [{session_id}] Medical Agent ready with Patient-ID support!")
+        logger.info(f"✅ [{session_id}] Agent ready!")
 
         # Wait for disconnect
         disconnect_event = asyncio.Event()
@@ -842,16 +381,13 @@ Welche Patientendaten benötigen Sie heute, Herr Doktor?"""
             disconnect_event.set()
 
         ctx.room.on("disconnected", handle_disconnect)
-
         await disconnect_event.wait()
-        logger.info(f"[{session_id}] Session ending...")
 
     except Exception as e:
         logger.error(f"❌ [{session_id}] Error: {e}", exc_info=True)
         raise
 
     finally:
-        # Cleanup
         if session and not session_closed:
             try:
                 await session.aclose()
@@ -859,7 +395,6 @@ Welche Patientendaten benötigen Sie heute, Herr Doktor?"""
             except:
                 pass
 
-        logger.info(f"✅ [{session_id}] Cleanup complete")
         logger.info("="*50)
 
 
