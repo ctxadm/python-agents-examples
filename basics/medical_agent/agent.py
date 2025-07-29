@@ -451,8 +451,8 @@ async def entrypoint(ctx: JobContext):
             ),
             llm=llm,
             vad=silero.VAD.load(
-                min_silence_duration=0.4,  # WIE GARAGE AGENT
-                min_speech_duration=0.15   # WIE GARAGE AGENT
+                min_silence_duration=0.4,
+                min_speech_duration=0.15
             ),
             stt=openai.STT(
                 model="whisper-1",
@@ -460,7 +460,7 @@ async def entrypoint(ctx: JobContext):
             ),
             tts=openai.TTS(
                 model="tts-1",
-                voice="nova"  # WIE GARAGE AGENT - "nova" statt "shimmer"
+                voice="nova"
             ),
             min_endpointing_delay=0.3,
             max_endpointing_delay=3.0
