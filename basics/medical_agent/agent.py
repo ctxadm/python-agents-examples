@@ -1,4 +1,4 @@
-# LiveKit Agents - Medical Agent mit separaten Funktionen für Kontext
+# LiveKit Agents - Medical Agent mit korrigierter Kontext-Persistierung
 import logging
 import os
 import httpx
@@ -221,6 +221,37 @@ Remember: ALWAYS report exactly what the functions return, NEVER invent data!"""
         """Wird aufgerufen wenn der Agent die Session betritt"""
         logger.info("🎯 Agent on_enter called")
 
+    def _extract_patient_data_from_content(self, content: str, context: RunContext[MedicalUserData]):
+        """Extrahiert strukturierte Daten aus dem Content und speichert sie im Context"""
+        # Extract patient ID from content
+        patient_id_match = re.search(r'Patient:\s*(P\d{3})', content)
+        if not patient_id_match:
+            patient_id_match = re.search(r'(P\d{3})', content)
+        
+        if patient_id_match:
+            patient_id = patient_id_match.group(1)
+            context.userdata.active_patient = patient_id
+            context.userdata.patient_context.patient_id = patient_id
+            logger.info(f"✅ Set active patient to: {patient_id}")
+        
+        # Extract patient name
+        name_match = re.search(r'Patient:\s*([^\n]+)', content)
+        if name_match and not name_match.group(1).startswith('P'):
+            patient_name = name_match.group(1).strip()
+            context.userdata.patient_context.patient_name = patient_name
+        
+        # Extract allergies
+        if "Allergien:" in content:
+            allergies_match = re.search(r'Allergien:\s*([^\n]+)', content)
+            if allergies_match:
+                context.userdata.patient_allergies = allergies_match.group(1).strip()
+                
+        # Extract chronic conditions
+        if "Chronische Erkrankungen:" in content:
+            chronic_match = re.search(r'Chronische Erkrankungen:\s*([^\n]+)', content)
+            if chronic_match:
+                context.userdata.patient_chronic_conditions = chronic_match.group(1).strip()
+
     @function_tool
     async def search_patient_data(self,
                                  context: RunContext[MedicalUserData],
@@ -267,6 +298,7 @@ Remember: ALWAYS report exactly what the functions return, NEVER invent data!"""
         context.userdata.patient_treatments = []
         context.userdata.patient_allergies = None
         context.userdata.patient_chronic_conditions = None
+        context.userdata.active_patient = None  # WICHTIG: Reset active patient
 
         try:
             # NEUE DIREKTE QDRANT INTEGRATION
@@ -322,23 +354,16 @@ Remember: ALWAYS report exactly what the functions return, NEVER invent data!"""
                                 
                                 if data_type == "patient_info":
                                     patient_info = content
-                                    # Extract allergies and chronic conditions
-                                    if "Allergien:" in content:
-                                        allergies_match = re.search(r'Allergien:\s*([^\n]+)', content)
-                                        if allergies_match:
-                                            context.userdata.patient_allergies = allergies_match.group(1)
-                                    if "Chronische Erkrankungen:" in content:
-                                        chronic_match = re.search(r'Chronische Erkrankungen:\s*([^\n]+)', content)
-                                        if chronic_match:
-                                            context.userdata.patient_chronic_conditions = chronic_match.group(1)
+                                    context.userdata.patient_info = content
+                                    # Extract data from content
+                                    self._extract_patient_data_from_content(content, context)
                                 elif data_type == "medication":
                                     medication = content
                                     context.userdata.patient_medication = content
                                 elif data_type == "treatment":
                                     treatments.append(content)
                             
-                            # Store structured data in context
-                            context.userdata.patient_info = patient_info
+                            # Store treatments
                             context.userdata.patient_treatments = treatments
                             
                             # Build response
@@ -399,12 +424,14 @@ Remember: ALWAYS report exactly what the functions return, NEVER invent data!"""
             Die angeforderten Patientendetails oder eine Fehlermeldung
         """
         logger.info(f"📋 Getting current patient details: {detail_type}")
+        logger.info(f"📋 Active patient: {context.userdata.active_patient}")
+        logger.info(f"📋 Patient context ID: {context.userdata.patient_context.patient_id}")
         
         # Check if we have a patient loaded
-        if not context.userdata.active_patient:
+        if not context.userdata.active_patient and not context.userdata.patient_context.patient_id:
             return "Es ist kein Patient geladen. Bitte geben Sie zuerst eine Patienten-ID oder einen Namen an."
         
-        patient_id = context.userdata.active_patient
+        patient_id = context.userdata.active_patient or context.userdata.patient_context.patient_id
         response_text = f"Details für Patient {patient_id}:\n\n"
         
         if detail_type == "medication" or detail_type == "all":
@@ -457,21 +484,55 @@ Remember: ALWAYS report exactly what the functions return, NEVER invent data!"""
                 if results:
                     logger.info(f"✅ Found {len(results)} results from RAG")
 
+                    # WICHTIG: Extrahiere Patient ID aus den Ergebnissen
+                    for result in results:
+                        content = result.get("content", "")
+                        self._extract_patient_data_from_content(content, context)
+
                     # Format results
                     formatted = []
-                    for i, result in enumerate(results[:3]):
+                    patient_info = None
+                    medication = None
+                    treatments = []
+                    
+                    for i, result in enumerate(results[:5]):
                         content = result.get("content", "").strip()
+                        metadata = result.get("metadata", {})
+                        data_type = metadata.get("data_type", "")
+                        
                         if content:
                             content = self._format_medical_data(content)
-                            formatted.append(f"[{i+1}] {content}")
+                            
+                            if data_type == "patient_info" and not patient_info:
+                                patient_info = content
+                                context.userdata.patient_info = content
+                            elif data_type == "medication" and not medication:
+                                medication = content
+                                context.userdata.patient_medication = content
+                            elif data_type == "treatment":
+                                treatments.append(content)
 
+                    # Store treatments
+                    context.userdata.patient_treatments = treatments
+
+                    # Build structured response
                     response_text = "Ich habe folgende Patientendaten gefunden:\n\n"
-                    response_text += "\n\n".join(formatted)
+                    
+                    if patient_info:
+                        response_text += f"**Patientendaten:**\n{patient_info}\n\n"
+                    
+                    if medication:
+                        response_text += f"**{medication}\n\n"
+                    
+                    if treatments:
+                        response_text += "**Behandlungen:**\n"
+                        for treatment in treatments[:3]:
+                            response_text += f"{treatment}\n\n"
                     
                     # Update conversation state
                     context.userdata.conversation_state = ConversationState.PROVIDING_INFO
                     
-                    return response_text
+                    return response_text.strip()
 
                 else:
                     logger.info("❌ No results found from RAG")
