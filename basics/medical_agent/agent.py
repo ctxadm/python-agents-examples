@@ -149,8 +149,8 @@ class MedicalAssistant(Agent):
     """Medical Assistant für Patientenverwaltung"""
 
     def __init__(self) -> None:
-        # Instructions mit Fokus auf Patienten-ID - WICHTIG: Erste Zeile beachten!
-        super().__init__(instructions="""Die initiale Begrüßung wurde bereits automatisch gesendet. NICHT nochmal begrüßen! Du bist Pia, die digitale Assistentin der Klinik St. Anna. ANTWORTE NUR AUF DEUTSCH.
+        # Instructions EXAKT WIE GARAGE AGENT - Erste Zeile ist KRITISCH!
+        super().__init__(instructions="""You are Pia, the digital assistant of Klinik St. Anna. RESPOND ONLY IN GERMAN.
 
 WICHTIG - BEGRÜSSUNGSREGELN:
 - Die Begrüßung "Guten Tag und herzlich willkommen..." wurde BEREITS AUTOMATISCH gesendet
