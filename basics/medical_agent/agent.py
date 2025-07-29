@@ -567,14 +567,14 @@ async def entrypoint(ctx: JobContext):
         participant = await ctx.wait_for_participant()
         logger.info(f"✅ [{session_id}] Participant joined: {participant.identity}")
 
-        # 3. Wait for audio track
+        # 3. Wait for audio track - VERBESSERT!
         audio_track_received = False
         max_wait_time = 10
 
         for i in range(max_wait_time):
             for track_pub in participant.track_publications.values():
-                if track_pub.kind == rtc.TrackKind.KIND_AUDIO:
-                    logger.info(f"✅ [{session_id}] Audio track found")
+                if track_pub.kind == rtc.TrackKind.KIND_AUDIO and track_pub.track is not None:
+                    logger.info(f"✅ [{session_id}] Audio track found and subscribed")
                     audio_track_received = True
                     break
 
@@ -582,25 +582,28 @@ async def entrypoint(ctx: JobContext):
                 break
 
             await asyncio.sleep(1)
+            logger.info(f"⏳ [{session_id}] Waiting for audio track... ({i+1}/{max_wait_time})")
 
-        # 4. Configure LLM with Ollama - KORREKTE API WIE GARAGE AGENT!
+        if not audio_track_received:
+            logger.warning(f"⚠️ [{session_id}] No audio track found after {max_wait_time}s, continuing anyway...")
+
+        # 4. Configure LLM with Ollama
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
-        qdrant_url = os.getenv("QDRANT_URL", "http://172.16.0.108:6333")  # NEU
+        qdrant_url = os.getenv("QDRANT_URL", "http://172.16.0.108:6333")
 
-        # Llama 3.2 with Ollama configuration - GENAU WIE GARAGE AGENT
         llm = openai.LLM.with_ollama(
             model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
-            temperature=0.0,  # Deterministisch für medizinische Präzision
+            temperature=0.0,
         )
         logger.info(f"🤖 [{session_id}] Using Llama 3.2 with direct Qdrant access")
 
-        # 5. Create session - EXAKT WIE GARAGE AGENT
+        # 5. Create session - ANGEPASSTE VAD SETTINGS!
         session = AgentSession[MedicalUserData](
             userdata=MedicalUserData(
                 authenticated_doctor=None,
                 rag_url=rag_url,
-                qdrant_url=qdrant_url,  # NEU: Qdrant URL hinzugefügt
+                qdrant_url=qdrant_url,
                 current_patient_data=None,
                 greeting_sent=False,
                 conversation_state=ConversationState.GREETING,
@@ -610,8 +613,8 @@ async def entrypoint(ctx: JobContext):
             ),
             llm=llm,
             vad=silero.VAD.load(
-                min_silence_duration=0.4,
-                min_speech_duration=0.15
+                min_silence_duration=0.5,  # ERHÖHT von 0.4
+                min_speech_duration=0.2    # ERHÖHT von 0.15
             ),
             stt=openai.STT(
                 model="whisper-1",
@@ -622,7 +625,10 @@ async def entrypoint(ctx: JobContext):
                 voice="nova"
             ),
             min_endpointing_delay=0.3,
-            max_endpointing_delay=3.0
+            max_endpointing_delay=3.0,
+            # NEU: Wichtige Session-Parameter
+            interrupt_min_words=2,  # Mindestens 2 Wörter für Unterbrechung
+            start_audio_before_thinking=True  # Audio vor dem Denken starten
         )
 
         # 6. Create agent
@@ -635,12 +641,23 @@ async def entrypoint(ctx: JobContext):
             agent=agent
         )
 
+        # NEU: Warte auf Audio-Stabilisierung
+        await asyncio.sleep(2.0)  # ERHÖHT von 1.5
+        
+        # Prüfe nochmal Audio Track
+        audio_active = False
+        for track_pub in participant.track_publications.values():
+            if track_pub.kind == rtc.TrackKind.KIND_AUDIO and track_pub.track is not None:
+                audio_active = True
+                break
+        
+        if not audio_active:
+            logger.warning(f"⚠️ [{session_id}] Audio track still not active!")
+
         # Event handlers
         @session.on("user_input_transcribed")
         def on_user_input(event):
             logger.info(f"[{session_id}] 🎤 User: {event.transcript}")
-
-            # Intent detection
             intent_result = IdentifierExtractor.extract_intent_from_input(event.transcript)
             logger.info(f"[{session_id}] 📊 Detected intent: {intent_result['intent']}")
 
@@ -650,17 +667,13 @@ async def entrypoint(ctx: JobContext):
 
         @session.on("function_call")
         def on_function_call(event):
-            """Log function calls für Debugging"""
             logger.info(f"[{session_id}] 🔧 Function call: {event}")
             
-        # NEUER Event Handler für Response-Debugging
         @session.on("agent_response_generated")
         def on_response_generated(event):
-            """Debug ob Medikation/Behandlung vollständig vorgelesen wird"""
             response_preview = str(event)[:200] if hasattr(event, '__str__') else "Unknown"
             logger.info(f"[{session_id}] 🤖 Generated response preview: {response_preview}...")
             
-            # Check ob wichtige Infos fehlen
             if session.userdata.last_search_query:
                 query_lower = session.userdata.last_search_query.lower()
                 response_lower = str(event).lower() if hasattr(event, '__str__') else ""
@@ -673,17 +686,15 @@ async def entrypoint(ctx: JobContext):
                     if not any(treat_indicator in response_lower for treat_indicator in ["datum", "befund", "untersuchung"]):
                         logger.warning("⚠️ Treatment details might be missing in response!")
 
-        # 8. Initial greeting - KEINE ÄNDERUNG!
-        await asyncio.sleep(1.5)
-
+        # 8. Initial greeting - MIT FEHLERBEHANDLUNG
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
 
         try:
-            greeting_text = """Herzlich willkommen bei der Klinik St. Anna!
+            greeting_text = """Guten Tag und herzlich willkommen bei der Klinik St. Anna!
 Ich bin Lisa, Ihre digitale medizinische Assistentin.
 
-Für Ihre Anfrage benötige ich eine der folgenden Informationen:
-- Die Patienten-ID
+Für eine schnelle Bearbeitung benötige ich eine der folgenden Informationen:
+- Die Patienten-ID (z.B. P001)
 - Den vollständigen Namen des Patienten
 
 Welche Patientendaten benötigen Sie heute, Herr Doktor?"""
@@ -691,16 +702,27 @@ Welche Patientendaten benötigen Sie heute, Herr Doktor?"""
             session.userdata.greeting_sent = True
             session.userdata.conversation_state = ConversationState.AWAITING_REQUEST
 
-            await session.say(
-                greeting_text,
-                allow_interruptions=True,
-                add_to_chat_ctx=True
-            )
-
-            logger.info(f"✅ [{session_id}] Initial greeting sent")
+            # NEU: Retry-Mechanismus für Greeting
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    await session.say(
+                        greeting_text,
+                        allow_interruptions=True,
+                        add_to_chat_ctx=True
+                    )
+                    logger.info(f"✅ [{session_id}] Initial greeting sent successfully")
+                    break
+                except Exception as e:
+                    logger.warning(f"[{session_id}] Greeting attempt {attempt+1} failed: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1.0)
+                    else:
+                        raise
 
         except Exception as e:
-            logger.error(f"[{session_id}] Greeting error: {e}", exc_info=True)
+            logger.error(f"[{session_id}] Greeting error after all retries: {e}", exc_info=True)
+            # Trotzdem weitermachen, der Agent kann noch funktionieren
 
         logger.info(f"✅ [{session_id}] Medical Agent ready with direct Qdrant access!")
 
