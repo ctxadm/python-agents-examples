@@ -225,7 +225,7 @@ WICHTIG: Verwende search_patient_data für JEDE Abfrage!""")
                     json={
                         "query": query,
                         "agent_type": "medical",
-                        "top_k": 5,
+                        "top_k": 20,
                         "collection": "medical_nutrition"  # Medical collection
                     }
                 )
