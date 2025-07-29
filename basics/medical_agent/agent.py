@@ -1,4 +1,3 @@
-
 # LiveKit Agents - Medical Agent (Moderne API wie Garage Agent)
 import logging
 import os
@@ -30,6 +29,7 @@ class MedicalUserData:
     authenticated_doctor: Optional[str] = None
     rag_url: str = "http://localhost:8000"
     active_patient: Optional[str] = None
+    greeting_sent: bool = False  # NEU: Flag für Begrüßung
 
 
 class MedicalAssistant(Agent):
@@ -40,7 +40,7 @@ class MedicalAssistant(Agent):
         super().__init__(instructions="""Du bist ein medizinischer Assistent mit Zugriff auf die Patientendatenbank.
 
 WORKFLOW:
-1. Deine erste Begrüßung wird automatisch gesendet. NICHT nochmal begrüßen.
+1. Die Begrüßung wurde bereits gesendet. NICHT nochmal begrüßen.
 2. Warte auf Anfragen des Arztes zu Patientendaten.
 3. Nutze IMMER die search_patient_data Funktion für Patientenanfragen.
 4. Sage NIE "nicht gefunden" wenn die Funktion Daten zurückgibt.
@@ -79,7 +79,7 @@ WICHTIGE REGELN:
                         "query": processed_query,
                         "agent_type": "medical",
                         "top_k": 5,  # Mehr Ergebnisse für bessere Trefferquote
-                        "collection": "medical_nutrition"
+                        "collection": "medical_nutrition"  # WICHTIG: Korrekte Collection
                     }
                 )
 
@@ -237,26 +237,26 @@ async def entrypoint(ctx: JobContext):
             # Trotzdem fortfahren, aber mit Warnung
 
         # === ENDE AUDIO TRACK WAIT ===
-        # WICHTIG: Kein participant.on() hier - RemoteParticipant hat diese Methode nicht!
 
         # 3. LLM-Konfiguration - NUR LLAMA 3.2!
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
 
-        # Immer Llama 3.2 verwenden
+        # Immer Llama 3.2 verwenden - KORRIGIERT: Verwende die richtige Methode
         llm = openai.LLM(
             model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
             api_key="ollama",
-            temperature=0.3
+            temperature=0.3  # Niedrig für medizinische Präzision
         )
         logger.info(f"🤖 [{session_id}] Using Llama 3.2 via Ollama")
 
-        # 4. Create session with userdata (wie im Garage Agent!)
+        # 4. Create session with userdata
         session = AgentSession[MedicalUserData](
             userdata=MedicalUserData(
                 authenticated_doctor=None,
                 rag_url=rag_url,
-                active_patient=None
+                active_patient=None,
+                greeting_sent=False  # NEU: Initial auf False
             ),
             llm=llm,
             vad=silero.VAD.load(
@@ -270,7 +270,9 @@ async def entrypoint(ctx: JobContext):
             tts=openai.TTS(
                 model="tts-1",
                 voice="shimmer"  # Professionelle Stimme für medizinischen Kontext
-            )
+            ),
+            min_endpointing_delay=0.3,
+            max_endpointing_delay=3.0
         )
 
         # 5. Create agent instance
@@ -286,39 +288,49 @@ async def entrypoint(ctx: JobContext):
             agent=agent
         )
 
-        # Debug Event Handler für Session - KORRIGIERT!
+        # Debug Event Handler für Session
         @session.on("user_input_transcribed")
         def on_user_input(event):
             logger.info(f"[{session_id}] 🎤 User input transcribed: {event.transcript} (final: {event.is_final})")
 
         @session.on("agent_state_changed")
         def on_state_changed(event):
-            # KORRIGIERT: Event hat kein 'state' Attribut direkt
-            # Das Event selbst enthält die neuen State-Informationen
             logger.info(f"[{session_id}] 🤖 Agent state changed event received")
 
         @session.on("user_state_changed")
         def on_user_state(event):
-            # KORRIGIERT: Event hat kein 'state' Attribut direkt
             logger.info(f"[{session_id}] 👤 User state changed event received")
 
-        # 8. Initiale Begrüßung mit generate_reply
-        await asyncio.sleep(1.0)  # Warte bis Session vollständig initialisiert
+        @session.on("function_call")
+        def on_function_call(event):
+            """Log function calls für Debugging"""
+            logger.info(f"[{session_id}] 🔧 Function call: {event}")
 
-        # Verwende generate_reply statt say
-        initial_instructions = "Begrüße den Arzt mit: 'Guten Tag Herr Doktor, welche Patientendaten benötigen Sie?'"
-        logger.info(f"📢 [{session_id}] Generating initial greeting...")
+        # 8. Initiale Begrüßung mit say() statt generate_reply()
+        await asyncio.sleep(1.5)  # Warte bis Session vollständig initialisiert
+
+        logger.info(f"📢 [{session_id}] Sending initial greeting...")
 
         try:
-            await session.generate_reply(instructions=initial_instructions)
+            # Direkte Begrüßung mit say()
+            greeting_text = "Guten Tag Herr Doktor, welche Patientendaten benötigen Sie?"
+            
+            session.userdata.greeting_sent = True
+            
+            await session.say(
+                greeting_text,
+                allow_interruptions=True,
+                add_to_chat_ctx=True
+            )
+            
             logger.info(f"✅ [{session_id}] Initial greeting sent")
+
         except Exception as e:
             logger.warning(f"[{session_id}] Could not send initial greeting: {e}")
 
         logger.info(f"✅ [{session_id}] Medical Agent ready and listening!")
 
         # WICHTIG: Warte auf Room Disconnect
-        # Die Session läuft automatisch weiter und handled User Input
         disconnect_event = asyncio.Event()
 
         def handle_disconnect():
