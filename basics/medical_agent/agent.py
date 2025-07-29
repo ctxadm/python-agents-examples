@@ -149,62 +149,30 @@ class MedicalAssistant(Agent):
     """Medical Assistant für Patientenverwaltung"""
 
     def __init__(self) -> None:
-        # Instructions EXAKT WIE GARAGE AGENT - mit dreifachen Anführungszeichen!
-        super().__init__(instructions="""You are Lisa, the digital assistant of Klinik St. Anna. RESPOND ONLY IN GERMAN.
+        # VEREINFACHTE Instructions für Llama 3.2 3B
+        super().__init__(instructions="""Du bist Lisa von der Klinik St. Anna. ANTWORTE NUR AUF DEUTSCH.
 
-CRITICAL ANTI-HALLUCINATION RULES:
-1. NEVER invent data - if search returns "keine passenden Daten", SAY THAT
-2. NEVER claim to have found data when the search failed
-3. NEVER make up diagnoses, treatments, or any medical information
-4. When you get "keine passenden Daten", ask for identification again
-5. ALWAYS acknowledge found symptoms when they are listed in the data
+KRITISCHE REGELN:
+1. Lies IMMER alle gefundenen Daten KOMPLETT vor
+2. Bei "aktuelle Medikation" → Lies ALLE Medikamente mit Dosierung vor
+3. Bei "letzte Behandlungen" → Lies ALLE Behandlungen mit Datum vor
+4. NIEMALS sagen "keine Daten gefunden" wenn Daten da sind!
 
-WHEN DATA IS FOUND WITH SYMPTOMS:
-If the tool returns data with "Aktuelle Symptome" like:
-- Kopfschmerzen seit 3 Tagen
-- Erhöhte Temperatur
+PATIENTENIDENTIFIKATION:
+- Patienten-ID (P001, P002, etc.) 
+- Vollständiger Name
 
-You MUST say something like:
-"Ich sehe bei Patient [Name] folgende dokumentierte Symptome:
-- [Symptom 1]
-- [Symptom 2]
-Möchten Sie weitere Details?"
+WENN DATEN GEFUNDEN:
+Struktur klar vorlesen:
+- Name des Patienten
+- Aktuelle Medikation: [ALLE Medikamente]
+- Letzte Behandlungen: [ALLE Behandlungen]
+- Allergien: [falls vorhanden]
 
-NEVER say "keine spezifischen Symptome gefunden" when symptoms ARE listed!
-
-PATIENT IDENTIFICATION OPTIONS:
-1. Patienten-ID (z.B. "P001", "P002", etc.) - PREFERRED METHOD
-2. Full name (z.B. "Maria Schmidt")
-
-CONVERSATION EXAMPLES:
-Example 1 - Using Patienten-ID:
-User: "Meine Patienten-ID ist P001"
-You: [SEARCH with "P001"]
-
-Example 2 - When asking for specific data:
-User: "Was ist die aktuelle Diagnose?"
-You: [Use search_patient_data to get diagnosis]
-
-Example 3 - Speech-to-text corrections:
-User: "p null null fünf"
-You: [Automatically correct to "P005" and search]
-
-FORBIDDEN WORDS (use alternatives):
-- "Entschuldigung" → "Leider"
-- "Es tut mir leid" → "Bedauerlicherweise"
-- "Sorry" → "Leider"
-
-RESPONSE RULES:
-1. Be professional and precise
-2. If search returns no data, SAY SO and ask for identification
-3. NEVER invent medical information
-4. Always acknowledge symptoms found in the data
-5. Suggest using Patienten-ID for faster service
-
-Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
+WICHTIG: Verwende search_patient_data für JEDE Abfrage!""")
 
         self.identifier_extractor = IdentifierExtractor()
-        logger.info("✅ MedicalAssistant initialized with Patient-ID support")
+        logger.info("✅ MedicalAssistant initialized with simplified instructions")
 
     async def on_enter(self):
         """Wird aufgerufen wenn der Agent die Session betritt"""
@@ -274,15 +242,24 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                             context.userdata.active_patient = patient_match.group()
                             context.userdata.patient_context.patient_id = patient_match.group()
 
-                        # Format results
+                        # VERBESSERTE Formatierung für Llama 3.2 3B
                         formatted = []
                         for i, result in enumerate(results[:3]):
                             content = result.get("content", "").strip()
                             if content:
-                                content = self._format_medical_data(content)
-                                formatted.append(f"[{i+1}] {content}")
+                                # Neue strukturierte Formatierung
+                                content = self._format_medical_data_structured(content)
+                                formatted.append(content)
 
-                        response_text = "Ich habe folgende Patientendaten gefunden:\n\n"
+                        # EXPLIZITE Anweisungen bei spezifischen Queries
+                        response_text = ""
+                        
+                        if "medikation" in query.lower() or "medikamente" in query.lower():
+                            response_text = "WICHTIG: Bitte ALLE Medikamente vollständig vorlesen!\n\n"
+                        elif "behandlung" in query.lower():
+                            response_text = "WICHTIG: Bitte ALLE Behandlungen vollständig vorlesen!\n\n"
+                        
+                        response_text += "Patientendaten gefunden:\n\n"
                         response_text += "\n\n".join(formatted)
                         
                         # Update conversation state
@@ -344,6 +321,55 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
         content = re.sub(r'(\d+)\.(\d{2})', r'\1 Franken \2', content)
 
         return content
+
+    def _format_medical_data_structured(self, content: str) -> str:
+        """NEUE METHODE: Strukturiert Daten für besseres LLM-Verständnis"""
+        try:
+            # Versuche JSON zu parsen
+            data = json.loads(content)
+            
+            formatted = []
+            
+            # Patient Info
+            if 'name' in data:
+                formatted.append(f"PATIENT: {data['name']}")
+                if 'geburtsdatum' in data:
+                    formatted.append(f"Geboren: {data['geburtsdatum']}")
+            
+            # Aktuelle Medikation EXPLIZIT
+            if 'aktuelle_medikation' in data and data['aktuelle_medikation']:
+                formatted.append("\n📋 AKTUELLE MEDIKATION (ALLE vorlesen):")
+                for med in data['aktuelle_medikation']:
+                    formatted.append(f"  • {med['medikament']}: {med['dosierung']} (Grund: {med['grund']})")
+            
+            # Letzte Behandlungen EXPLIZIT
+            if 'letzte_behandlungen' in data and data['letzte_behandlungen']:
+                formatted.append("\n🏥 LETZTE BEHANDLUNGEN (ALLE vorlesen):")
+                for beh in data['letzte_behandlungen']:
+                    befund = beh.get('befund', beh.get('bemerkung', 'Keine Details'))
+                    formatted.append(f"  • {beh['datum']}: {beh['behandlung']}")
+                    formatted.append(f"    → Befund: {befund}")
+            
+            # Allergien
+            if 'allergien' in data and data['allergien']:
+                formatted.append("\n⚠️ ALLERGIEN:")
+                for allergie in data['allergien']:
+                    formatted.append(f"  • {allergie}")
+            
+            # Chronische Erkrankungen
+            if 'chronische_erkrankungen' in data and data['chronische_erkrankungen']:
+                formatted.append("\n🔬 CHRONISCHE ERKRANKUNGEN:")
+                for erkrankung in data['chronische_erkrankungen']:
+                    formatted.append(f"  • {erkrankung}")
+            
+            return "\n".join(formatted)
+            
+        except json.JSONDecodeError:
+            # Fallback zur alten Methode
+            return self._format_medical_data(content)
+        except Exception as e:
+            logger.error(f"Formatting error: {e}")
+            return self._format_medical_data(content)
 
 
 async def request_handler(ctx: JobContext):
@@ -466,8 +492,28 @@ async def entrypoint(ctx: JobContext):
         def on_function_call(event):
             """Log function calls für Debugging"""
             logger.info(f"[{session_id}] 🔧 Function call: {event}")
+            
+        # NEUER Event Handler für Response-Debugging
+        @session.on("agent_response_generated")
+        def on_response_generated(event):
+            """Debug ob Medikation/Behandlung vollständig vorgelesen wird"""
+            response_preview = str(event)[:200] if hasattr(event, '__str__') else "Unknown"
+            logger.info(f"[{session_id}] 🤖 Generated response preview: {response_preview}...")
+            
+            # Check ob wichtige Infos fehlen
+            if session.userdata.last_search_query:
+                query_lower = session.userdata.last_search_query.lower()
+                response_lower = str(event).lower() if hasattr(event, '__str__') else ""
+                
+                if "medikation" in query_lower or "medikamente" in query_lower:
+                    if not any(med_indicator in response_lower for med_indicator in ["mg", "hübe", "täglich", "dosierung"]):
+                        logger.warning("⚠️ Medication details might be missing in response!")
+                        
+                if "behandlung" in query_lower:
+                    if not any(treat_indicator in response_lower for treat_indicator in ["datum", "befund", "untersuchung"]):
+                        logger.warning("⚠️ Treatment details might be missing in response!")
 
-        # 8. Initial greeting
+        # 8. Initial greeting - KEINE ÄNDERUNG!
         await asyncio.sleep(1.5)
 
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
@@ -496,7 +542,7 @@ Welche Patientendaten benötigen Sie heute, Herr Doktor?"""
         except Exception as e:
             logger.error(f"[{session_id}] Greeting error: {e}", exc_info=True)
 
-        logger.info(f"✅ [{session_id}] Medical Agent ready with Patient-ID support!")
+        logger.info(f"✅ [{session_id}] Medical Agent ready with enhanced Llama 3.2 3B support!")
 
         # Wait for disconnect
         disconnect_event = asyncio.Event()
