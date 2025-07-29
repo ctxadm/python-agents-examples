@@ -248,11 +248,12 @@ async def entrypoint(ctx: JobContext):
         # 4. Configure LLM with Ollama - EXAKT WIE GARAGE AGENT
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
 
-        # Llama 3.2 with Ollama configuration
-        llm = openai.LLM.with_ollama(
+        # Llama 3.2 with Ollama configuration - EXAKT WIE GARAGE AGENT
+        llm = openai.LLM(
             model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
-            temperature=0.3,  # Niedrig für medizinische Präzision
+            api_key="ollama",
+            temperature=0.3  # Niedrig für medizinische Präzision (Garage hat 0.0)
         )
         logger.info(f"🤖 [{session_id}] Using Llama 3.2 via Ollama")
 
