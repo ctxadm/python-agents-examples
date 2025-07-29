@@ -1,4 +1,18 @@
-# LiveKit Agents - Medical Agent (Moderne API wie Garage Agent)
+def __init__(self) -> None:
+        # Instructions für Medical Agent - KLAR UND DEUTLICH
+        super().__init__(instructions="""Du bist Pia, die digitale Assistentin der Klinik St. Anna. ANTWORTE NUR AUF DEUTSCH.
+
+BEGRÜSSUNGSREGELN:
+- Die initiale Begrüßung wurde bereits gesendet
+- Bei "Hallo" oder ähnlichen Grüßen: Antworte mit "Wie kann ich Ihnen helfen?" oder "Welche Patientendaten benötigen Sie?"
+- KEINE automatische Suche bei einfachen Grüßen
+
+WORKFLOW:
+1. Bei Grüßen: Freundlich antworten und nach Patientendaten fragen
+2. NUR bei expliziten Anfragen die search_patient_data Funktion nutzen
+3. Korrigiere Patienten-IDs automatisch: "p null null fünf" = "P005"
+
+ANTI-HALLUZINATIONS-REG# LiveKit Agents - Medical Agent (Moderne API wie Garage Agent)
 import logging
 import os
 import httpx
@@ -423,7 +437,7 @@ async def entrypoint(ctx: JobContext):
         )
         logger.info(f"🤖 [{session_id}] Using Llama 3.2 for medical precision")
 
-        # 5. Create session
+        # 5. Create session - EXAKT WIE GARAGE AGENT
         session = AgentSession[MedicalUserData](
             userdata=MedicalUserData(
                 authenticated_doctor=None,
@@ -437,8 +451,8 @@ async def entrypoint(ctx: JobContext):
             ),
             llm=llm,
             vad=silero.VAD.load(
-                min_silence_duration=0.8,  # Höher für medizinische Präzision
-                min_speech_duration=0.3
+                min_silence_duration=0.4,  # WIE GARAGE AGENT
+                min_speech_duration=0.15   # WIE GARAGE AGENT
             ),
             stt=openai.STT(
                 model="whisper-1",
@@ -446,7 +460,7 @@ async def entrypoint(ctx: JobContext):
             ),
             tts=openai.TTS(
                 model="tts-1",
-                voice="shimmer"  # Professionelle Stimme für medizinischen Kontext
+                voice="nova"  # WIE GARAGE AGENT - "nova" statt "shimmer"
             ),
             min_endpointing_delay=0.3,
             max_endpointing_delay=3.0
@@ -498,12 +512,18 @@ Welche Patientendaten benötigen Sie heute, Herr Doktor?"""
             session.userdata.greeting_sent = True
             session.userdata.conversation_state = ConversationState.AWAITING_REQUEST
 
+            # Debug: Log vor say()
+            logger.info(f"🎤 [{session_id}] About to call session.say() with greeting")
+            
             # WICHTIG: await verwenden!
-            await session.say(
+            speech_handle = await session.say(
                 greeting_text,
                 allow_interruptions=True,
                 add_to_chat_ctx=True
             )
+            
+            # Debug: Log nach say()
+            logger.info(f"🔊 [{session_id}] session.say() returned, speech_handle: {speech_handle}")
 
             logger.info(f"✅ [{session_id}] Initial greeting sent")
 
