@@ -155,7 +155,7 @@ class MedicalAssistant(Agent):
 
     def __init__(self) -> None:
         # Instructions EXAKT WIE GARAGE AGENT - mit dreifachen Anführungszeichen!
-        super().__init__(instructions="""You are Pia, the digital assistant of Klinik St. Anna. RESPOND ONLY IN GERMAN.
+        super().__init__(instructions="""You are Lisa, the digital assistant of Klinik St. Anna. RESPOND ONLY IN GERMAN.
 
 CRITICAL ANTI-HALLUCINATION RULES:
 1. NEVER invent data - if search returns "keine passenden Daten", SAY THAT
@@ -573,7 +573,7 @@ async def entrypoint(ctx: JobContext):
 
         try:
             greeting_text = """Guten Tag und herzlich willkommen bei der Klinik St. Anna!
-Ich bin Pia, Ihre digitale medizinische Assistentin.
+Ich bin Lisa, Ihre digitale medizinische Assistentin.
 
 Für eine schnelle Bearbeitung benötige ich eine der folgenden Informationen:
 - Die Patienten-ID (z.B. P001)
