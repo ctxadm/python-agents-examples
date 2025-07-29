@@ -29,30 +29,62 @@ class MedicalUserData:
     authenticated_doctor: Optional[str] = None
     rag_url: str = "http://localhost:8000"
     active_patient: Optional[str] = None
-    greeting_sent: bool = False  # NEU: Flag für Begrüßung
 
 
 class MedicalAssistant(Agent):
     """Medical Assistant mit korrekter API-Nutzung"""
 
     def __init__(self) -> None:
-        # Instructions klar und präzise für Llama 3.2
-        super().__init__(instructions="""Du bist ein medizinischer Assistent mit Zugriff auf die Patientendatenbank.
+        # Instructions ANGEPASST für Medical Context
+        super().__init__(instructions="""Du bist ein medizinischer Assistent der Klinik St. Anna. ANTWORTE NUR AUF DEUTSCH.
 
-WORKFLOW:
-1. Die Begrüßung wurde bereits gesendet. NICHT nochmal begrüßen.
-2. Warte auf Anfragen des Arztes zu Patientendaten.
-3. Nutze IMMER die search_patient_data Funktion für Patientenanfragen.
-4. Sage NIE "nicht gefunden" wenn die Funktion Daten zurückgibt.
-5. Korrigiere Patienten-IDs automatisch: "p null null fünf" = "P005"
+KRITISCHE ANTI-HALLUZINATIONS-REGELN:
+1. ERFINDE NIEMALS Daten - wenn die Suche "keine passenden Daten" zurückgibt, SAGE DAS
+2. Behaupte NIEMALS, Daten gefunden zu haben, wenn die Suche fehlgeschlagen ist
+3. Erfinde NIEMALS Diagnosen, Behandlungen oder medizinische Informationen
+4. Wenn du "keine passenden Daten" erhältst, frage erneut nach der Patienten-ID
+5. Bestätige IMMER gefundene Probleme, wenn sie in den Daten aufgelistet sind
 
-WICHTIGE REGELN:
-- Immer auf Deutsch antworten
-- Währungen als "15 Franken 50" statt "15.50"
-- Präzise medizinische Informationen aus der Datenbank wiedergeben
-- Niemals eigene medizinische Diagnosen stellen
-- Die Datenbank enthält: Patienten-IDs, Diagnosen, Behandlungen, Medikation
-- Keine technischen Details oder Funktionen erwähnen""")
+WENN DATEN MIT PROBLEMEN GEFUNDEN WERDEN:
+Wenn das Tool Daten mit "Aktuelle Symptome" zurückgibt wie:
+- Kopfschmerzen seit 3 Tagen
+- Erhöhte Temperatur
+
+Du MUSST sagen:
+"Ich sehe bei Patient [Name] folgende dokumentierte Symptome:
+- [Symptom 1]
+- [Symptom 2]
+Möchten Sie weitere Details zu diesen Symptomen?"
+
+NIEMALS sagen "keine spezifischen Probleme gefunden" wenn Probleme AUFGELISTET sind!
+
+PATIENTEN-IDENTIFIKATION:
+1. Patienten-ID (z.B. "P001", "P002", etc.) - BEVORZUGTE METHODE
+2. Vollständiger Name (z.B. "Maria Schmidt")
+
+KONVERSATIONSBEISPIELE:
+
+Beispiel 1 - Mit Patienten-ID:
+User: "Meine Patienten-ID ist P001"
+Du: [SUCHE mit "P001"]
+
+Beispiel 2 - Spezifische Anfrage:
+User: "Was ist die Diagnose?"
+Du: [Verwende search_patient_data um Diagnose zu finden]
+
+VERBOTENE WÖRTER (verwende Alternativen):
+- "Entschuldigung" → "Leider"
+- "Es tut mir leid" → "Bedauerlicherweise"
+- "Sorry" → "Leider"
+
+ANTWORT-REGELN:
+1. Sei professionell und präzise
+2. Wenn die Suche keine Daten zurückgibt, SAGE ES und frage nach der Patienten-ID
+3. Erfinde NIEMALS medizinische Informationen
+4. Berichte IMMER genau was die Suche zurückgibt
+5. Schlage die Verwendung der Patienten-ID für schnelleren Service vor
+
+Denke daran: Melde IMMER genau, was die Suche zurückgibt, erfinde NIEMALS Daten!""")
         logger.info("✅ MedicalAssistant initialized")
 
     @function_tool
@@ -78,8 +110,8 @@ WICHTIGE REGELN:
                     json={
                         "query": processed_query,
                         "agent_type": "medical",
-                        "top_k": 5,  # Mehr Ergebnisse für bessere Trefferquote
-                        "collection": "medical_nutrition"  # WICHTIG: Korrekte Collection
+                        "top_k": 5,
+                        "collection": "medical_nutrition"  # MEDICAL COLLECTION
                     }
                 )
 
@@ -168,7 +200,7 @@ async def request_handler(ctx: JobContext):
 
 
 async def entrypoint(ctx: JobContext):
-    """Entry point mit moderner API wie im Garage Agent"""
+    """Entry point EXAKT WIE GARAGE AGENT"""
     room_name = ctx.room.name if ctx.room else "unknown"
     session_id = f"{room_name}_{int(asyncio.get_event_loop().time())}"
 
@@ -176,8 +208,8 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"🚀 Starting Medical Agent Session: {session_id}")
     logger.info("="*50)
 
-    session = None  # Session Variable für Cleanup
-    session_closed = False  # Flag um doppeltes Cleanup zu vermeiden
+    session = None
+    session_closed = False
 
     # Register disconnect handler FIRST
     def on_disconnect():
@@ -189,79 +221,52 @@ async def entrypoint(ctx: JobContext):
         ctx.room.on("disconnected", on_disconnect)
 
     try:
-        # 1. Connect FIRST (wie im Garage Agent!)
+        # 1. Connect to room
         await ctx.connect()
         logger.info(f"✅ [{session_id}] Connected to room")
-
-        # Debug: Room Status
-        logger.info(f"Room participants: {len(ctx.room.remote_participants)}")
-        logger.info(f"Local participant: {ctx.room.local_participant.identity}")
-
-        # Debug: Track Event Handler
-        @ctx.room.on("track_published")
-        def on_track_published(publication, participant):
-            logger.info(f"[{session_id}] Track published: {publication.kind} from {participant.identity}")
-
-        @ctx.room.on("track_subscribed")
-        def on_track_subscribed(track, publication, participant):
-            logger.info(f"[{session_id}] Track subscribed: {track.kind} from {participant.identity}")
 
         # 2. Wait for participant
         participant = await ctx.wait_for_participant()
         logger.info(f"✅ [{session_id}] Participant joined: {participant.identity}")
 
-        # === KRITISCH: AUF AUDIO TRACK WARTEN ===
+        # 3. Wait for audio track
         audio_track_received = False
-        max_wait_time = 10  # 10 Sekunden maximal warten
+        max_wait_time = 10
 
         for i in range(max_wait_time):
-            # Check ob Audio Track da ist
             for track_pub in participant.track_publications.values():
                 if track_pub.kind == rtc.TrackKind.KIND_AUDIO:
-                    logger.info(f"✅ [{session_id}] Audio track found: {track_pub.sid}")
+                    logger.info(f"✅ [{session_id}] Audio track found")
                     audio_track_received = True
-
-                    # Log track status
-                    logger.info(f"📡 [{session_id}] Audio track - subscribed: {track_pub.subscribed}, muted: {track_pub.muted}")
-
                     break
 
             if audio_track_received:
                 break
 
-            logger.info(f"⏳ [{session_id}] Waiting for audio track... ({i+1}/{max_wait_time})")
             await asyncio.sleep(1)
 
-        if not audio_track_received:
-            logger.error(f"❌ [{session_id}] No audio track received from user after {max_wait_time}s!")
-            # Trotzdem fortfahren, aber mit Warnung
-
-        # === ENDE AUDIO TRACK WAIT ===
-
-        # 3. LLM-Konfiguration - NUR LLAMA 3.2!
+        # 4. Configure LLM with Ollama - EXAKT WIE GARAGE AGENT
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
 
-        # Immer Llama 3.2 verwenden - KORRIGIERT: Verwende die richtige Methode
-        llm = openai.LLM(
+        # Llama 3.2 with Ollama configuration
+        llm = openai.LLM.with_ollama(
             model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
-            api_key="ollama",
-            temperature=0.3  # Niedrig für medizinische Präzision
+            temperature=0.3,  # Niedrig für medizinische Präzision
         )
         logger.info(f"🤖 [{session_id}] Using Llama 3.2 via Ollama")
 
-        # 4. Create session with userdata
+        # 5. Create session - MEDIZINISCHE PARAMETER
         session = AgentSession[MedicalUserData](
             userdata=MedicalUserData(
                 authenticated_doctor=None,
                 rag_url=rag_url,
-                active_patient=None,
-                greeting_sent=False  # NEU: Initial auf False
+                active_patient=None
             ),
             llm=llm,
             vad=silero.VAD.load(
                 min_silence_duration=0.8,  # Höher für medizinische Präzision
-                min_speech_duration=0.3    # Angepasst für klare Sprache
+                min_speech_duration=0.3
             ),
             stt=openai.STT(
                 model="whisper-1",
@@ -269,17 +274,14 @@ async def entrypoint(ctx: JobContext):
             ),
             tts=openai.TTS(
                 model="tts-1",
-                voice="shimmer"  # Professionelle Stimme für medizinischen Kontext
+                voice="shimmer"  # Professionelle Stimme
             ),
             min_endpointing_delay=0.3,
             max_endpointing_delay=3.0
         )
 
-        # 5. Create agent instance
+        # 6. Create agent
         agent = MedicalAssistant()
-
-        # 6. WICHTIG: Kurze Pause vor Session-Start
-        await asyncio.sleep(0.5)
 
         # 7. Start session
         logger.info(f"🏁 [{session_id}] Starting session...")
@@ -288,49 +290,49 @@ async def entrypoint(ctx: JobContext):
             agent=agent
         )
 
-        # Debug Event Handler für Session
+        # Event handlers
         @session.on("user_input_transcribed")
         def on_user_input(event):
-            logger.info(f"[{session_id}] 🎤 User input transcribed: {event.transcript} (final: {event.is_final})")
+            logger.info(f"[{session_id}] 🎤 User: {event.transcript}")
 
         @session.on("agent_state_changed")
         def on_state_changed(event):
-            logger.info(f"[{session_id}] 🤖 Agent state changed event received")
-
-        @session.on("user_state_changed")
-        def on_user_state(event):
-            logger.info(f"[{session_id}] 👤 User state changed event received")
+            logger.info(f"[{session_id}] 🤖 Agent state: {event}")
 
         @session.on("function_call")
         def on_function_call(event):
-            """Log function calls für Debugging"""
             logger.info(f"[{session_id}] 🔧 Function call: {event}")
 
-        # 8. Initiale Begrüßung mit say() statt generate_reply()
-        await asyncio.sleep(1.5)  # Warte bis Session vollständig initialisiert
+        # 8. Initial greeting - EXAKT WIE GARAGE AGENT
+        await asyncio.sleep(1.5)
 
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
 
         try:
-            # Direkte Begrüßung mit say()
-            greeting_text = "Guten Tag Herr Doktor, welche Patientendaten benötigen Sie?"
-            
-            session.userdata.greeting_sent = True
-            
+            # MEDIZINISCHER GREETING TEXT
+            greeting_text = """Guten Tag Herr Doktor, willkommen bei der Klinik St. Anna!
+Ich bin Ihr digitaler Assistent.
+
+Für eine schnelle Bearbeitung benötige ich:
+- Die Patienten-ID (z.B. P001)
+- Oder den vollständigen Namen des Patienten
+
+Welche Patientendaten benötigen Sie?"""
+
             await session.say(
                 greeting_text,
                 allow_interruptions=True,
                 add_to_chat_ctx=True
             )
-            
+
             logger.info(f"✅ [{session_id}] Initial greeting sent")
 
         except Exception as e:
-            logger.warning(f"[{session_id}] Could not send initial greeting: {e}")
+            logger.error(f"[{session_id}] Greeting error: {e}")
 
-        logger.info(f"✅ [{session_id}] Medical Agent ready and listening!")
+        logger.info(f"✅ [{session_id}] Medical Agent ready!")
 
-        # WICHTIG: Warte auf Room Disconnect
+        # Wait for disconnect
         disconnect_event = asyncio.Event()
 
         def handle_disconnect():
@@ -340,43 +342,23 @@ async def entrypoint(ctx: JobContext):
 
         ctx.room.on("disconnected", handle_disconnect)
 
-        # Warte bis der Room disconnected wird
         await disconnect_event.wait()
-        logger.info(f"[{session_id}] Room disconnected, ending session")
+        logger.info(f"[{session_id}] Session ending...")
 
     except Exception as e:
-        logger.error(f"❌ [{session_id}] Error in medical agent: {e}", exc_info=True)
+        logger.error(f"❌ [{session_id}] Error: {e}", exc_info=True)
         raise
 
     finally:
-        # WICHTIGES CLEANUP - Wird IMMER ausgeführt
-        logger.info(f"🧹 [{session_id}] Starting session cleanup...")
-
-        if session is not None and not session_closed:
+        # Cleanup
+        if session and not session_closed:
             try:
-                # Session beenden
                 await session.aclose()
-                logger.info(f"✅ [{session_id}] Session closed successfully")
+                logger.info(f"✅ [{session_id}] Session closed")
+            except:
+                pass
 
-            except Exception as e:
-                logger.warning(f"⚠️ [{session_id}] Error closing session: {e}")
-        elif session_closed:
-            logger.info(f"ℹ️ [{session_id}] Session already closed by disconnect event")
-
-        # Disconnect vom Room wenn noch verbunden
-        try:
-            if ctx.room and hasattr(ctx.room, 'connection_state') and ctx.room.connection_state == "connected":
-                await ctx.room.disconnect()
-                logger.info(f"✅ [{session_id}] Disconnected from room")
-        except Exception as e:
-            logger.warning(f"⚠️ [{session_id}] Error disconnecting from room: {e}")
-
-        # Explizit Garbage Collection erzwingen
-        import gc
-        gc.collect()
-        logger.info(f"♻️ [{session_id}] Forced garbage collection")
-
-        logger.info(f"✅ [{session_id}] Session cleanup complete")
+        logger.info(f"✅ [{session_id}] Cleanup complete")
         logger.info("="*50)
 
 
