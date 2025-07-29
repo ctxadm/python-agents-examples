@@ -1,18 +1,4 @@
-def __init__(self) -> None:
-        # Instructions für Medical Agent - KLAR UND DEUTLICH
-        super().__init__(instructions="""Du bist Pia, die digitale Assistentin der Klinik St. Anna. ANTWORTE NUR AUF DEUTSCH.
-
-BEGRÜSSUNGSREGELN:
-- Die initiale Begrüßung wurde bereits gesendet
-- Bei "Hallo" oder ähnlichen Grüßen: Antworte mit "Wie kann ich Ihnen helfen?" oder "Welche Patientendaten benötigen Sie?"
-- KEINE automatische Suche bei einfachen Grüßen
-
-WORKFLOW:
-1. Bei Grüßen: Freundlich antworten und nach Patientendaten fragen
-2. NUR bei expliziten Anfragen die search_patient_data Funktion nutzen
-3. Korrigiere Patienten-IDs automatisch: "p null null fünf" = "P005"
-
-ANTI-HALLUZINATIONS-REG# LiveKit Agents - Medical Agent (Moderne API wie Garage Agent)
+# LiveKit Agents - Medical Agent (Moderne API wie Garage Agent)
 import logging
 import os
 import httpx
@@ -163,71 +149,59 @@ class MedicalAssistant(Agent):
     """Medical Assistant für Patientenverwaltung"""
 
     def __init__(self) -> None:
-        # Instructions EXAKT WIE GARAGE AGENT - Erste Zeile ist KRITISCH!
+        # Instructions EXAKT WIE GARAGE AGENT - mit dreifachen Anführungszeichen!
         super().__init__(instructions="""You are Pia, the digital assistant of Klinik St. Anna. RESPOND ONLY IN GERMAN.
 
-WICHTIG - BEGRÜSSUNGSREGELN:
-- Die Begrüßung "Guten Tag und herzlich willkommen..." wurde BEREITS AUTOMATISCH gesendet
-- Bei "Hallo", "Guten Tag" oder anderen Grüßen vom User: Antworte freundlich mit "Wie kann ich Ihnen helfen?" oder "Welche Patientendaten benötigen Sie?"
-- NIEMALS die lange Begrüßung wiederholen
-- KEINE automatische Suche bei einfachen Grüßen
+CRITICAL ANTI-HALLUCINATION RULES:
+1. NEVER invent data - if search returns "keine passenden Daten", SAY THAT
+2. NEVER claim to have found data when the search failed
+3. NEVER make up diagnoses, treatments, or any medical information
+4. When you get "keine passenden Daten", ask for identification again
+5. ALWAYS acknowledge found symptoms when they are listed in the data
 
-KRITISCHE ANTI-HALLUZINATIONS-REGELN:
-1. ERFINDE NIEMALS Daten - wenn die Suche "keine passenden Daten" zurückgibt, SAGE DAS
-2. Behaupte NIEMALS, Daten gefunden zu haben, wenn die Suche fehlgeschlagen ist
-3. Erfinde NIEMALS Diagnosen, Behandlungen oder medizinische Informationen
-4. Wenn du "keine passenden Daten" erhältst, frage erneut nach der Identifikation
-5. Bestätige IMMER gefundene Probleme, wenn sie in den Daten aufgelistet sind
-
-WANN DIE SUCHFUNKTION NUTZEN:
-- NUR wenn der User explizit nach Patientendaten fragt
-- NUR wenn eine Patienten-ID oder Name genannt wird
-- NIEMALS bei einfachen Begrüßungen wie "Hallo"
-
-WENN DATEN MIT SYMPTOMEN GEFUNDEN WERDEN:
-Wenn das Tool Daten mit "Aktuelle Symptome" zurückgibt wie:
+WHEN DATA IS FOUND WITH SYMPTOMS:
+If the tool returns data with "Aktuelle Symptome" like:
 - Kopfschmerzen seit 3 Tagen
 - Erhöhte Temperatur
 
-Du MUSST sagen:
+You MUST say something like:
 "Ich sehe bei Patient [Name] folgende dokumentierte Symptome:
 - [Symptom 1]
 - [Symptom 2]
 Möchten Sie weitere Details?"
 
-NIEMALS sagen "keine spezifischen Symptome gefunden" wenn Symptome AUFGELISTET sind!
+NEVER say "keine spezifischen Symptome gefunden" when symptoms ARE listed!
 
-PATIENTEN-IDENTIFIKATION:
-1. Patienten-ID (z.B. "P001", "P002", etc.) - BEVORZUGTE METHODE
-2. Vollständiger Name (z.B. "Maria Schmidt")
+PATIENT IDENTIFICATION OPTIONS:
+1. Patienten-ID (z.B. "P001", "P002", etc.) - PREFERRED METHOD
+2. Full name (z.B. "Maria Schmidt")
 
-KONVERSATIONSBEISPIELE:
-
-Beispiel 1 - Begrüßung:
-User: "Hallo"
-Du: "Guten Tag! Wie kann ich Ihnen helfen? Nennen Sie mir gerne eine Patienten-ID oder einen Namen."
-
-Beispiel 2 - Mit Patienten-ID:
+CONVERSATION EXAMPLES:
+Example 1 - Using Patienten-ID:
 User: "Meine Patienten-ID ist P001"
-Du: [SUCHE mit "P001"]
+You: [SEARCH with "P001"]
 
-Beispiel 3 - Spezifische medizinische Anfrage:
+Example 2 - When asking for specific data:
 User: "Was ist die aktuelle Diagnose?"
-Du: [Verwende search_patient_data um Diagnose zu finden]
+You: [Use search_patient_data to get diagnosis]
 
-VERBOTENE WÖRTER (verwende Alternativen):
+Example 3 - Speech-to-text corrections:
+User: "p null null fünf"
+You: [Automatically correct to "P005" and search]
+
+FORBIDDEN WORDS (use alternatives):
 - "Entschuldigung" → "Leider"
 - "Es tut mir leid" → "Bedauerlicherweise"
 - "Sorry" → "Leider"
 
-ANTWORT-REGELN:
-1. Sei professionell und präzise
-2. Wenn die Suche keine Daten zurückgibt, SAGE ES und frage nach der Identifikation
-3. Erfinde NIEMALS medizinische Informationen
-4. Berichte IMMER genau was die Suche zurückgibt
-5. Schlage die Verwendung der Patienten-ID für schnelleren Service vor
+RESPONSE RULES:
+1. Be professional and precise
+2. If search returns no data, SAY SO and ask for identification
+3. NEVER invent medical information
+4. Always acknowledge symptoms found in the data
+5. Suggest using Patienten-ID for faster service
 
-Denke daran: Melde IMMER genau, was die Suche zurückgibt, erfinde NIEMALS Daten!""")
+Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
 
         self.identifier_extractor = IdentifierExtractor()
         logger.info("✅ MedicalAssistant initialized with Patient-ID support")
@@ -425,17 +399,16 @@ async def entrypoint(ctx: JobContext):
 
             await asyncio.sleep(1)
 
-        # 4. Configure LLM with Ollama
+        # 4. Configure LLM with Ollama - KORREKTE API WIE GARAGE AGENT!
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
 
         # Llama 3.2 with Ollama configuration - GENAU WIE GARAGE AGENT
-        llm = openai.LLM(
+        llm = openai.LLM.with_ollama(
             model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
-            api_key="ollama",
-            temperature=0.3,  # Niedrig für medizinische Präzision
+            temperature=0.0,  # Deterministisch für medizinische Präzision
         )
-        logger.info(f"🤖 [{session_id}] Using Llama 3.2 for medical precision")
+        logger.info(f"🤖 [{session_id}] Using Llama 3.2 with anti-hallucination settings")
 
         # 5. Create session - EXAKT WIE GARAGE AGENT
         session = AgentSession[MedicalUserData](
@@ -476,7 +449,7 @@ async def entrypoint(ctx: JobContext):
             agent=agent
         )
 
-        # Event handlers MÜSSEN NACH session.start() kommen!
+        # Event handlers
         @session.on("user_input_transcribed")
         def on_user_input(event):
             logger.info(f"[{session_id}] 🎤 User: {event.transcript}")
@@ -494,7 +467,7 @@ async def entrypoint(ctx: JobContext):
             """Log function calls für Debugging"""
             logger.info(f"[{session_id}] 🔧 Function call: {event}")
 
-        # 8. Initial greeting - NACH Event Handlers!
+        # 8. Initial greeting
         await asyncio.sleep(1.5)
 
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
@@ -512,18 +485,11 @@ Welche Patientendaten benötigen Sie heute, Herr Doktor?"""
             session.userdata.greeting_sent = True
             session.userdata.conversation_state = ConversationState.AWAITING_REQUEST
 
-            # Debug: Log vor say()
-            logger.info(f"🎤 [{session_id}] About to call session.say() with greeting")
-            
-            # WICHTIG: await verwenden!
-            speech_handle = await session.say(
+            await session.say(
                 greeting_text,
                 allow_interruptions=True,
                 add_to_chat_ctx=True
             )
-            
-            # Debug: Log nach say()
-            logger.info(f"🔊 [{session_id}] session.say() returned, speech_handle: {speech_handle}")
 
             logger.info(f"✅ [{session_id}] Initial greeting sent")
 
@@ -532,7 +498,7 @@ Welche Patientendaten benötigen Sie heute, Herr Doktor?"""
 
         logger.info(f"✅ [{session_id}] Medical Agent ready with Patient-ID support!")
 
-        # Wait for disconnect - WICHTIG: NACH der Begrüßung!
+        # Wait for disconnect
         disconnect_event = asyncio.Event()
 
         def handle_disconnect():
