@@ -598,7 +598,7 @@ async def entrypoint(ctx: JobContext):
         )
         logger.info(f"🤖 [{session_id}] Using Llama 3.2 with direct Qdrant access")
 
-        # 5. Create session - ANGEPASSTE VAD SETTINGS!
+        # 5. Create session - OHNE ungültige Parameter!
         session = AgentSession[MedicalUserData](
             userdata=MedicalUserData(
                 authenticated_doctor=None,
@@ -625,10 +625,7 @@ async def entrypoint(ctx: JobContext):
                 voice="nova"
             ),
             min_endpointing_delay=0.3,
-            max_endpointing_delay=3.0,
-            # NEU: Wichtige Session-Parameter
-            interrupt_min_words=2,  # Mindestens 2 Wörter für Unterbrechung
-            start_audio_before_thinking=True  # Audio vor dem Denken starten
+            max_endpointing_delay=3.0
         )
 
         # 6. Create agent
@@ -690,11 +687,11 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
 
         try:
-            greeting_text = """Herzlich willkommen bei der Klinik St. Anna!
-Ich bin Lisa, Ihre digitale Assistentin.
+            greeting_text = """Guten Tag und herzlich willkommen bei der Klinik St. Anna!
+Ich bin Lisa, Ihre digitale medizinische Assistentin.
 
 Für eine schnelle Bearbeitung benötige ich eine der folgenden Informationen:
-- Die Patienten-ID
+- Die Patienten-ID (z.B. P001)
 - Den vollständigen Namen des Patienten
 
 Welche Patientendaten benötigen Sie heute, Herr Doktor?"""
