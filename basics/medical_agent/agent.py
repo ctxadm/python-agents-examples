@@ -1,49 +1,151 @@
-# LiveKit Agents - Vereinfachter Medical Agent
+# LiveKit Agents 1.0.0+ - Medical Agent
 import logging
 import os
 import httpx
 import asyncio
 import json
-import re
-from dataclasses import dataclass
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 from datetime import datetime
-from dotenv import load_dotenv
+
 from livekit import agents, rtc
-from livekit.agents import JobContext, WorkerOptions, cli, RunContext
-from livekit.agents.voice import AgentSession, Agent
-from livekit.agents.llm import function_tool
-from livekit.plugins import openai, silero
+from livekit.agents import JobContext, WorkerOptions, cli, llm
+from livekit.agents.voice_assistant import VoiceAssistant
+from livekit.plugins import openai, deepgram, silero
 
-load_dotenv()
-
-# Logging
 logger = logging.getLogger("medical-agent")
 logger.setLevel(logging.INFO)
 
-# Agent Name
-AGENT_NAME = os.getenv("AGENT_NAME", "agent-medical-3")
+class MedicalAgentState:
+    """State management for medical agent"""
+    def __init__(self):
+        self.patient_data: Optional[Dict] = None
+        self.search_phase: int = 0  # 0=name, 1=year, 2=done
 
-# Qdrant Configuration
-QDRANT_URL = os.getenv("QDRANT_URL", "http://172.16.0.108:6333")
-MEDICAL_COLLECTION = "medical_nutrition"
+async def load_patient_data(
+    name: str,
+    birth_year: int
+) -> str:
+    """
+    Lädt ALLE Patientendaten basierend auf Name und Geburtsjahr.
+    
+    Args:
+        name: Vollständiger Name des Patienten
+        birth_year: Geburtsjahr (z.B. 2010)
+    
+    Returns:
+        Formatierte Patientendaten oder Fehlermeldung
+    """
+    logger.info(f"🔍 Loading patient data for: {name}, born {birth_year}")
+    
+    try:
+        rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
+        
+        async with httpx.AsyncClient() as client:
+            # Schritt 1: Suche nach dem Patienten
+            search_response = await client.post(
+                f"{rag_url}/search",
+                json={
+                    "query": f"{name} {birth_year}",
+                    "agent_type": "medical",
+                    "top_k": 20
+                },
+                timeout=30.0
+            )
+            
+            if search_response.status_code != 200:
+                return "Es gab einen technischen Fehler. Bitte versuchen Sie es erneut."
+            
+            results = search_response.json()
+            documents = results.get("results", [])
+            
+            # Schritt 2: Finde den richtigen Patienten
+            patient_data = None
+            
+            for doc in documents:
+                payload = doc.get("payload", {})
+                doc_name = payload.get("patient_name", "")
+                doc_birth = payload.get("geburtsdatum", "")
+                
+                # Prüfe Name
+                if name.lower() in doc_name.lower():
+                    # Prüfe Geburtsjahr
+                    if doc_birth and str(birth_year) in doc_birth:
+                        patient_data = payload
+                        break
+            
+            if not patient_data:
+                return f"Ich konnte keinen Patienten namens {name} mit Geburtsjahr {birth_year} finden."
+            
+            # Schritt 3: Formatiere die Daten
+            output = f"=== PATIENTENDATEN FÜR {patient_data.get('patient_name', name).upper()} ===\n\n"
+            
+            # Stammdaten
+            output += "📋 STAMMDATEN:\n"
+            output += f"Patient: {patient_data.get('patient_name', name)}\n"
+            output += f"Geburtsdatum: {patient_data.get('geburtsdatum', '')}\n"
+            output += f"Blutgruppe: {patient_data.get('blutgruppe', 'Nicht angegeben')}\n"
+            
+            # Allergien
+            allergien = patient_data.get('allergien', [])
+            if allergien:
+                output += f"\n⚠️ ALLERGIEN:\n"
+                for allergie in allergien:
+                    output += f"- {allergie}\n"
+            
+            # Chronische Erkrankungen
+            erkrankungen = patient_data.get('chronische_erkrankungen', [])
+            if erkrankungen:
+                output += f"\n🏥 CHRONISCHE ERKRANKUNGEN:\n"
+                for erkrankung in erkrankungen:
+                    output += f"- {erkrankung}\n"
+            
+            # Aktuelle Medikation
+            output += f"\n💊 AKTUELLE MEDIKATION:\n"
+            medikation = patient_data.get('aktuelle_medikation', [])
+            if medikation:
+                for med in medikation:
+                    output += f"- {med.get('medikament', '')}: "
+                    output += f"{med.get('dosierung', '')} "
+                    output += f"für {med.get('grund', '')}\n"
+            else:
+                output += "- Keine aktuelle Medikation\n"
+            
+            # Letzte Behandlungen
+            output += f"\n🏥 LETZTE BEHANDLUNGEN:\n"
+            behandlungen = patient_data.get('letzte_behandlungen', [])
+            if behandlungen:
+                for behandlung in sorted(behandlungen, key=lambda x: x.get('datum', ''), reverse=True):
+                    output += f"Datum: {behandlung.get('datum', '')}\n"
+                    output += f"Behandlung: {behandlung.get('behandlung', '')}\n"
+                    output += f"Befund: {behandlung.get('befund', '')}\n\n"
+            else:
+                output += "- Keine Behandlungen dokumentiert\n"
+            
+            # Notfallkontakt
+            notfall = patient_data.get('notfallkontakt', '')
+            if notfall:
+                output += f"\n📞 NOTFALLKONTAKT:\n{notfall}\n"
+            
+            output += "\n=== ENDE DER PATIENTENDATEN ==="
+            
+            logger.info(f"✅ Successfully loaded data for {name}")
+            return output
+            
+    except Exception as e:
+        logger.error(f"Error loading patient data: {e}")
+        return "Es gab einen technischen Fehler. Bitte versuchen Sie es erneut."
 
-@dataclass
-class MedicalUserData:
-    """User data context"""
-    qdrant_url: str = QDRANT_URL
-    greeting_sent: bool = False
-    # Aktueller Patient
-    patient_name: Optional[str] = None
-    patient_birth_year: Optional[int] = None
-    patient_loaded: bool = False
-
-
-class MedicalAssistant(Agent):
-    """Vereinfachter Medical Assistant"""
-
-    def __init__(self) -> None:
-        super().__init__(instructions="""Du bist Lisa von der Klinik St. Anna. ANTWORTE NUR AUF DEUTSCH.
+async def entrypoint(ctx: JobContext):
+    """Medical agent entrypoint für LiveKit 1.0.0+"""
+    logger.info(f"Medical agent starting in room: {ctx.room.name}")
+    
+    # Initialize state
+    state = MedicalAgentState()
+    
+    await ctx.connect()
+    
+    # System prompt
+    system_prompt = """Du bist Lisa von der Klinik St. Anna. ANTWORTE NUR AUF DEUTSCH.
 
 DEINE AUFGABE:
 1. Frage nach dem Namen des Patienten
@@ -54,239 +156,102 @@ DEINE AUFGABE:
 WICHTIG:
 - Erfinde NIEMALS Daten
 - Wenn die Funktion Daten zurückgibt, lies sie KOMPLETT vor
-- Vergiss keine Details""")
+- Vergiss keine Details"""
 
-        logger.info("✅ MedicalAssistant initialized")
-
-    @function_tool
-    async def load_patient_data(self,
-                               context: RunContext[MedicalUserData],
-                               name: str,
-                               birth_year: int) -> str:
+    # Model selection based on environment
+    llm_provider = os.getenv("LLM_PROVIDER", "ollama")
+    
+    if llm_provider == "openai":
+        model = openai.LLM(
+            model="gpt-4o-mini",
+            temperature=0.0
+        )
+    else:
+        # Ollama configuration
+        ollama_model = os.getenv("OLLAMA_MODEL", "llama3.2:latest")
+        model = openai.LLM(
+            model=ollama_model,
+            base_url=os.getenv("OLLAMA_HOST", "http://localhost:11434") + "/v1",
+            api_key="ollama",  # Ollama doesn't need a real API key
+            temperature=0.0
+        )
+    
+    # Create function context with the new API
+    fnc_ctx = llm.FunctionContext()
+    
+    # Register the function with proper decorator
+    @fnc_ctx.ai_callable()
+    async def load_patient_data_callable(
+        name: str,
+        birth_year: int
+    ) -> str:
         """
         Lädt ALLE Patientendaten basierend auf Name und Geburtsjahr.
         
         Args:
             name: Vollständiger Name des Patienten
             birth_year: Geburtsjahr (z.B. 2010)
-            
+        
         Returns:
-            Alle gefundenen Patientendaten formatiert
+            Formatierte Patientendaten oder Fehlermeldung
         """
-        logger.info(f"🔍 Loading patient data for: {name}, born {birth_year}")
-        
-        # Speichere in Context
-        context.userdata.patient_name = name
-        context.userdata.patient_birth_year = birth_year
-        
-        try:
-            async with httpx.AsyncClient() as client:
-                # Hole ALLE Dokumente
-                response = await client.post(
-                    f"{context.userdata.qdrant_url}/collections/{MEDICAL_COLLECTION}/points/scroll",
-                    json={
-                        "limit": 100,
-                        "with_payload": true,
-                        "with_vector": false
-                    },
-                    timeout=10.0
-                )
-                
-                if response.status_code == 200:
-                    qdrant_data = response.json()
-                    points = qdrant_data.get("result", {}).get("points", [])
-                    
-                    logger.info(f"📊 Checking {len(points)} documents")
-                    
-                    # Suche nach dem Patienten
-                    patient_docs = []
-                    patient_id = None
-                    
-                    for point in points:
-                        payload = point.get("payload", {})
-                        content = payload.get("content", "")
-                        stored_name = payload.get("patient_name", "")
-                        
-                        # Prüfe Name (case-insensitive)
-                        if name.lower() in stored_name.lower():
-                            # Prüfe Geburtsjahr im Content
-                            if str(birth_year) in content:
-                                patient_docs.append(point)
-                                if not patient_id:
-                                    patient_id = payload.get("patient_id", "")
-                                    logger.info(f"✅ Found patient: {stored_name} ({patient_id})")
-                    
-                    if patient_docs:
-                        # Sortiere nach Datentyp
-                        patient_info = None
-                        medication = None
-                        treatments = []
-                        
-                        for doc in patient_docs:
-                            payload = doc.get("payload", {})
-                            content = payload.get("content", "")
-                            data_type = payload.get("data_type", "")
-                            
-                            if data_type == "patient_info":
-                                patient_info = content
-                            elif data_type == "medication":
-                                medication = content
-                            elif data_type == "treatment":
-                                treatments.append(content)
-                        
-                        # Erstelle formatierte Antwort
-                        result = f"=== PATIENTENDATEN FÜR {name.upper()} ===\n\n"
-                        
-                        if patient_info:
-                            result += f"📋 STAMMDATEN:\n{patient_info}\n\n"
-                        
-                        if medication:
-                            result += f"💊 AKTUELLE MEDIKATION:\n{medication}\n\n"
-                        
-                        if treatments:
-                            result += "🏥 LETZTE BEHANDLUNGEN:\n"
-                            # Sortiere nach Datum (neueste zuerst)
-                            sorted_treatments = sorted(treatments, reverse=True)
-                            for treatment in sorted_treatments[:5]:  # Max 5 neueste
-                                result += f"{treatment}\n"
-                        
-                        result += "\n=== ENDE DER PATIENTENDATEN ==="
-                        
-                        context.userdata.patient_loaded = True
-                        logger.info(f"✅ Successfully loaded data for {name}")
-                        
-                        return result
-                    
-                    else:
-                        logger.info(f"❌ No patient found: {name}, {birth_year}")
-                        return f"Ich habe keinen Patienten namens {name} mit Geburtsjahr {birth_year} gefunden. Bitte überprüfen Sie die Angaben."
-                
-                else:
-                    logger.error(f"Qdrant error: {response.status_code}")
-                    return "Die Datenbank ist momentan nicht erreichbar."
-                    
-        except Exception as e:
-            logger.error(f"Error loading patient data: {e}")
-            return "Es gab einen technischen Fehler. Bitte versuchen Sie es erneut."
+        return await load_patient_data(name, birth_year)
+    
+    # Configure TTS (immer OpenAI für bessere Qualität)
+    tts = openai.TTS(
+        model="tts-1",
+        voice="nova",
+        speed=1.0
+    )
+    
+    # Configure STT
+    stt = deepgram.STT(
+        model="nova-2-general",
+        language="de"
+    )
+    
+    # Create assistant with new API
+    assistant = VoiceAssistant(
+        vad=silero.VAD.load(),
+        stt=stt,
+        llm=model,
+        tts=tts,
+        chat_ctx=llm.ChatContext([
+            llm.ChatMessage(role="system", content=system_prompt)
+        ]),
+        fnc_ctx=fnc_ctx,
+        min_endpointing_delay=0.5
+    )
+    
+    # Set up event handlers
+    @assistant.on("state_changed")
+    def on_state_changed(state):
+        logger.info(f"🤖 Agent state: {state}")
+    
+    @assistant.on("function_calls_finished")
+    def on_function_finished(event):
+        logger.info(f"✅ Function call completed")
+    
+    # Start the assistant
+    assistant.start(ctx.room)
+    
+    # Initial greeting
+    await asyncio.sleep(1)
+    await assistant.say(
+        "Guten Tag! Ich bin Lisa von der Klinik St. Anna.\n\n"
+        "Ich werde Ihnen die kompletten Patientendaten vorlesen, "
+        "inklusive der aktuellen Medikation und der letzten Behandlungen.\n\n"
+        "Dafür benötige ich:\n"
+        "1. Den vollständigen Namen des Patienten\n"
+        "2. Das Geburtsjahr\n\n"
+        "Wie heißt der Patient?",
+        allow_interruptions=True
+    )
 
-
-async def request_handler(ctx: JobContext):
-    """Request handler"""
-    logger.info(f"[{AGENT_NAME}] 📨 Job request received")
-    await ctx.accept()
-
-
-async def entrypoint(ctx: JobContext):
-    """Entry point"""
-    session_id = f"{ctx.room.name}_{int(asyncio.get_event_loop().time())}"
-    logger.info(f"🏥 Starting session: {session_id}")
-
-    session = None
-
-    try:
-        # Connect to room
-        await ctx.connect()
-        logger.info(f"✅ Connected to room")
-
-        # Wait for participant
-        participant = await ctx.wait_for_participant()
-        logger.info(f"✅ Participant joined: {participant.identity}")
-
-        # Configure Ollama
-        llm = openai.LLM.with_ollama(
-            model="llama3.2:latest",
-            base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
-            temperature=0.0,
-        )
-
-        # Create session
-        session = AgentSession[MedicalUserData](
-            userdata=MedicalUserData(
-                qdrant_url=QDRANT_URL,
-                greeting_sent=False,
-                patient_name=None,
-                patient_birth_year=None,
-                patient_loaded=False
-            ),
-            llm=llm,
-            vad=silero.VAD.load(
-                min_silence_duration=0.4,
-                min_speech_duration=0.15
-            ),
-            stt=openai.STT(
-                model="whisper-1",
-                language="de"
-            ),
-            tts=openai.TTS(
-                model="tts-1",
-                voice="nova"
-            ),
-            min_endpointing_delay=0.3,
-            max_endpointing_delay=3.0
-        )
-
-        # Create and start agent
-        agent = MedicalAssistant()
-        
-        await session.start(
-            room=ctx.room,
-            agent=agent
-        )
-
-        # Event handlers
-        @session.on("user_input_transcribed")
-        def on_user_input(event):
-            logger.info(f"🎤 User: {event.transcript}")
-
-        @session.on("agent_state_changed")
-        def on_state_changed(event):
-            logger.info(f"🤖 Agent state: {event}")
-
-        # Initial greeting
-        await asyncio.sleep(1.5)
-
-        greeting_text = """Guten Tag! Ich bin Lisa von der Klinik St. Anna.
-
-Ich werde Ihnen die kompletten Patientendaten vorlesen, inklusive der aktuellen Medikation und der letzten Behandlungen.
-
-Dafür benötige ich:
-1. Den vollständigen Namen des Patienten
-2. Das Geburtsjahr
-
-Wie heißt der Patient?"""
-
-        await session.say(
-            greeting_text,
-            allow_interruptions=True,
-            add_to_chat_ctx=True
-        )
-
-        logger.info(f"✅ Agent ready!")
-
-        # Wait for disconnect
-        disconnect_event = asyncio.Event()
-
-        def handle_disconnect():
-            disconnect_event.set()
-
-        ctx.room.on("disconnected", handle_disconnect)
-        await disconnect_event.wait()
-
-    except Exception as e:
-        logger.error(f"❌ Error: {e}", exc_info=True)
-        raise
-
-    finally:
-        if session:
-            try:
-                await session.aclose()
-                logger.info(f"✅ Session closed")
-            except:
-                pass
-
-
+# Entry point for the worker
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(
-        entrypoint_fnc=entrypoint,
-        request_handler=request_handler
-    ))
+    cli.run_app(
+        WorkerOptions(
+            entrypoint_fnc=entrypoint,
+        )
+    )
