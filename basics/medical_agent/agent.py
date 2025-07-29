@@ -22,6 +22,12 @@ load_dotenv()
 logger = logging.getLogger("medical-agent")
 logger.setLevel(logging.INFO)
 
+# Add custom formatter for better debug output
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler = logging.StreamHandler()
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
 # Agent Name für Multi-Worker Setup
 AGENT_NAME = os.getenv("AGENT_NAME", "agent-medical-3")
 
@@ -224,33 +230,72 @@ Remember: ALWAYS report exactly what the functions return, NEVER invent data!"""
     def _extract_patient_data_from_content(self, content: str, context: RunContext[MedicalUserData]):
         """Extrahiert strukturierte Daten aus dem Content und speichert sie im Context"""
         # Extract patient ID from content
-        patient_id_match = re.search(r'Patient:\s*(P\d{3})', content)
-        if not patient_id_match:
-            patient_id_match = re.search(r'(P\d{3})', content)
+        patient_id_patterns = [
+            r'Patient:\s*(P\d{3})',
+            r'(P\d{3})\s*\n',
+            r'patient_id["\']?:\s*["\']?(P\d{3})',
+            r'\b(P\d{3})\b'
+        ]
         
-        if patient_id_match:
-            patient_id = patient_id_match.group(1)
-            context.userdata.active_patient = patient_id
-            context.userdata.patient_context.patient_id = patient_id
-            logger.info(f"✅ Set active patient to: {patient_id}")
+        for pattern in patient_id_patterns:
+            patient_id_match = re.search(pattern, content, re.IGNORECASE)
+            if patient_id_match:
+                patient_id = patient_id_match.group(1)
+                context.userdata.active_patient = patient_id
+                context.userdata.patient_context.patient_id = patient_id
+                logger.info(f"✅ Extracted patient ID: {patient_id}")
+                break
         
         # Extract patient name
-        name_match = re.search(r'Patient:\s*([^\n]+)', content)
-        if name_match and not name_match.group(1).startswith('P'):
-            patient_name = name_match.group(1).strip()
-            context.userdata.patient_context.patient_name = patient_name
+        name_patterns = [
+            r'Name:\s*([^\n]+)',
+            r'Patient:\s*([^P\n][^\n]+)',
+            r'name["\']?:\s*["\']?([^"\']+)',
+            r'für\s+([A-Za-zäöüÄÖÜß\s]+)(?:\n|:)'
+        ]
+        
+        for pattern in name_patterns:
+            name_match = re.search(pattern, content, re.IGNORECASE)
+            if name_match:
+                patient_name = name_match.group(1).strip()
+                if patient_name and not patient_name.startswith('P'):
+                    context.userdata.patient_context.patient_name = patient_name
+                    logger.info(f"✅ Extracted patient name: {patient_name}")
+                    break
         
         # Extract allergies
-        if "Allergien:" in content:
-            allergies_match = re.search(r'Allergien:\s*([^\n]+)', content)
+        allergy_patterns = [
+            r'Allergien:\s*([^\n]+)',
+            r'allergien["\']?:\s*\[([^\]]+)\]',
+            r'Allergie[n]?:\s*([^\n]+)'
+        ]
+        
+        for pattern in allergy_patterns:
+            allergies_match = re.search(pattern, content, re.IGNORECASE)
             if allergies_match:
-                context.userdata.patient_allergies = allergies_match.group(1).strip()
+                allergies = allergies_match.group(1).strip()
+                # Clean up JSON-like formatting
+                allergies = allergies.replace('"', '').replace("'", '')
+                context.userdata.patient_allergies = allergies
+                logger.info(f"✅ Extracted allergies: {allergies}")
+                break
                 
         # Extract chronic conditions
-        if "Chronische Erkrankungen:" in content:
-            chronic_match = re.search(r'Chronische Erkrankungen:\s*([^\n]+)', content)
+        chronic_patterns = [
+            r'Chronische Erkrankungen:\s*([^\n]+)',
+            r'chronische_erkrankungen["\']?:\s*\[([^\]]+)\]',
+            r'Erkrankungen:\s*([^\n]+)'
+        ]
+        
+        for pattern in chronic_patterns:
+            chronic_match = re.search(pattern, content, re.IGNORECASE)
             if chronic_match:
-                context.userdata.patient_chronic_conditions = chronic_match.group(1).strip()
+                conditions = chronic_match.group(1).strip()
+                # Clean up JSON-like formatting
+                conditions = conditions.replace('"', '').replace("'", '')
+                context.userdata.patient_chronic_conditions = conditions
+                logger.info(f"✅ Extracted chronic conditions: {conditions}")
+                break
 
     @function_tool
     async def search_patient_data(self,
@@ -480,37 +525,78 @@ Remember: ALWAYS report exactly what the functions return, NEVER invent data!"""
 
             if response.status_code == 200:
                 results = response.json().get("results", [])
+                logger.info(f"📋 RAG Response structure: {json.dumps(response.json(), indent=2, ensure_ascii=False)[:500]}")
 
                 if results:
                     logger.info(f"✅ Found {len(results)} results from RAG")
-
-                    # WICHTIG: Extrahiere Patient ID aus den Ergebnissen
-                    for result in results:
-                        content = result.get("content", "")
-                        self._extract_patient_data_from_content(content, context)
 
                     # Format results
                     formatted = []
                     patient_info = None
                     medication = None
                     treatments = []
+                    patient_id_found = None
+                    patient_name_found = None
                     
                     for i, result in enumerate(results[:5]):
                         content = result.get("content", "").strip()
                         metadata = result.get("metadata", {})
                         data_type = metadata.get("data_type", "")
                         
+                        logger.info(f"📄 Result {i}: data_type={data_type}, content_preview={content[:100]}...")
+                        
                         if content:
                             content = self._format_medical_data(content)
+                            
+                            # Extract patient ID and name from any result
+                            if not patient_id_found:
+                                id_match = re.search(r'(P\d{3})', content)
+                                if id_match:
+                                    patient_id_found = id_match.group(1)
+                            
+                            if not patient_name_found:
+                                # Try different patterns for name extraction
+                                name_patterns = [
+                                    r'Patient:\s*P\d{3}\s*\n?Name:\s*([^\n]+)',
+                                    r'Name:\s*([^\n]+)',
+                                    r'Patient:\s*([^P\n][^\n]+)',  # Name not starting with P
+                                    r'für\s+([A-Za-zäöüÄÖÜß\s]+):'  # "für Emma Fischer:"
+                                ]
+                                for pattern in name_patterns:
+                                    name_match = re.search(pattern, content)
+                                    if name_match:
+                                        patient_name_found = name_match.group(1).strip()
+                                        break
+                        
+                        if content:
+                            content = self._format_medical_data(content)
+                            
+                            # Extract patient ID from any result
+                            if not patient_id_found:
+                                id_match = re.search(r'(P\d{3})', content)
+                                if id_match:
+                                    patient_id_found = id_match.group(1)
                             
                             if data_type == "patient_info" and not patient_info:
                                 patient_info = content
                                 context.userdata.patient_info = content
+                                # Extract additional data
+                                self._extract_patient_data_from_content(content, context)
                             elif data_type == "medication" and not medication:
                                 medication = content
                                 context.userdata.patient_medication = content
                             elif data_type == "treatment":
                                 treatments.append(content)
+
+                    # CRITICAL: Set active patient if found
+                    if patient_id_found:
+                        context.userdata.active_patient = patient_id_found
+                        context.userdata.patient_context.patient_id = patient_id_found
+                        logger.info(f"✅ Set active patient from RAG results: {patient_id_found}")
+                    
+                    if patient_name_found:
+                        context.userdata.patient_context.patient_name = patient_name_found
+                        logger.info(f"✅ Found patient name: {patient_name_found}")
 
                     # Store treatments
                     context.userdata.patient_treatments = treatments
@@ -531,6 +617,8 @@ Remember: ALWAYS report exactly what the functions return, NEVER invent data!"""
                     
                     # Update conversation state
                     context.userdata.conversation_state = ConversationState.PROVIDING_INFO
+                    
+                    logger.info(f"📊 Final state - Active patient: {context.userdata.active_patient}, Name: {context.userdata.patient_context.patient_name}")
                     
                     return response_text.strip()
 
