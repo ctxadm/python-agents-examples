@@ -1,14 +1,13 @@
-# LiveKit Agents - Medical Agent mit direkter Qdrant-Abfrage
+# LiveKit Agents - Vereinfachter Medical Agent
 import logging
 import os
 import httpx
 import asyncio
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 from datetime import datetime
-from enum import Enum
 from dotenv import load_dotenv
 from livekit import agents, rtc
 from livekit.agents import JobContext, WorkerOptions, cli, RunContext
@@ -22,7 +21,7 @@ load_dotenv()
 logger = logging.getLogger("medical-agent")
 logger.setLevel(logging.INFO)
 
-# Agent Name für Multi-Worker Setup
+# Agent Name
 AGENT_NAME = os.getenv("AGENT_NAME", "agent-medical-3")
 
 # Qdrant Configuration
@@ -31,68 +30,64 @@ MEDICAL_COLLECTION = "medical_nutrition"
 
 @dataclass
 class MedicalUserData:
-    """User data context für den Medical Agent"""
-    rag_url: str = "http://localhost:8000"
+    """User data context"""
     qdrant_url: str = QDRANT_URL
     greeting_sent: bool = False
-    # Vereinfachte Speicherung
-    active_patient: Optional[str] = None
+    # Aktueller Patient
     patient_name: Optional[str] = None
-    patient_info: Optional[str] = None
-    patient_medication: Optional[str] = None
-    patient_treatments: List[str] = field(default_factory=list)
-    patient_allergies: Optional[str] = None
-    patient_chronic_conditions: Optional[str] = None
+    patient_birth_year: Optional[int] = None
+    patient_loaded: bool = False
 
 
 class MedicalAssistant(Agent):
-    """Medical Assistant für Patientenverwaltung"""
+    """Vereinfachter Medical Assistant"""
 
     def __init__(self) -> None:
-        super().__init__(instructions="""Du bist Lisa, die digitale Assistentin der Klinik St. Anna. ANTWORTE NUR AUF DEUTSCH.
+        super().__init__(instructions="""Du bist Lisa von der Klinik St. Anna. ANTWORTE NUR AUF DEUTSCH.
 
-WICHTIGE REGELN:
-1. Verwende 'search_patient_data' für neue Patientensuchen
-2. Verwende 'get_current_patient_details' für Details des geladenen Patienten
-3. Erfinde NIEMALS Daten - sage wenn keine Daten gefunden wurden
-4. Melde IMMER genau was die Funktionen zurückgeben""")
+DEINE AUFGABE:
+1. Frage nach dem Namen des Patienten
+2. Frage nach dem Geburtsjahr
+3. Verwende 'load_patient_data' um ALLE Daten zu laden
+4. Lies die kompletten Daten vor (Medikation und letzte Behandlungen)
+
+WICHTIG:
+- Erfinde NIEMALS Daten
+- Wenn die Funktion Daten zurückgibt, lies sie KOMPLETT vor
+- Vergiss keine Details""")
 
         logger.info("✅ MedicalAssistant initialized")
 
     @function_tool
-    async def search_patient_data(self,
-                                 context: RunContext[MedicalUserData],
-                                 query: str) -> str:
+    async def load_patient_data(self,
+                               context: RunContext[MedicalUserData],
+                               name: str,
+                               birth_year: int) -> str:
         """
-        Sucht nach Patientendaten - akzeptiert Patienten-ID (P001-P005) oder Namen.
+        Lädt ALLE Patientendaten basierend auf Name und Geburtsjahr.
         
         Args:
-            query: Suchbegriff (ID oder Name)
+            name: Vollständiger Name des Patienten
+            birth_year: Geburtsjahr (z.B. 2010)
             
         Returns:
-            Formatierte Patientendaten oder Fehlermeldung
+            Alle gefundenen Patientendaten formatiert
         """
-        logger.info(f"🔍 Searching for: {query}")
+        logger.info(f"🔍 Loading patient data for: {name}, born {birth_year}")
         
-        # Reset previous data
-        context.userdata.active_patient = None
-        context.userdata.patient_name = None
-        context.userdata.patient_info = None
-        context.userdata.patient_medication = None
-        context.userdata.patient_treatments = []
-        context.userdata.patient_allergies = None
-        context.userdata.patient_chronic_conditions = None
+        # Speichere in Context
+        context.userdata.patient_name = name
+        context.userdata.patient_birth_year = birth_year
         
         try:
-            # IMMER direkte Qdrant-Abfrage!
             async with httpx.AsyncClient() as client:
-                # Erste Abfrage: Scroll durch ALLE Dokumente
+                # Hole ALLE Dokumente
                 response = await client.post(
                     f"{context.userdata.qdrant_url}/collections/{MEDICAL_COLLECTION}/points/scroll",
                     json={
-                        "limit": 100,  # Mehr Ergebnisse holen
-                        "with_payload": True,
-                        "with_vector": False
+                        "limit": 100,
+                        "with_payload": true,
+                        "with_vector": false
                     },
                     timeout=10.0
                 )
@@ -101,210 +96,117 @@ WICHTIGE REGELN:
                     qdrant_data = response.json()
                     points = qdrant_data.get("result", {}).get("points", [])
                     
-                    logger.info(f"📊 Got {len(points)} total documents from Qdrant")
+                    logger.info(f"📊 Checking {len(points)} documents")
                     
-                    # Suche in allen Dokumenten
-                    matching_docs = []
-                    found_patient_id = None
-                    found_patient_name = None
-                    
-                    # Normalisiere Suchanfrage
-                    search_normalized = query.upper().strip()
+                    # Suche nach dem Patienten
+                    patient_docs = []
+                    patient_id = None
                     
                     for point in points:
                         payload = point.get("payload", {})
                         content = payload.get("content", "")
+                        stored_name = payload.get("patient_name", "")
                         
-                        # WICHTIG: Prüfe direkt die patient_id im payload!
-                        stored_patient_id = payload.get("patient_id", "")
-                        stored_patient_name = payload.get("patient_name", "")
-                        
-                        # Suche nach Patient ID
-                        if re.match(r'^P\d{3}
+                        # Prüfe Name (case-insensitive)
+                        if name.lower() in stored_name.lower():
+                            # Prüfe Geburtsjahr im Content
+                            if str(birth_year) in content:
+                                patient_docs.append(point)
+                                if not patient_id:
+                                    patient_id = payload.get("patient_id", "")
+                                    logger.info(f"✅ Found patient: {stored_name} ({patient_id})")
                     
-                    if matching_docs:
-                        logger.info(f"✅ Found {len(matching_docs)} matching documents")
-                        
-                        # Setze aktiven Patienten
-                        if found_patient_id:
-                            context.userdata.active_patient = found_patient_id
-                            logger.info(f"✅ Set active patient: {found_patient_id}")
-                        
-                        if found_patient_name:
-                            context.userdata.patient_name = found_patient_name
-                            logger.info(f"✅ Found patient name: {found_patient_name}")
-                        
-                        # Verarbeite Dokumente nach Typ
+                    if patient_docs:
+                        # Sortiere nach Datentyp
                         patient_info = None
                         medication = None
                         treatments = []
                         
-                        for doc in matching_docs:
+                        for doc in patient_docs:
                             payload = doc.get("payload", {})
                             content = payload.get("content", "")
                             data_type = payload.get("data_type", "")
                             
-                            if data_type == "patient_info" and not patient_info:
+                            if data_type == "patient_info":
                                 patient_info = content
-                                context.userdata.patient_info = content
-                                # Extrahiere Details direkt aus payload
-                                if payload.get("patient_id"):
-                                    context.userdata.active_patient = payload.get("patient_id")
-                                    context.userdata.patient_context.patient_id = payload.get("patient_id")
-                                if payload.get("patient_name"):
-                                    context.userdata.patient_name = payload.get("patient_name")
-                                    context.userdata.patient_context.patient_name = payload.get("patient_name")
-                                # Extrahiere aus Content
-                                if "Allergien:" in content:
-                                    allergies_match = re.search(r'Allergien:\s*([^\n]+)', content)
-                                    if allergies_match:
-                                        context.userdata.patient_allergies = allergies_match.group(1)
-                                if "Chronische Erkrankungen:" in content:
-                                    chronic_match = re.search(r'Chronische Erkrankungen:\s*([^\n]+)', content)
-                                    if chronic_match:
-                                        context.userdata.patient_chronic_conditions = chronic_match.group(1)
-                            
-                            elif data_type == "medication" and not medication:
+                            elif data_type == "medication":
                                 medication = content
-                                context.userdata.patient_medication = content
-                            
                             elif data_type == "treatment":
                                 treatments.append(content)
                         
-                        context.userdata.patient_treatments = treatments
-                        
-                        # Erstelle Antwort
-                        response_text = "Ich habe folgende Patientendaten gefunden:\n\n"
+                        # Erstelle formatierte Antwort
+                        result = f"=== PATIENTENDATEN FÜR {name.upper()} ===\n\n"
                         
                         if patient_info:
-                            response_text += f"**Patientendaten:**\n{patient_info}\n\n"
+                            result += f"📋 STAMMDATEN:\n{patient_info}\n\n"
                         
                         if medication:
-                            response_text += f"**{medication}\n\n"
+                            result += f"💊 AKTUELLE MEDIKATION:\n{medication}\n\n"
                         
                         if treatments:
-                            response_text += "**Behandlungen:**\n"
-                            for treatment in treatments[:3]:
-                                response_text += f"{treatment}\n\n"
+                            result += "🏥 LETZTE BEHANDLUNGEN:\n"
+                            # Sortiere nach Datum (neueste zuerst)
+                            sorted_treatments = sorted(treatments, reverse=True)
+                            for treatment in sorted_treatments[:5]:  # Max 5 neueste
+                                result += f"{treatment}\n"
                         
-                        return response_text.strip()
+                        result += "\n=== ENDE DER PATIENTENDATEN ==="
+                        
+                        context.userdata.patient_loaded = True
+                        logger.info(f"✅ Successfully loaded data for {name}")
+                        
+                        return result
                     
                     else:
-                        logger.info("❌ No matching documents found")
-                        return f"Ich habe keine Patientendaten für '{query}' gefunden. Bitte überprüfen Sie die Eingabe."
+                        logger.info(f"❌ No patient found: {name}, {birth_year}")
+                        return f"Ich habe keinen Patienten namens {name} mit Geburtsjahr {birth_year} gefunden. Bitte überprüfen Sie die Angaben."
                 
                 else:
                     logger.error(f"Qdrant error: {response.status_code}")
-                    return "Die Datenbank ist momentan nicht erreichbar. Bitte versuchen Sie es später erneut."
+                    return "Die Datenbank ist momentan nicht erreichbar."
                     
         except Exception as e:
-            logger.error(f"Search error: {e}")
-            return "Es gab einen Fehler bei der Suche. Bitte versuchen Sie es erneut."
-
-    @function_tool
-    async def get_current_patient_details(self,
-                                        context: RunContext[MedicalUserData],
-                                        detail_type: str) -> str:
-        """
-        Gibt Details des aktuell geladenen Patienten zurück.
-        
-        Args:
-            detail_type: "medication", "treatments", "allergies", "chronic_conditions", oder "all"
-            
-        Returns:
-            Die angeforderten Details
-        """
-        logger.info(f"📋 Getting details: {detail_type} for patient: {context.userdata.active_patient}")
-        
-        if not context.userdata.active_patient and not context.userdata.patient_name:
-            return "Es ist kein Patient geladen. Bitte suchen Sie zuerst nach einem Patienten."
-        
-        patient_id = context.userdata.active_patient or "Unbekannt"
-        patient_name = context.userdata.patient_name or "Unbekannt"
-        
-        response_text = f"Details für {patient_name} ({patient_id}):\n\n"
-        
-        if detail_type == "medication" or detail_type == "all":
-            if context.userdata.patient_medication:
-                response_text += f"**{context.userdata.patient_medication}\n\n"
-            else:
-                response_text += "**Medikation:** Keine Daten vorhanden.\n\n"
-        
-        if detail_type == "treatments" or detail_type == "all":
-            if context.userdata.patient_treatments:
-                response_text += "**Letzte Behandlungen:**\n"
-                for treatment in context.userdata.patient_treatments:
-                    response_text += f"{treatment}\n\n"
-            else:
-                response_text += "**Behandlungen:** Keine Daten vorhanden.\n\n"
-        
-        if detail_type == "allergies" or detail_type == "all":
-            if context.userdata.patient_allergies:
-                response_text += f"**Allergien:** {context.userdata.patient_allergies}\n\n"
-            else:
-                response_text += "**Allergien:** Keine Daten vorhanden.\n\n"
-        
-        if detail_type == "chronic_conditions" or detail_type == "all":
-            if context.userdata.patient_chronic_conditions:
-                response_text += f"**Chronische Erkrankungen:** {context.userdata.patient_chronic_conditions}\n\n"
-            else:
-                response_text += "**Chronische Erkrankungen:** Keine Daten vorhanden.\n\n"
-        
-        return response_text.strip()
+            logger.error(f"Error loading patient data: {e}")
+            return "Es gab einen technischen Fehler. Bitte versuchen Sie es erneut."
 
 
 async def request_handler(ctx: JobContext):
     """Request handler"""
     logger.info(f"[{AGENT_NAME}] 📨 Job request received")
-    logger.info(f"[{AGENT_NAME}] Room: {ctx.room.name}")
     await ctx.accept()
 
 
 async def entrypoint(ctx: JobContext):
-    """Entry point für den Medical Agent"""
-    room_name = ctx.room.name if ctx.room else "unknown"
-    session_id = f"{room_name}_{int(asyncio.get_event_loop().time())}"
-
-    logger.info("="*50)
-    logger.info(f"🏥 Starting Medical Agent Session: {session_id}")
-    logger.info("="*50)
+    """Entry point"""
+    session_id = f"{ctx.room.name}_{int(asyncio.get_event_loop().time())}"
+    logger.info(f"🏥 Starting session: {session_id}")
 
     session = None
-    session_closed = False
 
     try:
-        # 1. Connect to room
+        # Connect to room
         await ctx.connect()
-        logger.info(f"✅ [{session_id}] Connected to room")
+        logger.info(f"✅ Connected to room")
 
-        # 2. Wait for participant
+        # Wait for participant
         participant = await ctx.wait_for_participant()
-        logger.info(f"✅ [{session_id}] Participant joined: {participant.identity}")
+        logger.info(f"✅ Participant joined: {participant.identity}")
 
-        # 3. Configure Ollama
-        rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
-        qdrant_url = os.getenv("QDRANT_URL", "http://172.16.0.108:6333")
-
+        # Configure Ollama
         llm = openai.LLM.with_ollama(
             model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
             temperature=0.0,
         )
-        logger.info(f"🤖 [{session_id}] Using Llama 3.2")
 
-        # 4. Create session
+        # Create session
         session = AgentSession[MedicalUserData](
             userdata=MedicalUserData(
-                rag_url=rag_url,
-                qdrant_url=qdrant_url,
+                qdrant_url=QDRANT_URL,
                 greeting_sent=False,
-                active_patient=None,
                 patient_name=None,
-                patient_info=None,
-                patient_medication=None,
-                patient_treatments=[],
-                patient_allergies=None,
-                patient_chronic_conditions=None
+                patient_birth_year=None,
+                patient_loaded=False
             ),
             llm=llm,
             vad=silero.VAD.load(
@@ -323,10 +225,9 @@ async def entrypoint(ctx: JobContext):
             max_endpointing_delay=3.0
         )
 
-        # 5. Create and start agent
+        # Create and start agent
         agent = MedicalAssistant()
         
-        logger.info(f"🏁 [{session_id}] Starting session...")
         await session.start(
             room=ctx.room,
             agent=agent
@@ -335,19 +236,24 @@ async def entrypoint(ctx: JobContext):
         # Event handlers
         @session.on("user_input_transcribed")
         def on_user_input(event):
-            logger.info(f"[{session_id}] 🎤 User: {event.transcript}")
+            logger.info(f"🎤 User: {event.transcript}")
 
         @session.on("agent_state_changed")
         def on_state_changed(event):
-            logger.info(f"[{session_id}] 🤖 Agent state: {event}")
+            logger.info(f"🤖 Agent state: {event}")
 
-        # 6. Initial greeting
+        # Initial greeting
         await asyncio.sleep(1.5)
 
-        greeting_text = """Guten Tag und herzlich willkommen bei der Klinik St. Anna!
-Ich bin Lisa, Ihre digitale medizinische Assistentin.
+        greeting_text = """Guten Tag! Ich bin Lisa von der Klinik St. Anna.
 
-Bitte nennen Sie mir die Patienten-ID (z.B. P001) oder den Namen des Patienten."""
+Ich werde Ihnen die kompletten Patientendaten vorlesen, inklusive der aktuellen Medikation und der letzten Behandlungen.
+
+Dafür benötige ich:
+1. Den vollständigen Namen des Patienten
+2. Das Geburtsjahr
+
+Wie heißt der Patient?"""
 
         await session.say(
             greeting_text,
@@ -355,314 +261,28 @@ Bitte nennen Sie mir die Patienten-ID (z.B. P001) oder den Namen des Patienten."
             add_to_chat_ctx=True
         )
 
-        logger.info(f"✅ [{session_id}] Agent ready!")
+        logger.info(f"✅ Agent ready!")
 
         # Wait for disconnect
         disconnect_event = asyncio.Event()
 
         def handle_disconnect():
-            nonlocal session_closed
-            session_closed = True
             disconnect_event.set()
 
         ctx.room.on("disconnected", handle_disconnect)
         await disconnect_event.wait()
 
     except Exception as e:
-        logger.error(f"❌ [{session_id}] Error: {e}", exc_info=True)
+        logger.error(f"❌ Error: {e}", exc_info=True)
         raise
 
     finally:
-        if session and not session_closed:
+        if session:
             try:
                 await session.aclose()
-                logger.info(f"✅ [{session_id}] Session closed")
+                logger.info(f"✅ Session closed")
             except:
                 pass
-
-        logger.info("="*50)
-
-
-if __name__ == "__main__":
-    cli.run_app(WorkerOptions(
-        entrypoint_fnc=entrypoint,
-        request_handler=request_handler
-    )), search_normalized):
-                            # Direkte Übereinstimmung mit patient_id field
-                            if stored_patient_id == search_normalized:
-                                matching_docs.append(point)
-                                found_patient_id = stored_patient_id
-                                found_patient_name = stored_patient_name
-                        else:
-                            # Suche nach Namen
-                            if query.lower() in stored_patient_name.lower() or query.lower() in content.lower():
-                                matching_docs.append(point)
-                                if not found_patient_id and stored_patient_id:
-                                    found_patient_id = stored_patient_id
-                                if not found_patient_name and stored_patient_name:
-                                    found_patient_name = stored_patient_name
-                    
-                    if matching_docs:
-                        logger.info(f"✅ Found {len(matching_docs)} matching documents")
-                        
-                        # Setze aktiven Patienten
-                        if found_patient_id:
-                            context.userdata.active_patient = found_patient_id
-                            logger.info(f"✅ Set active patient: {found_patient_id}")
-                        
-                        if found_patient_name:
-                            context.userdata.patient_name = found_patient_name
-                            logger.info(f"✅ Found patient name: {found_patient_name}")
-                        
-                        # Verarbeite Dokumente nach Typ
-                        patient_info = None
-                        medication = None
-                        treatments = []
-                        
-                        for doc in matching_docs:
-                            content = doc.get("payload", {}).get("content", "")
-                            metadata = doc.get("payload", {}).get("metadata", {})
-                            data_type = metadata.get("data_type", "")
-                            
-                            # Bestimme Typ aus Content wenn metadata leer
-                            if not data_type:
-                                if "Geburtsdatum:" in content or "Blutgruppe:" in content:
-                                    data_type = "patient_info"
-                                elif "Medikation" in content:
-                                    data_type = "medication"
-                                elif "Behandlung:" in content:
-                                    data_type = "treatment"
-                            
-                            if data_type == "patient_info" and not patient_info:
-                                patient_info = content
-                                context.userdata.patient_info = content
-                                # Extrahiere Details
-                                if "Allergien:" in content:
-                                    allergies_match = re.search(r'Allergien:\s*([^\n]+)', content)
-                                    if allergies_match:
-                                        context.userdata.patient_allergies = allergies_match.group(1)
-                                if "Chronische Erkrankungen:" in content:
-                                    chronic_match = re.search(r'Chronische Erkrankungen:\s*([^\n]+)', content)
-                                    if chronic_match:
-                                        context.userdata.patient_chronic_conditions = chronic_match.group(1)
-                            
-                            elif data_type == "medication" and not medication:
-                                medication = content
-                                context.userdata.patient_medication = content
-                            
-                            elif data_type == "treatment":
-                                treatments.append(content)
-                        
-                        context.userdata.patient_treatments = treatments
-                        
-                        # Erstelle Antwort
-                        response_text = "Ich habe folgende Patientendaten gefunden:\n\n"
-                        
-                        if patient_info:
-                            response_text += f"**Patientendaten:**\n{patient_info}\n\n"
-                        
-                        if medication:
-                            response_text += f"**{medication}\n\n"
-                        
-                        if treatments:
-                            response_text += "**Behandlungen:**\n"
-                            for treatment in treatments[:3]:
-                                response_text += f"{treatment}\n\n"
-                        
-                        return response_text.strip()
-                    
-                    else:
-                        logger.info("❌ No matching documents found")
-                        return f"Ich habe keine Patientendaten für '{query}' gefunden. Bitte überprüfen Sie die Eingabe."
-                
-                else:
-                    logger.error(f"Qdrant error: {response.status_code}")
-                    return "Die Datenbank ist momentan nicht erreichbar. Bitte versuchen Sie es später erneut."
-                    
-        except Exception as e:
-            logger.error(f"Search error: {e}")
-            return "Es gab einen Fehler bei der Suche. Bitte versuchen Sie es erneut."
-
-    @function_tool
-    async def get_current_patient_details(self,
-                                        context: RunContext[MedicalUserData],
-                                        detail_type: str) -> str:
-        """
-        Gibt Details des aktuell geladenen Patienten zurück.
-        
-        Args:
-            detail_type: "medication", "treatments", "allergies", "chronic_conditions", oder "all"
-            
-        Returns:
-            Die angeforderten Details
-        """
-        logger.info(f"📋 Getting details: {detail_type} for patient: {context.userdata.active_patient}")
-        
-        if not context.userdata.active_patient and not context.userdata.patient_name:
-            return "Es ist kein Patient geladen. Bitte suchen Sie zuerst nach einem Patienten."
-        
-        patient_id = context.userdata.active_patient or "Unbekannt"
-        patient_name = context.userdata.patient_name or "Unbekannt"
-        
-        response_text = f"Details für {patient_name} ({patient_id}):\n\n"
-        
-        if detail_type == "medication" or detail_type == "all":
-            if context.userdata.patient_medication:
-                response_text += f"**{context.userdata.patient_medication}\n\n"
-            else:
-                response_text += "**Medikation:** Keine Daten vorhanden.\n\n"
-        
-        if detail_type == "treatments" or detail_type == "all":
-            if context.userdata.patient_treatments:
-                response_text += "**Letzte Behandlungen:**\n"
-                for treatment in context.userdata.patient_treatments:
-                    response_text += f"{treatment}\n\n"
-            else:
-                response_text += "**Behandlungen:** Keine Daten vorhanden.\n\n"
-        
-        if detail_type == "allergies" or detail_type == "all":
-            if context.userdata.patient_allergies:
-                response_text += f"**Allergien:** {context.userdata.patient_allergies}\n\n"
-            else:
-                response_text += "**Allergien:** Keine Daten vorhanden.\n\n"
-        
-        if detail_type == "chronic_conditions" or detail_type == "all":
-            if context.userdata.patient_chronic_conditions:
-                response_text += f"**Chronische Erkrankungen:** {context.userdata.patient_chronic_conditions}\n\n"
-            else:
-                response_text += "**Chronische Erkrankungen:** Keine Daten vorhanden.\n\n"
-        
-        return response_text.strip()
-
-
-async def request_handler(ctx: JobContext):
-    """Request handler"""
-    logger.info(f"[{AGENT_NAME}] 📨 Job request received")
-    logger.info(f"[{AGENT_NAME}] Room: {ctx.room.name}")
-    await ctx.accept()
-
-
-async def entrypoint(ctx: JobContext):
-    """Entry point für den Medical Agent"""
-    room_name = ctx.room.name if ctx.room else "unknown"
-    session_id = f"{room_name}_{int(asyncio.get_event_loop().time())}"
-
-    logger.info("="*50)
-    logger.info(f"🏥 Starting Medical Agent Session: {session_id}")
-    logger.info("="*50)
-
-    session = None
-    session_closed = False
-
-    try:
-        # 1. Connect to room
-        await ctx.connect()
-        logger.info(f"✅ [{session_id}] Connected to room")
-
-        # 2. Wait for participant
-        participant = await ctx.wait_for_participant()
-        logger.info(f"✅ [{session_id}] Participant joined: {participant.identity}")
-
-        # 3. Configure Ollama
-        rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
-        qdrant_url = os.getenv("QDRANT_URL", "http://172.16.0.108:6333")
-
-        llm = openai.LLM.with_ollama(
-            model="llama3.2:latest",
-            base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
-            temperature=0.0,
-        )
-        logger.info(f"🤖 [{session_id}] Using Llama 3.2")
-
-        # 4. Create session
-        session = AgentSession[MedicalUserData](
-            userdata=MedicalUserData(
-                rag_url=rag_url,
-                qdrant_url=qdrant_url,
-                greeting_sent=False,
-                active_patient=None,
-                patient_name=None,
-                patient_info=None,
-                patient_medication=None,
-                patient_treatments=[],
-                patient_allergies=None,
-                patient_chronic_conditions=None
-            ),
-            llm=llm,
-            vad=silero.VAD.load(
-                min_silence_duration=0.4,
-                min_speech_duration=0.15
-            ),
-            stt=openai.STT(
-                model="whisper-1",
-                language="de"
-            ),
-            tts=openai.TTS(
-                model="tts-1",
-                voice="nova"
-            ),
-            min_endpointing_delay=0.3,
-            max_endpointing_delay=3.0
-        )
-
-        # 5. Create and start agent
-        agent = MedicalAssistant()
-        
-        logger.info(f"🏁 [{session_id}] Starting session...")
-        await session.start(
-            room=ctx.room,
-            agent=agent
-        )
-
-        # Event handlers
-        @session.on("user_input_transcribed")
-        def on_user_input(event):
-            logger.info(f"[{session_id}] 🎤 User: {event.transcript}")
-
-        @session.on("agent_state_changed")
-        def on_state_changed(event):
-            logger.info(f"[{session_id}] 🤖 Agent state: {event}")
-
-        # 6. Initial greeting
-        await asyncio.sleep(1.5)
-
-        greeting_text = """Guten Tag und herzlich willkommen bei der Klinik St. Anna!
-Ich bin Lisa, Ihre digitale medizinische Assistentin.
-
-Bitte nennen Sie mir die Patienten-ID (z.B. P001) oder den Namen des Patienten."""
-
-        await session.say(
-            greeting_text,
-            allow_interruptions=True,
-            add_to_chat_ctx=True
-        )
-
-        logger.info(f"✅ [{session_id}] Agent ready!")
-
-        # Wait for disconnect
-        disconnect_event = asyncio.Event()
-
-        def handle_disconnect():
-            nonlocal session_closed
-            session_closed = True
-            disconnect_event.set()
-
-        ctx.room.on("disconnected", handle_disconnect)
-        await disconnect_event.wait()
-
-    except Exception as e:
-        logger.error(f"❌ [{session_id}] Error: {e}", exc_info=True)
-        raise
-
-    finally:
-        if session and not session_closed:
-            try:
-                await session.aclose()
-                logger.info(f"✅ [{session_id}] Session closed")
-            except:
-                pass
-
-        logger.info("="*50)
 
 
 if __name__ == "__main__":
