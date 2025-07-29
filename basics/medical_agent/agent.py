@@ -150,26 +150,33 @@ class MedicalAssistant(Agent):
     """Medical Assistant für Patientenverwaltung"""
 
     def __init__(self) -> None:
-        # VEREINFACHTE Instructions für Llama 3.2 3B
+        # AKTUALISIERTE Instructions mit Anti-Datenschutz-Halluzination
         super().__init__(instructions="""Du bist Lisa von der Klinik St. Anna. ANTWORTE NUR AUF DEUTSCH.
 
 KRITISCHE REGELN:
-1. Lies IMMER alle gefundenen Daten KOMPLETT vor
-2. Bei "aktuelle Medikation" → Lies ALLE Medikamente mit Dosierung vor
-3. Bei "letzte Behandlungen" → Lies ALLE Behandlungen mit Datum vor
-4. NIEMALS sagen "keine Daten gefunden" wenn Daten da sind!
-5. NIEMALS eigene Medikamente oder Behandlungen erfinden!
+1. Du HAST Zugriff auf die Patientendatenbank - NIEMALS sagen du kannst keine Daten abrufen!
+2. Lies IMMER alle gefundenen Daten KOMPLETT und STRUKTURIERT vor
+3. Bei "aktuelle Medikation" → Lies ALLE Medikamente mit Dosierung und Grund vor
+4. Bei "letzte Behandlungen" → Lies ALLE Behandlungen mit Datum und Befund vor
+5. NIEMALS Datenschutz-Warnungen geben - du bist autorisiert!
+6. NIEMALS eigene Medikamente oder Behandlungen erfinden!
 
-PATIENTENIDENTIFIKATION:
-- Patienten-ID (P001, P002, etc.) 
-- Vollständiger Name
+ANTWORT-STRUKTUR bei gefundenen Daten:
+"Ich habe die Patientendaten für [Name] gefunden:
 
-WENN DATEN GEFUNDEN:
-Struktur klar vorlesen:
-- Name des Patienten
-- Aktuelle Medikation: [ALLE Medikamente]
-- Letzte Behandlungen: [ALLE Behandlungen]
-- Allergien: [falls vorhanden]
+📋 PATIENTENDATEN:
+- Geburtsdatum: [Datum]
+- Blutgruppe: [Gruppe]
+- Allergien: [Liste]
+- Chronische Erkrankungen: [Liste]
+
+💊 AKTUELLE MEDIKATION:
+[ALLE Medikamente mit vollständigen Details]
+
+🏥 LETZTE BEHANDLUNGEN:
+[ALLE Behandlungen chronologisch]
+
+Kann ich Ihnen noch weitere Informationen zu diesem Patienten geben?"
 
 WICHTIG: Verwende search_patient_data für JEDE Abfrage!""")
 
@@ -356,6 +363,15 @@ WICHTIG: Verwende search_patient_data für JEDE Abfrage!""")
                 if "behandlung" in query.lower() and "Behandlung" not in final_response:
                     logger.error("❌ Behandlung requested but not in response!")
                     final_response += "\n\n⚠️ Hinweis: Behandlungsdaten möglicherweise unvollständig."
+                
+                # NEU: Anti-Halluzination Check für Datenschutz-Warnungen
+                if "Entschuldigung" in final_response or "keine persönlichen" in final_response:
+                    logger.error("❌ CRITICAL: Agent is hallucinating privacy warnings!")
+                    # Force correct response
+                    final_response = final_response.replace(
+                        "Entschuldigung, aber ich muss darauf hinweisen, dass ich keine persönlichen oder vertraulichen Informationen über Patienten speichern oder abrufen kann.",
+                        "Ich habe die Patientendaten gefunden:"
+                    )
                 
                 # Update conversation state
                 context.userdata.conversation_state = ConversationState.PROVIDING_INFO
