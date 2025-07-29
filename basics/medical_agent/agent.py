@@ -462,7 +462,7 @@ async def entrypoint(ctx: JobContext):
             agent=agent
         )
 
-        # Event handlers
+        # Event handlers MÜSSEN NACH session.start() kommen!
         @session.on("user_input_transcribed")
         def on_user_input(event):
             logger.info(f"[{session_id}] 🎤 User: {event.transcript}")
@@ -480,7 +480,7 @@ async def entrypoint(ctx: JobContext):
             """Log function calls für Debugging"""
             logger.info(f"[{session_id}] 🔧 Function call: {event}")
 
-        # 8. Initial greeting - GENAU WIE GARAGE AGENT
+        # 8. Initial greeting - NACH Event Handlers!
         await asyncio.sleep(1.5)
 
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
@@ -498,6 +498,7 @@ Welche Patientendaten benötigen Sie heute, Herr Doktor?"""
             session.userdata.greeting_sent = True
             session.userdata.conversation_state = ConversationState.AWAITING_REQUEST
 
+            # WICHTIG: await verwenden!
             await session.say(
                 greeting_text,
                 allow_interruptions=True,
@@ -507,11 +508,11 @@ Welche Patientendaten benötigen Sie heute, Herr Doktor?"""
             logger.info(f"✅ [{session_id}] Initial greeting sent")
 
         except Exception as e:
-            logger.error(f"[{session_id}] Greeting error: {e}")
+            logger.error(f"[{session_id}] Greeting error: {e}", exc_info=True)
 
         logger.info(f"✅ [{session_id}] Medical Agent ready with Patient-ID support!")
 
-        # Wait for disconnect
+        # Wait for disconnect - WICHTIG: NACH der Begrüßung!
         disconnect_event = asyncio.Event()
 
         def handle_disconnect():
