@@ -387,7 +387,7 @@ VERBOTENE WÖRTER: Verwende NIEMALS "Entschuldigung", "Es tut mir leid", "Sorry"
                 response_parts.append(f"- Kennzeichen: {vehicle_data.get('kennzeichen', 'N/A')}")
                 response_parts.append(f"- Fahrzeug: {vehicle_data.get('marke', '')} {vehicle_data.get('modell', '')}")
                 response_parts.append(f"- Baujahr: {vehicle_data.get('baujahr', 'N/A')}")
-                response_parts.append(f"- Kilometerstand: {vehicle_data.get('kilometerstand', 'N/A')} km")
+                response_parts.append(f"- Kilometerstand: {vehicle_data.get('kilometerstand', 'N/A'):,} km".replace(',', '.'))
                 response_parts.append(f"- Fahrzeug-ID: {vehicle_data.get('fahrzeug_id', 'N/A')}")
                 
                 # 2. Letzte Services
@@ -397,7 +397,8 @@ VERBOTENE WÖRTER: Verwende NIEMALS "Entschuldigung", "Es tut mir leid", "Sorry"
                         response_parts.append(f"- {service.get('datum', 'N/A')} ({service.get('km_stand', 'N/A')} km):")
                         response_parts.append(f"  Typ: {service.get('service_typ', 'N/A')}")
                         response_parts.append(f"  Arbeiten: {', '.join(service.get('arbeiten', []))}")
-                        response_parts.append(f"  Kosten: CHF {service.get('kosten', 0):.2f}")
+                        kosten = service.get('kosten', 0)
+                        response_parts.append(f"  Kosten: {kosten:.2f} Schweizer Franken")
                 
                 # 3. Aktuelle Probleme - WICHTIG!
                 if vehicle_data.get("aktuelle_probleme"):
@@ -410,7 +411,8 @@ VERBOTENE WÖRTER: Verwende NIEMALS "Entschuldigung", "Es tut mir leid", "Sorry"
                     response_parts.append("\n💰 ANSTEHENDE ARBEITEN:")
                     for arbeit in vehicle_data["anstehende_arbeiten"]:
                         response_parts.append(f"- {arbeit.get('arbeit', 'N/A')} (Priorität: {arbeit.get('priorität', 'N/A')})")
-                        response_parts.append(f"  Geschätzte Kosten: CHF {arbeit.get('geschätzte_kosten', 0):.2f}")
+                        kosten = arbeit.get('geschätzte_kosten', 0)
+                        response_parts.append(f"  Geschätzte Kosten: {kosten:.2f} Schweizer Franken")
                 
                 # 5. Nächster Service
                 if vehicle_data.get("nächster_service_fällig"):
