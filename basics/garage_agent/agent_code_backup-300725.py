@@ -1,4 +1,4 @@
-# LiveKit Agents - Garage Management Agent
+# LiveKit Agents - Garage Agent (Korrigiert basierend auf Medical Agent)
 import logging
 import os
 import httpx
@@ -15,6 +15,7 @@ from livekit.agents import JobContext, WorkerOptions, cli, RunContext
 from livekit.agents.voice import AgentSession, Agent
 from livekit.agents.llm import function_tool
 from livekit.plugins import openai, silero
+from difflib import SequenceMatcher
 
 load_dotenv()
 
@@ -34,45 +35,32 @@ class ConversationState(Enum):
     PROVIDING_INFO = "providing_info"
 
 @dataclass
-class CustomerContext:
-    """Kontext für Kunden-Identifikation"""
+class VehicleContext:
+    """Kontext für Fahrzeug-Identifikation"""
     fahrzeug_id: Optional[str] = None  # z.B. F001, F002
-    canton_letters: Optional[str] = None
-    numbers: Optional[str] = None
-    complete_plate: Optional[str] = None
-    customer_name: Optional[str] = None
+    owner_name: Optional[str] = None
+    license_plate: Optional[str] = None
     attempts: int = 0
 
     def has_identifier(self) -> bool:
         """Prüft ob eine Identifikation vorhanden ist"""
-        return bool(self.fahrzeug_id or self.complete_plate or self.customer_name)
+        return bool(self.fahrzeug_id or self.owner_name or self.license_plate)
 
     def get_search_query(self) -> Optional[str]:
         """Gibt die beste Suchanfrage zurück"""
         if self.fahrzeug_id:
             return self.fahrzeug_id
-        elif self.complete_plate:
-            return self.complete_plate
-        elif self.customer_name:
-            return self.customer_name
-        return None
-
-    def combine_plate(self) -> Optional[str]:
-        """Kombiniert Canton und Zahlen zu vollständigem Kennzeichen"""
-        if self.canton_letters and self.numbers:
-            canton = self.canton_letters.replace(".", "").replace(" ", "").upper()
-            numbers = self.numbers.replace(" ", "")
-            self.complete_plate = f"{canton} {numbers}"
-            return self.complete_plate
+        elif self.owner_name:
+            return self.owner_name
+        elif self.license_plate:
+            return self.license_plate
         return None
 
     def reset(self):
         """Reset des Kontexts"""
         self.fahrzeug_id = None
-        self.canton_letters = None
-        self.numbers = None
-        self.complete_plate = None
-        self.customer_name = None
+        self.owner_name = None
+        self.license_plate = None
         self.attempts = 0
 
 @dataclass
@@ -80,44 +68,71 @@ class GarageUserData:
     """User data context für den Garage Agent"""
     authenticated_user: Optional[str] = None
     rag_url: str = "http://localhost:8000"
+    qdrant_url: str = "http://172.16.0.108:6333"
     current_vehicle_data: Optional[Dict[str, Any]] = None
-    user_language: str = "de"
     greeting_sent: bool = False
     conversation_state: ConversationState = ConversationState.GREETING
-    customer_context: CustomerContext = field(default_factory=CustomerContext)
+    vehicle_context: VehicleContext = field(default_factory=VehicleContext)
     last_search_query: Optional[str] = None
-    hallucination_count: int = 0
+    active_vehicle: Optional[str] = None
 
 
 class IdentifierExtractor:
-    """Extrahiert und validiert Kunden-Identifikatoren"""
-
-    SWISS_CANTONS = ["AG", "AI", "AR", "BE", "BL", "BS", "FR", "GE", "GL", "GR",
-                     "JU", "LU", "NE", "NW", "OW", "SG", "SH", "SO", "SZ", "TG",
-                     "TI", "UR", "VD", "VS", "ZG", "ZH"]
+    """Extrahiert und validiert Fahrzeug-Identifikatoren"""
 
     @classmethod
     def extract_intent_from_input(cls, user_input: str) -> Dict[str, Any]:
         """Extrahiert Intent und Daten aus User-Input"""
         input_lower = user_input.lower().strip()
 
-        # Check for specific service queries FIRST
-        if any(word in input_lower for word in ["letzte service", "letzten service", "service historie", "servicehistorie"]):
-            return {"intent": "service_history", "data": user_input}
+        # Check for specific garage queries FIRST
+        if any(word in input_lower for word in ["service", "reparatur", "wartung", "inspektion"]):
+            return {"intent": "service_query", "data": user_input}
 
-        if any(word in input_lower for word in ["anstehende arbeiten", "anstehende reparaturen", "was muss gemacht werden"]):
-            return {"intent": "pending_work", "data": user_input}
+        if any(word in input_lower for word in ["rechnung", "kosten", "preis"]):
+            return {"intent": "invoice_query", "data": user_input}
 
-        if any(word in input_lower for word in ["kosten", "preis", "wie viel", "was kostet"]):
-            if "anstehend" in input_lower or "gesamt" in input_lower:
-                return {"intent": "cost_estimate", "data": user_input}
-            else:
-                return {"intent": "cost_query", "data": user_input}
+        if any(word in input_lower for word in ["problem", "defekt", "kaputt"]):
+            return {"intent": "problem_report", "data": user_input}
 
         # Fahrzeug-ID (F001, F002, etc.) - Check even in longer sentences
         fahrzeug_id_match = re.search(r'\b(F\d{3})\b', user_input.upper())
         if fahrzeug_id_match:
             return {"intent": "fahrzeug_id", "data": fahrzeug_id_match.group(1)}
+
+        # Korrigiere Sprache-zu-Text Fehler bei Fahrzeug-IDs
+        patterns = [
+            r'f\s*null\s*null\s*(\w+)',
+            r'fahrzeug\s*null\s*null\s*(\w+)',
+            r'f\s*0\s*0\s*(\w+)'
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, input_lower)
+            if match:
+                number = match.group(1)
+                # Deutsche Zahlwörter zu Ziffern
+                number_map = {
+                    'eins': '1', 'zwei': '2', 'drei': '3', 'vier': '4',
+                    'fünf': '5', 'sechs': '6', 'sieben': '7', 'acht': '8',
+                    'neun': '9', 'null': '0', 'zehn': '10'
+                }
+                if number in number_map:
+                    number = number_map[number]
+                corrected_id = f"F{number.zfill(3)}"
+                return {"intent": "fahrzeug_id", "data": corrected_id}
+
+        # License plate detection (Swiss format)
+        license_patterns = [
+            r'\b([A-Z]{2})\s*(\d{4,6})\b',
+            r'\b([A-Z]{2})\s+(\d{3}\s*\d{3})\b'
+        ]
+        
+        for pattern in license_patterns:
+            match = re.search(pattern, user_input.upper())
+            if match:
+                license_plate = f"{match.group(1)} {match.group(2).replace(' ', '')}"
+                return {"intent": "license_plate", "data": license_plate}
 
         # Greetings - but only if no other important info is present
         greetings = ["hallo", "guten tag", "hi", "hey", "servus", "grüezi", "guten morgen", "guten abend"]
@@ -125,160 +140,179 @@ class IdentifierExtractor:
 
         # Name detection
         name_patterns = [
-            r"(?:mein name ist|ich heiße|ich bin)\s+([A-Za-zäöüÄÖÜß\s]+)",
-            r"^([A-Z][a-zäöüß]+(?:\s+[A-Z][a-zäöüß]+)+)$"  # Vorname Nachname
+            r"(?:mein name ist|ich bin|ich heiße)\s+([A-Za-zäöüÄÖÜß\s]+)",
+            r"(?:herr|frau)\s+([A-Za-zäöüÄÖÜß]+(?:\s+[A-Za-zäöüÄÖÜß]+)?)"
         ]
 
         for pattern in name_patterns:
             match = re.search(pattern, user_input, re.IGNORECASE)
             if match:
                 name = match.group(1).strip()
-                # Filter out common false positives
-                if name.lower() not in ["die", "der", "das", "mein", "dein", "ihr"]:
-                    return {"intent": "customer_name", "data": name}
+                if name.lower() not in ["der", "die", "das"]:
+                    return {"intent": "owner_name", "data": name}
 
         # If we found a greeting but no other data, return greeting
         if has_greeting and not fahrzeug_id_match:
             return {"intent": "greeting", "data": None}
 
-        # Buchstabierte Buchstaben (z.B. "B wie Bertha, E wie Emil")
-        buchstabiert_pattern = r'([A-Z])\s*wie\s*\w+(?:\s*[,.]?\s*([A-Z])\s*wie\s*\w+)?'
-        buchstabiert_match = re.findall(buchstabiert_pattern, user_input, re.IGNORECASE)
-        if buchstabiert_match:
-            letters = []
-            for match in buchstabiert_match:
-                for letter in match:
-                    if letter:
-                        letters.append(letter.upper())
-
-            if len(letters) == 2:
-                canton = ''.join(letters)
-                if cls.validate_canton(canton):
-                    return {"intent": "canton_provided", "data": canton}
-            elif len(letters) == 1:
-                return {"intent": "partial_canton", "data": letters[0]}
-
-        # Canton letters (z.B. "BE", "B E", "b e")
-        canton_patterns = [
-            r'^([A-Z])\s*\.?\s*([A-Z])\.?$',  # A.G. oder A G
-            r'^([A-Z]{2})$',  # AG
-            r'\b([a-z])\s+([a-z])\s+\d',  # b e 567890
-        ]
-
-        for pattern in canton_patterns:
-            match = re.match(pattern, user_input.upper().strip())
-            if not match and pattern == r'\b([a-z])\s+([a-z])\s+\d':
-                # Special handling for lowercase pattern
-                match = re.match(pattern, user_input.lower().strip())
-
-            if match:
-                if len(match.groups()) == 2:
-                    canton = match.group(1).upper() + match.group(2).upper()
-                else:
-                    canton = match.group(1).upper()
-
-                if cls.validate_canton(canton):
-                    # Check if there are also numbers
-                    numbers_match = re.search(r'(\d{3,6})', user_input)
-                    if numbers_match:
-                        return {"intent": "license_plate_complete", "data": f"{canton} {numbers_match.group(1)}"}
-                    else:
-                        return {"intent": "canton_provided", "data": canton}
-
-        # Numbers only
-        numbers_pattern = r'^[\d\s,\.]+$'
-        if re.match(numbers_pattern, user_input.strip()):
-            numbers = re.sub(r'[^\d]', '', user_input)
-            if 3 <= len(numbers) <= 6:
-                return {"intent": "numbers_provided", "data": numbers}
-
-        # Complete license plate
-        plate_match = re.search(r'([A-Z]{2})\s*(\d{3,6})', user_input.upper())
-        if plate_match:
-            canton = plate_match.group(1)
-            numbers = plate_match.group(2)
-            if cls.validate_canton(canton):
-                return {"intent": "license_plate_complete", "data": f"{canton} {numbers}"}
-
-        # Service/repair/cost keywords
-        if any(word in input_lower for word in ["reparatur", "service", "status", "kosten", "rechnung", "inspektion"]):
-            return {"intent": "service_query", "data": user_input}
+        # Garage keywords
+        if any(word in input_lower for word in ["auto", "fahrzeug", "wagen", "service"]):
+            return {"intent": "garage_query", "data": user_input}
 
         # Default
         return {"intent": "general_query", "data": user_input}
 
-    @classmethod
-    def validate_canton(cls, canton: str) -> bool:
-        """Validiert Schweizer Kanton-Kürzel"""
-        return canton.upper() in cls.SWISS_CANTONS
-
 
 class GarageAssistant(Agent):
-    """Garage Assistant für Kundenverwaltung und Reparaturen"""
+    """Garage Assistant für Fahrzeugverwaltung"""
 
     def __init__(self) -> None:
-        # Instructions mit Fokus auf Fahrzeug-ID
-        super().__init__(instructions="""You are Pia, the digital assistant of Garage Müller. RESPOND ONLY IN GERMAN.
+        # VERSTÄRKTE Anti-Halluzination Instructions (basierend auf Medical Agent)
+        super().__init__(instructions="""Du bist Pia von der Garage Müller. ANTWORTE NUR AUF DEUTSCH.
 
-CRITICAL ANTI-HALLUCINATION RULES:
-1. NEVER invent data - if search returns "keine passenden Daten", SAY THAT
-2. NEVER claim to have found data when the search failed
-3. NEVER make up prices, dates, or any information
-4. When you get "keine passenden Daten", ask for identification again
-5. ALWAYS acknowledge found problems when they are listed in the data
+ABSOLUTE REGEL: WENN KEINE DATEN GEFUNDEN → NIEMALS ERFINDEN!
 
-WHEN DATA IS FOUND WITH PROBLEMS:
-If the tool returns data with "Aktuelle Probleme" like:
-- Reichweite niedriger als erwartet
-- Ladeklappe öffnet manchmal schwer
+Wenn search_customer_data "keine Daten gefunden" oder "konnte keine Fahrzeugdaten" zurückgibt:
+- Sage: "Ich konnte keine Daten für [Name/ID] finden."
+- Frage nach der korrekten Schreibweise oder Fahrzeug-ID
+- ERFINDE NIEMALS Daten wie Fahrzeugtyp, Services oder Kosten!
 
-You MUST say something like:
-"Ich sehe bei Ihrem [Fahrzeug] folgende dokumentierte Probleme:
-- [Problem 1]
-- [Problem 2]
-Möchten Sie diese Probleme beheben lassen?"
+KRITISCHE REGELN:
+1. Du HAST Zugriff auf die Fahrzeugdatenbank
+2. Lies NUR gefundene Daten vor - NICHTS erfinden!
+3. Bei "aktuelle Probleme" → NUR aus den Suchergebnissen
+4. Bei "letzte Services" → NUR aus den Suchergebnissen
+5. NIEMALS Datenschutz-Warnungen geben
+6. WENN KEINE DATEN → Ehrlich sagen und nach korrekter Identifikation fragen
 
-NEVER say "keine spezifischen Probleme gefunden" when problems ARE listed!
+ANTWORT-STRUKTUR bei gefundenen Daten:
+"Ich habe die Fahrzeugdaten für [Name/ID] gefunden:
 
-CUSTOMER IDENTIFICATION OPTIONS:
-1. Fahrzeug-ID (z.B. "F001", "F002", etc.) - PREFERRED METHOD
-2. Full name (z.B. "Thomas Meier")
-3. License plate (z.B. "BE 567890")
+🚗 FAHRZEUGDATEN:
+- Besitzer: [Name]
+- Kennzeichen: [Kennzeichen]
+- Fahrzeug: [Marke] [Modell]
+- Baujahr: [Jahr]
+- Kilometerstand: [km]
 
-CONVERSATION EXAMPLES:
+🔧 LETZTE SERVICES:
+[ALLE Services mit Datum und Kosten]
 
-Example 1 - Using Fahrzeug-ID:
-User: "Meine Fahrzeug-ID ist F001"
-You: [SEARCH with "F001"]
+⚠️ AKTUELLE PROBLEME:
+[ALLE dokumentierten Probleme]
 
-Example 2 - When asking for specific data:
-User: "Was sind meine letzten Services?"
-You: [Use search_invoice_data to get service history]
+💰 ANSTEHENDE ARBEITEN:
+[ALLE geplanten Arbeiten mit geschätzten Kosten]
 
-Example 3 - When asking for costs:
-User: "Was kosten die anstehenden Arbeiten?"
-You: [Use search_invoice_data to get cost estimates]
+Kann ich Ihnen noch weitere Informationen zu diesem Fahrzeug geben?"
 
-FORBIDDEN WORDS (use alternatives):
-- "Entschuldigung" → "Leider"
-- "Es tut mir leid" → "Bedauerlicherweise"
-- "Sorry" → "Leider"
-
-RESPONSE RULES:
-1. Be friendly and professional
-2. If search returns no data, SAY SO and ask for identification
-3. NEVER invent prices or information
-4. Always acknowledge problems found in the data
-5. Suggest using Fahrzeug-ID for faster service
-
-Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
+WICHTIG: Verwende search_customer_data für JEDE Abfrage!
+VERBOTENE WÖRTER: Verwende NIEMALS "Entschuldigung", "Es tut mir leid", "Sorry" - nutze stattdessen "Leider".""")
 
         self.identifier_extractor = IdentifierExtractor()
-        logger.info("✅ GarageAssistant initialized with Fahrzeug-ID support")
+        logger.info("✅ GarageAssistant initialized with Qdrant direct access")
 
     async def on_enter(self):
         """Wird aufgerufen wenn der Agent die Session betritt"""
         logger.info("🎯 Agent on_enter called")
+
+    async def get_all_vehicle_chunks_from_qdrant(self, fahrzeug_id: str, owner_name: str, license_plate: str, qdrant_url: str) -> Dict[str, Any]:
+        """Holt ALLE Chunks eines Fahrzeugs direkt aus Qdrant"""
+        
+        logger.info(f"🔍 Direct Qdrant search for ID: {fahrzeug_id}, Owner: {owner_name}, Plate: {license_plate}")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Suche mit fahrzeug_id ODER owner_name ODER license_plate
+            filter_conditions = []
+            
+            if fahrzeug_id:
+                filter_conditions.append({
+                    "key": "fahrzeug_id",
+                    "match": {"value": fahrzeug_id}
+                })
+            
+            if owner_name:
+                filter_conditions.append({
+                    "key": "owner_name", 
+                    "match": {"value": owner_name}
+                })
+                
+            if license_plate:
+                filter_conditions.append({
+                    "key": "license_plate",
+                    "match": {"value": license_plate}
+                })
+            
+            request_body = {
+                "filter": {
+                    "should": filter_conditions
+                } if len(filter_conditions) > 1 else {
+                    "must": filter_conditions
+                },
+                "limit": 100,
+                "with_payload": True,
+                "with_vector": False
+            }
+            
+            response = await client.post(
+                f"{qdrant_url}/collections/garage_management/points/scroll",
+                json=request_body
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                points = data.get("result", {}).get("points", [])
+                
+                # WENN KEINE ERGEBNISSE: Ähnlichkeitssuche für Namen
+                if len(points) == 0 and owner_name:
+                    logger.warning(f"⚠️ No exact match for '{owner_name}', trying similarity search...")
+                    
+                    # Suche nach ähnlichen Namen
+                    all_response = await client.post(
+                        f"{qdrant_url}/collections/garage_management/points/scroll",
+                        json={
+                            "limit": 1000,
+                            "with_payload": True,
+                            "with_vector": False
+                        }
+                    )
+                    
+                    if all_response.status_code == 200:
+                        all_points = all_response.json().get("result", {}).get("points", [])
+                        
+                        # Finde ähnliche Namen
+                        best_match = None
+                        best_score = 0
+                        
+                        for point in all_points:
+                            point_name = point.get("payload", {}).get("owner_name", "")
+                            if point_name:
+                                # Berechne Ähnlichkeit
+                                score = SequenceMatcher(None, owner_name.lower(), point_name.lower()).ratio()
+                                if score > best_score and score > 0.8:  # 80% Ähnlichkeit
+                                    best_score = score
+                                    best_match = point_name
+                        
+                        if best_match:
+                            logger.info(f"✅ Found similar name: '{best_match}' (score: {best_score:.2f})")
+                            # Suche mit korrigiertem Namen
+                            return await self.get_all_vehicle_chunks_from_qdrant(
+                                fahrzeug_id="",
+                                owner_name=best_match,
+                                license_plate="",
+                                qdrant_url=qdrant_url
+                            )
+                
+                logger.info(f"📦 Found {len(points)} chunks from Qdrant")
+                
+                # Extrahiere Fahrzeugdaten aus dem ersten (und einzigen) Punkt
+                if points:
+                    return points[0].get("payload", {})
+                else:
+                    return {}
+            else:
+                logger.error(f"❌ Qdrant error: {response.status_code}")
+                return {}
 
     @function_tool
     async def search_customer_data(self,
@@ -286,13 +320,12 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                                  query: str) -> str:
         """
         Sucht nach Kundendaten in der Garage-Datenbank basierend auf Fahrzeug-ID, Namen oder Kennzeichen.
-        Diese Funktion wird vom LLM aufgerufen, wenn nach Kundendaten gesucht werden soll.
-
+        
         Args:
             query: Suchbegriff (Fahrzeug-ID, Name oder Autokennzeichen)
 
         Returns:
-            Gefundene Kundendaten oder Fehlermeldung
+            Gefundene Fahrzeugdaten oder Fehlermeldung
         """
         logger.info(f"🔍 Original search query: {query}")
 
@@ -303,142 +336,105 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
 
         logger.info(f"📊 Intent: {intent}, Data: {data}")
 
-        # Store identification in context
+        # Extract identifiers
+        fahrzeug_id = ""
+        owner_name = query  # Default to full query
+        license_plate = ""
+
+        # Try to find fahrzeug ID
+        fahrzeug_id_match = re.search(r'F\d{3}', query.upper())
+        if fahrzeug_id_match:
+            fahrzeug_id = fahrzeug_id_match.group()
+            context.userdata.vehicle_context.fahrzeug_id = fahrzeug_id
+            logger.info(f"✅ Found Fahrzeug ID: {fahrzeug_id}")
+        
+        # Store identification in context based on intent
         if intent == "fahrzeug_id":
-            context.userdata.customer_context.fahrzeug_id = data
-            query = data
-        elif intent == "customer_name":
-            context.userdata.customer_context.customer_name = data
-            query = data
-        elif intent == "license_plate_complete":
-            context.userdata.customer_context.complete_plate = data
-            query = data
-        elif intent == "canton_provided":
-            context.userdata.customer_context.canton_letters = data
-            return f"Danke, ich habe {data} notiert. Wie lauten die Zahlen Ihres Kennzeichens?"
-        elif intent == "numbers_provided":
-            if context.userdata.customer_context.canton_letters:
-                context.userdata.customer_context.numbers = data
-                plate = context.userdata.customer_context.combine_plate()
-                if plate:
-                    query = plate
-            else:
-                return "Mir fehlt noch der Kanton (die zwei Buchstaben). Bitte nennen Sie mir das vollständige Kennzeichen."
-
-        # Process queries like "b e 567890"
-        parts = query.lower().split()
-        if len(parts) >= 3:
-            letters = []
-            numbers = []
-
-            for part in parts:
-                if part.isalpha() and len(part) == 1:
-                    letters.append(part.upper())
-                elif part.isdigit():
-                    numbers.append(part)
-
-            if len(letters) == 2 and numbers:
-                canton = ''.join(letters)
-                number = ''.join(numbers)
-                if self.identifier_extractor.validate_canton(canton):
-                    query = f"{canton} {number}"
-                    context.userdata.customer_context.complete_plate = query
-                    logger.info(f"✅ Converted '{' '.join(parts)}' to '{query}'")
+            context.userdata.vehicle_context.fahrzeug_id = data
+            fahrzeug_id = data
+        elif intent == "owner_name":
+            context.userdata.vehicle_context.owner_name = data
+            owner_name = data
+        elif intent == "license_plate":
+            context.userdata.vehicle_context.license_plate = data
+            license_plate = data
 
         # Store search query
         context.userdata.last_search_query = query
 
         try:
-            # DIREKTE QDRANT ABFRAGE
-            async with httpx.AsyncClient() as client:
-                qdrant_response = await client.post(
-                    "http://172.16.0.108:6333/collections/garage_management/points/scroll",
-                    json={
-                        "limit": 100,
-                        "with_payload": True,
-                        "with_vector": False
-                    },
-                    timeout=5.0
-                )
+            # IMMER direkt von Qdrant holen
+            logger.info(f"🔄 Using direct Qdrant fetch for: {fahrzeug_id or owner_name or license_plate}")
+            
+            vehicle_data = await self.get_all_vehicle_chunks_from_qdrant(
+                fahrzeug_id=fahrzeug_id,
+                owner_name=owner_name,
+                license_plate=license_plate,
+                qdrant_url=context.userdata.qdrant_url
+            )
+            
+            if vehicle_data and "fahrzeug_id" in vehicle_data:
+                # Store active vehicle
+                if vehicle_data.get("fahrzeug_id"):
+                    context.userdata.active_vehicle = vehicle_data["fahrzeug_id"]
+                
+                # Build comprehensive response (NUR DIE DATEN, KEIN "Ich habe gefunden" PREFIX!)
+                response_parts = []
+                
+                # 1. Fahrzeug Info
+                response_parts.append("🚗 FAHRZEUGDATEN:")
+                response_parts.append(f"- Besitzer: {vehicle_data.get('besitzer', 'N/A')}")
+                response_parts.append(f"- Kennzeichen: {vehicle_data.get('kennzeichen', 'N/A')}")
+                response_parts.append(f"- Fahrzeug: {vehicle_data.get('marke', '')} {vehicle_data.get('modell', '')}")
+                response_parts.append(f"- Baujahr: {vehicle_data.get('baujahr', 'N/A')}")
+                response_parts.append(f"- Kilometerstand: {vehicle_data.get('kilometerstand', 'N/A')} km")
+                response_parts.append(f"- Fahrzeug-ID: {vehicle_data.get('fahrzeug_id', 'N/A')}")
+                
+                # 2. Letzte Services
+                if vehicle_data.get("letzte_services"):
+                    response_parts.append("\n🔧 LETZTE SERVICES:")
+                    for service in vehicle_data["letzte_services"]:
+                        response_parts.append(f"- {service.get('datum', 'N/A')} ({service.get('km_stand', 'N/A')} km):")
+                        response_parts.append(f"  Typ: {service.get('service_typ', 'N/A')}")
+                        response_parts.append(f"  Arbeiten: {', '.join(service.get('arbeiten', []))}")
+                        response_parts.append(f"  Kosten: CHF {service.get('kosten', 0):.2f}")
+                
+                # 3. Aktuelle Probleme - WICHTIG!
+                if vehicle_data.get("aktuelle_probleme"):
+                    response_parts.append("\n⚠️ AKTUELLE PROBLEME:")
+                    for problem in vehicle_data["aktuelle_probleme"]:
+                        response_parts.append(f"- {problem}")
+                
+                # 4. Anstehende Arbeiten
+                if vehicle_data.get("anstehende_arbeiten"):
+                    response_parts.append("\n💰 ANSTEHENDE ARBEITEN:")
+                    for arbeit in vehicle_data["anstehende_arbeiten"]:
+                        response_parts.append(f"- {arbeit.get('arbeit', 'N/A')} (Priorität: {arbeit.get('priorität', 'N/A')})")
+                        response_parts.append(f"  Geschätzte Kosten: CHF {arbeit.get('geschätzte_kosten', 0):.2f}")
+                
+                # 5. Nächster Service
+                if vehicle_data.get("nächster_service_fällig"):
+                    response_parts.append(f"\n📅 Nächster Service fällig: {vehicle_data['nächster_service_fällig']}")
+                
+                final_response = "\n".join(response_parts)
+                
+                # Update conversation state
+                context.userdata.conversation_state = ConversationState.PROVIDING_INFO
+                
+                logger.info(f"✅ Returning complete vehicle data")
+                return final_response  # NUR DIE DATEN ZURÜCKGEBEN!
 
-                if qdrant_response.status_code == 200:
-                    qdrant_data = qdrant_response.json()
-                    points = qdrant_data.get("result", {}).get("points", [])
-
-                    # Suche nach dem Query
-                    search_lower = query.lower().strip()
-                    vehicle_data = None
-
-                    for point in points:
-                        payload = point.get("payload", {})
-                        # Check verschiedene Felder
-                        if (search_lower in str(payload.get("fahrzeug_id", "")).lower() or
-                            search_lower in str(payload.get("besitzer", "")).lower() or
-                            search_lower in str(payload.get("kennzeichen", "")).lower().replace(" ", "")):
-                            vehicle_data = payload
-                            break
-
-                    if vehicle_data:
-                        # Store vehicle data in context
-                        context.userdata.current_vehicle_data = vehicle_data
-
-                        # Check if user is asking for specific information
-                        query_lower = query.lower()
-
-                        # If asking about services
-                        if intent == "service_history" or any(word in query_lower for word in ["service", "letzte", "historie"]):
-                            if 'letzte_services' in vehicle_data and vehicle_data['letzte_services']:
-                                response_text = f"Hier sind die letzten Services für Ihr {vehicle_data.get('marke', '')} {vehicle_data.get('modell', '')}:\n"
-                                for service in vehicle_data['letzte_services']:
-                                    response_text += f"\n**{service.get('datum', 'unbekannt')}** - {service.get('service_typ', 'Service')}:\n"
-                                    response_text += f"- Kilometerstand: {service.get('km_stand', 0)} km\n"
-                                    response_text += f"- Arbeiten: {', '.join(service.get('arbeiten', []))}\n"
-                                    response_text += f"- Kosten: CHF {service.get('kosten', 0):.2f}\n"
-                                return response_text
-                            else:
-                                return "Ich habe keine Service-Historie für Ihr Fahrzeug gefunden."
-
-                        # Default: show general vehicle data
-                        response_text = "Ich habe folgende Daten gefunden:\n"
-
-                        if 'fahrzeug_id' in vehicle_data:
-                            response_text += f"\n**Fahrzeug-ID**: {vehicle_data['fahrzeug_id']}\n"
-                        if 'besitzer' in vehicle_data:
-                            response_text += f"**Besitzer**: {vehicle_data['besitzer']}\n"
-                        if 'kennzeichen' in vehicle_data:
-                            response_text += f"**Kennzeichen**: {vehicle_data['kennzeichen']}\n"
-                        if 'marke' in vehicle_data and 'modell' in vehicle_data:
-                            response_text += f"**Fahrzeug**: {vehicle_data['marke']} {vehicle_data['modell']}\n"
-                        if 'baujahr' in vehicle_data:
-                            response_text += f"**Baujahr**: {vehicle_data['baujahr']}\n"
-                        if 'kilometerstand' in vehicle_data:
-                            response_text += f"**Kilometerstand**: {vehicle_data['kilometerstand']} km\n"
-
-                        # Show latest service if available
-                        if 'letzte_services' in vehicle_data and vehicle_data['letzte_services']:
-                            latest_service = vehicle_data['letzte_services'][0]
-                            response_text += f"\n**Letzter Service** ({latest_service.get('datum', 'unbekannt')}):\n"
-                            response_text += f"- Typ: {latest_service.get('service_typ', 'unbekannt')}\n"
-                            response_text += f"- Kosten: CHF {latest_service.get('kosten', 0):.2f}\n"
-
-                        # Show current problems if any
-                        if 'aktuelle_probleme' in vehicle_data and vehicle_data['aktuelle_probleme']:
-                            response_text += f"\n**Aktuelle Probleme**:\n"
-                            for problem in vehicle_data['aktuelle_probleme']:
-                                response_text += f"- {problem}\n"
-
-                        return response_text
-                    else:
-                        logger.info("❌ No results found in Qdrant")
-                        context.userdata.customer_context.reset()
-                        return "Ich habe keine passenden Daten gefunden. Können Sie mir bitte Ihre Fahrzeug-ID (z.B. F001), Ihren vollständigen Namen oder Ihr Autokennzeichen nennen?"
-                else:
-                    logger.error(f"Qdrant error: {qdrant_response.status_code}")
-                    return "Es gab ein Problem mit der Datenbank-Verbindung. Bitte versuchen Sie es erneut."
+            else:
+                logger.info("❌ No vehicle data found in Qdrant")
+                context.userdata.vehicle_context.reset()
+                context.userdata.conversation_state = ConversationState.COLLECTING_IDENTIFIER
+                
+                # Klarere Nachricht ohne Raum für Halluzination
+                return f"Ich konnte keine Fahrzeugdaten für '{owner_name or query}' finden. Bitte überprüfen Sie die Schreibweise oder nutzen Sie die Fahrzeug-ID (z.B. F001)."
 
         except Exception as e:
-            logger.error(f"Search error: {e}")
-            return "Es gab einen Fehler bei der Suche. Bitte versuchen Sie es erneut."
+            logger.error(f"Search error: {e}", exc_info=True)
+            return "Die Fahrzeugdatenbank ist momentan nicht erreichbar. Bitte versuchen Sie es später noch einmal."
 
     @function_tool
     async def search_invoice_data(self,
@@ -446,158 +442,25 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                                 query: str) -> str:
         """
         Sucht nach Rechnungsinformationen und Kosten für Services und Reparaturen.
-        Diese Funktion wird vom LLM aufgerufen, wenn nach Kosten oder Rechnungen gefragt wird.
-
+        
         Args:
             query: Suchbegriff oder verwendet gespeicherte Kundenidentifikation
 
         Returns:
-            Gefundene Rechnungsdaten oder Fehlermeldung
+            Rechnungsinformationen oder Fehlermeldung
         """
-        logger.info(f"💰 Searching invoice data for: {query}")
-
-        # Extract intent to understand what user is asking for
-        intent_result = self.identifier_extractor.extract_intent_from_input(query)
-        intent = intent_result["intent"]
-
-        # Use stored identification if available
-        if context.userdata.customer_context.has_identifier():
-            search_query = context.userdata.customer_context.get_search_query()
-            logger.info(f"📋 Using stored identifier: {search_query}")
+        # Nutze gespeicherte Identifikation wenn vorhanden
+        if context.userdata.active_vehicle:
+            query = context.userdata.active_vehicle
+        
+        # Verwende die gleiche Suchlogik
+        result = await self.search_customer_data(context, query)
+        
+        # Extrahiere nur Kosten-relevante Informationen
+        if "LETZTE SERVICES" in result or "ANSTEHENDE ARBEITEN" in result:
+            return result
         else:
-            search_query = query
-
-        try:
-            # DIREKTE QDRANT ABFRAGE für Rechnungsdaten
-            async with httpx.AsyncClient() as client:
-                qdrant_response = await client.post(
-                    "http://172.16.0.108:6333/collections/garage_management/points/scroll",
-                    json={
-                        "limit": 100,
-                        "with_payload": True,
-                        "with_vector": False
-                    },
-                    timeout=5.0
-                )
-
-                if qdrant_response.status_code == 200:
-                    qdrant_data = qdrant_response.json()
-                    points = qdrant_data.get("result", {}).get("points", [])
-
-                    # Verwende gespeicherte Daten wenn vorhanden
-                    if context.userdata.current_vehicle_data:
-                        vehicle_data = context.userdata.current_vehicle_data
-                    else:
-                        # Suche nach dem Query
-                        search_lower = search_query.lower().strip()
-                        vehicle_data = None
-
-                        for point in points:
-                            payload = point.get("payload", {})
-                            # Check verschiedene Felder
-                            if (search_lower in str(payload.get("fahrzeug_id", "")).lower() or
-                                search_lower in str(payload.get("besitzer", "")).lower() or
-                                search_lower in str(payload.get("kennzeichen", "")).lower().replace(" ", "")):
-                                vehicle_data = payload
-                                break
-
-                    if vehicle_data:
-                        # Check what specific info user wants
-                        if intent == "service_history" or "service" in query.lower():
-                            # User wants service history
-                            if 'letzte_services' in vehicle_data and vehicle_data['letzte_services']:
-                                response_text = f"Hier ist die Service-Historie für Ihr {vehicle_data.get('marke', '')} {vehicle_data.get('modell', '')}:\n"
-                                total_spent = 0
-                                for service in vehicle_data['letzte_services']:
-                                    response_text += f"\n**{service.get('datum', 'unbekannt')}** - {service.get('service_typ', 'Service')}:\n"
-                                    response_text += f"- Kilometerstand: {service.get('km_stand', 0)} km\n"
-                                    response_text += f"- Arbeiten: {', '.join(service.get('arbeiten', []))}\n"
-                                    cost = service.get('kosten', 0)
-                                    response_text += f"- Kosten: CHF {cost:.2f}\n"
-                                    total_spent += cost
-                                response_text += f"\n**Gesamtausgaben für Services**: CHF {total_spent:.2f}"
-                                return response_text
-                            else:
-                                return "Ich habe keine Service-Historie für Ihr Fahrzeug gefunden."
-
-                        elif intent == "cost_estimate" or "anstehend" in query.lower():
-                            # User wants cost estimate for pending work
-                            if 'anstehende_arbeiten' in vehicle_data and vehicle_data['anstehende_arbeiten']:
-                                response_text = "Hier sind die anstehenden Arbeiten und geschätzten Kosten:\n"
-                                total_cost = 0
-
-                                # Group by priority
-                                high_priority = []
-                                medium_priority = []
-                                low_priority = []
-
-                                for arbeit in vehicle_data['anstehende_arbeiten']:
-                                    priority = arbeit.get('priorität', 'normal')
-                                    if priority == 'hoch':
-                                        high_priority.append(arbeit)
-                                    elif priority == 'mittel':
-                                        medium_priority.append(arbeit)
-                                    else:
-                                        low_priority.append(arbeit)
-
-                                if high_priority:
-                                    response_text += "\n**Hohe Priorität:**\n"
-                                    for arbeit in high_priority:
-                                        cost = arbeit.get('geschätzte_kosten', 0)
-                                        response_text += f"- {arbeit.get('arbeit', 'Arbeit')}: CHF {cost:.2f}\n"
-                                        total_cost += cost
-
-                                if medium_priority:
-                                    response_text += "\n**Mittlere Priorität:**\n"
-                                    for arbeit in medium_priority:
-                                        cost = arbeit.get('geschätzte_kosten', 0)
-                                        response_text += f"- {arbeit.get('arbeit', 'Arbeit')}: CHF {cost:.2f}\n"
-                                        total_cost += cost
-
-                                if low_priority:
-                                    response_text += "\n**Niedrige Priorität:**\n"
-                                    for arbeit in low_priority:
-                                        cost = arbeit.get('geschätzte_kosten', 0)
-                                        response_text += f"- {arbeit.get('arbeit', 'Arbeit')}: CHF {cost:.2f}\n"
-                                        total_cost += cost
-
-                                response_text += f"\n**Geschätzte Gesamtkosten für alle anstehenden Arbeiten**: CHF {total_cost:.2f}"
-                                return response_text
-                            else:
-                                return "Es sind keine anstehenden Arbeiten für Ihr Fahrzeug dokumentiert."
-
-                        else:
-                            # General cost overview
-                            response_text = "Hier sind die Kosteninformationen:\n"
-
-                            if 'letzte_services' in vehicle_data:
-                                response_text += "\n**Durchgeführte Services:**\n"
-                                for service in vehicle_data['letzte_services']:
-                                    response_text += f"\n{service.get('datum', 'unbekannt')} - {service.get('service_typ', 'Service')}:\n"
-                                    response_text += f"- Kosten: CHF {service.get('kosten', 0):.2f}\n"
-                                    if 'arbeiten' in service:
-                                        response_text += f"- Arbeiten: {', '.join(service['arbeiten'])}\n"
-
-                            if 'anstehende_arbeiten' in vehicle_data and vehicle_data['anstehende_arbeiten']:
-                                response_text += "\n**Anstehende Arbeiten und geschätzte Kosten:**\n"
-                                total_cost = 0
-                                for arbeit in vehicle_data['anstehende_arbeiten']:
-                                    cost = arbeit.get('geschätzte_kosten', 0)
-                                    response_text += f"- {arbeit.get('arbeit', 'Arbeit')}: CHF {cost:.2f} ({arbeit.get('priorität', 'normal')})\n"
-                                    total_cost += cost
-                                response_text += f"\n**Geschätzte Gesamtkosten**: CHF {total_cost:.2f}"
-
-                            return response_text
-                    else:
-                        logger.info("❌ No invoice data found")
-                        return "Ich habe keine Kosteninformationen gefunden. Bitte nennen Sie mir Ihre Fahrzeug-ID, Ihren Namen oder Ihr Kennzeichen."
-                else:
-                    logger.error(f"Qdrant error: {qdrant_response.status_code}")
-                    return "Es gab ein Problem mit der Datenbank. Bitte versuchen Sie es erneut."
-
-        except Exception as e:
-            logger.error(f"Invoice search error: {e}")
-            return "Es gab einen Fehler bei der Kostenabfrage. Bitte versuchen Sie es erneut."
+            return "Keine Rechnungsdaten gefunden."
 
     @function_tool
     async def search_repair_status(self,
@@ -605,124 +468,25 @@ Remember: ALWAYS report exactly what the search returns, NEVER invent data!""")
                                  query: str) -> str:
         """
         Sucht nach Reparaturstatus und anstehenden Arbeiten.
-        Diese Funktion wird vom LLM aufgerufen, wenn nach Reparaturen gefragt wird.
-
+        
         Args:
             query: Suchbegriff oder verwendet gespeicherte Kundenidentifikation
 
         Returns:
-            Gefundene Reparaturdaten oder Fehlermeldung
+            Reparaturstatus oder Fehlermeldung
         """
-        logger.info(f"🔧 Searching repair status for: {query}")
-
-        # Extract intent
-        intent_result = self.identifier_extractor.extract_intent_from_input(query)
-        intent = intent_result["intent"]
-
-        # Use stored identification if available
-        if context.userdata.customer_context.has_identifier():
-            search_query = context.userdata.customer_context.get_search_query()
-            logger.info(f"📋 Using stored identifier: {search_query}")
+        # Nutze gespeicherte Identifikation wenn vorhanden
+        if context.userdata.active_vehicle:
+            query = context.userdata.active_vehicle
+        
+        # Verwende die gleiche Suchlogik
+        result = await self.search_customer_data(context, query)
+        
+        # Fokus auf Probleme und anstehende Arbeiten
+        if "AKTUELLE PROBLEME" in result or "ANSTEHENDE ARBEITEN" in result:
+            return result
         else:
-            search_query = query
-
-        try:
-            # DIREKTE QDRANT ABFRAGE für Reparaturstatus
-            async with httpx.AsyncClient() as client:
-                qdrant_response = await client.post(
-                    "http://172.16.0.108:6333/collections/garage_management/points/scroll",
-                    json={
-                        "limit": 100,
-                        "with_payload": True,
-                        "with_vector": False
-                    },
-                    timeout=5.0
-                )
-
-                if qdrant_response.status_code == 200:
-                    qdrant_data = qdrant_response.json()
-                    points = qdrant_data.get("result", {}).get("points", [])
-
-                    # Verwende gespeicherte Daten wenn vorhanden
-                    if context.userdata.current_vehicle_data:
-                        vehicle_data = context.userdata.current_vehicle_data
-                    else:
-                        # Suche nach dem Query
-                        search_lower = search_query.lower().strip()
-                        vehicle_data = None
-
-                        for point in points:
-                            payload = point.get("payload", {})
-                            # Check verschiedene Felder
-                            if (search_lower in str(payload.get("fahrzeug_id", "")).lower() or
-                                search_lower in str(payload.get("besitzer", "")).lower() or
-                                search_lower in str(payload.get("kennzeichen", "")).lower().replace(" ", "")):
-                                vehicle_data = payload
-                                break
-
-                    if vehicle_data:
-                        response_text = f"Hier ist der Status für Ihr {vehicle_data.get('marke', '')} {vehicle_data.get('modell', '')}:\n"
-
-                        # Always show current problems first
-                        if 'aktuelle_probleme' in vehicle_data and vehicle_data['aktuelle_probleme']:
-                            response_text += "\n**Aktuelle Probleme:**\n"
-                            for problem in vehicle_data['aktuelle_probleme']:
-                                response_text += f"- {problem}\n"
-                        else:
-                            response_text += "\n**Keine aktuellen Probleme dokumentiert.**\n"
-
-                        # Show pending work
-                        if 'anstehende_arbeiten' in vehicle_data and vehicle_data['anstehende_arbeiten']:
-                            response_text += "\n**Anstehende Arbeiten:**\n"
-
-                            # Group by priority
-                            high_priority = []
-                            medium_priority = []
-                            low_priority = []
-
-                            for arbeit in vehicle_data['anstehende_arbeiten']:
-                                priority = arbeit.get('priorität', 'normal')
-                                if priority == 'hoch':
-                                    high_priority.append(arbeit)
-                                elif priority == 'mittel':
-                                    medium_priority.append(arbeit)
-                                else:
-                                    low_priority.append(arbeit)
-
-                            if high_priority:
-                                response_text += "\n*Hohe Priorität:*\n"
-                                for arbeit in high_priority:
-                                    response_text += f"- {arbeit.get('arbeit', 'Arbeit')}\n"
-
-                            if medium_priority:
-                                response_text += "\n*Mittlere Priorität:*\n"
-                                for arbeit in medium_priority:
-                                    response_text += f"- {arbeit.get('arbeit', 'Arbeit')}\n"
-
-                            if low_priority:
-                                response_text += "\n*Niedrige Priorität:*\n"
-                                for arbeit in low_priority:
-                                    response_text += f"- {arbeit.get('arbeit', 'Arbeit')}\n"
-
-                        # Show next service
-                        if 'nächster_service_fällig' in vehicle_data:
-                            response_text += f"\n**Nächster Service fällig**: {vehicle_data['nächster_service_fällig']}"
-
-                        # Show warranty status
-                        if 'garantie_bis' in vehicle_data:
-                            response_text += f"\n**Garantie bis**: {vehicle_data['garantie_bis']}"
-
-                        return response_text
-                    else:
-                        logger.info("❌ No repair data found")
-                        return "Ich habe keine Reparaturdaten gefunden. Bitte nennen Sie mir Ihre Fahrzeug-ID, Ihren Namen oder Ihr Kennzeichen."
-                else:
-                    logger.error(f"Qdrant error: {qdrant_response.status_code}")
-                    return "Es gab ein Problem mit der Datenbank. Bitte versuchen Sie es erneut."
-
-        except Exception as e:
-            logger.error(f"Repair search error: {e}")
-            return "Es gab einen Fehler bei der Statusabfrage. Bitte versuchen Sie es erneut."
+            return "Keine aktuellen Reparaturen oder Probleme dokumentiert."
 
 
 async def request_handler(ctx: JobContext):
@@ -738,7 +502,7 @@ async def entrypoint(ctx: JobContext):
     session_id = f"{room_name}_{int(asyncio.get_event_loop().time())}"
 
     logger.info("="*50)
-    logger.info(f"🚗 Starting Garage Agent Session: {session_id}")
+    logger.info(f"🏁 Starting Garage Agent Session: {session_id}")
     logger.info("="*50)
 
     session = None
@@ -768,8 +532,8 @@ async def entrypoint(ctx: JobContext):
 
         for i in range(max_wait_time):
             for track_pub in participant.track_publications.values():
-                if track_pub.kind == rtc.TrackKind.KIND_AUDIO:
-                    logger.info(f"✅ [{session_id}] Audio track found")
+                if track_pub.kind == rtc.TrackKind.KIND_AUDIO and track_pub.track is not None:
+                    logger.info(f"✅ [{session_id}] Audio track found and subscribed")
                     audio_track_received = True
                     break
 
@@ -777,35 +541,39 @@ async def entrypoint(ctx: JobContext):
                 break
 
             await asyncio.sleep(1)
+            logger.info(f"⏳ [{session_id}] Waiting for audio track... ({i+1}/{max_wait_time})")
+
+        if not audio_track_received:
+            logger.warning(f"⚠️ [{session_id}] No audio track found after {max_wait_time}s, continuing anyway...")
 
         # 4. Configure LLM with Ollama
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
+        qdrant_url = os.getenv("QDRANT_URL", "http://172.16.0.108:6333")
 
-        # Llama 3.2 with Ollama configuration
         llm = openai.LLM.with_ollama(
-            model="llama3.2:latest",  # oder "llama3.2:3b"
+            model="llama3.2:latest",
             base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
-            temperature=0.0,  # Deterministisch für konsistente Antworten
+            temperature=0.0,
         )
-        logger.info(f"🤖 [{session_id}] Using Llama 3.2 with anti-hallucination settings")
+        logger.info(f"🤖 [{session_id}] Using Llama 3.2 with direct Qdrant access")
 
         # 5. Create session
         session = AgentSession[GarageUserData](
             userdata=GarageUserData(
                 authenticated_user=None,
                 rag_url=rag_url,
+                qdrant_url=qdrant_url,
                 current_vehicle_data=None,
-                user_language="de",
                 greeting_sent=False,
                 conversation_state=ConversationState.GREETING,
-                customer_context=CustomerContext(),
+                vehicle_context=VehicleContext(),
                 last_search_query=None,
-                hallucination_count=0
+                active_vehicle=None
             ),
             llm=llm,
             vad=silero.VAD.load(
-                min_silence_duration=0.4,
-                min_speech_duration=0.15
+                min_silence_duration=0.5,
+                min_speech_duration=0.2
             ),
             stt=openai.STT(
                 model="whisper-1",
@@ -829,12 +597,13 @@ async def entrypoint(ctx: JobContext):
             agent=agent
         )
 
+        # Warte auf Audio-Stabilisierung
+        await asyncio.sleep(2.0)
+
         # Event handlers
         @session.on("user_input_transcribed")
         def on_user_input(event):
             logger.info(f"[{session_id}] 🎤 User: {event.transcript}")
-
-            # Intent detection
             intent_result = IdentifierExtractor.extract_intent_from_input(event.transcript)
             logger.info(f"[{session_id}] 📊 Detected intent: {intent_result['intent']}")
 
@@ -844,12 +613,21 @@ async def entrypoint(ctx: JobContext):
 
         @session.on("function_call")
         def on_function_call(event):
-            """Log function calls für Debugging"""
             logger.info(f"[{session_id}] 🔧 Function call: {event}")
+            
+        @session.on("agent_response_generated")
+        def on_response_generated(event):
+            response_preview = str(event)[:200] if hasattr(event, '__str__') else "Unknown"
+            logger.info(f"[{session_id}] 🤖 Generated response preview: {response_preview}...")
+            
+            # Hallucination Check
+            if session.userdata.last_search_query:
+                response_str = str(event) if hasattr(event, '__str__') else ""
+                
+                if "keine passenden Daten" in response_str and session.userdata.active_vehicle:
+                    logger.error("⚠️ HALLUCINATION DETECTED! Agent ignoring found data!")
 
         # 8. Initial greeting
-        await asyncio.sleep(1.5)
-
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
 
         try:
@@ -866,18 +644,28 @@ Wie kann ich Ihnen heute helfen?"""
             session.userdata.greeting_sent = True
             session.userdata.conversation_state = ConversationState.AWAITING_REQUEST
 
-            await session.say(
-                greeting_text,
-                allow_interruptions=True,
-                add_to_chat_ctx=True
-            )
-
-            logger.info(f"✅ [{session_id}] Initial greeting sent")
+            # Retry-Mechanismus für Greeting
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    await session.say(
+                        greeting_text,
+                        allow_interruptions=True,
+                        add_to_chat_ctx=True
+                    )
+                    logger.info(f"✅ [{session_id}] Initial greeting sent successfully")
+                    break
+                except Exception as e:
+                    logger.warning(f"[{session_id}] Greeting attempt {attempt+1} failed: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1.0)
+                    else:
+                        raise
 
         except Exception as e:
-            logger.error(f"[{session_id}] Greeting error: {e}")
+            logger.error(f"[{session_id}] Greeting error after all retries: {e}", exc_info=True)
 
-        logger.info(f"✅ [{session_id}] Garage Agent ready with Fahrzeug-ID support!")
+        logger.info(f"✅ [{session_id}] Garage Agent ready with direct Qdrant access!")
 
         # Wait for disconnect
         disconnect_event = asyncio.Event()
