@@ -402,6 +402,14 @@ VERBOTENE WÖRTER: Verwende NIEMALS "Entschuldigung", "Es tut mir leid", "Sorry"
                 if vehicle_data.get("letzte_services"):
                     response_parts.append("\n🔧 LETZTE SERVICES:")
                     for service in vehicle_data["letzte_services"]:
+                        # Datum formatieren für bessere TTS-Aussprache
+                        datum = service.get('datum', 'N/A')
+                        if '-' in str(datum):
+                            parts = datum.split('-')
+                            datum_formatted = f"{parts[2]}.{parts[1]}.{parts[0]}"
+                        else:
+                            datum_formatted = datum
+                        
                         # Kilometerstand formatieren für bessere TTS-Aussprache
                         km_stand = service.get('km_stand', 0)
                         if isinstance(km_stand, (int, float)):
@@ -409,7 +417,7 @@ VERBOTENE WÖRTER: Verwende NIEMALS "Entschuldigung", "Es tut mir leid", "Sorry"
                         else:
                             km_formatted = str(km_stand)
                         
-                        response_parts.append(f"- {service.get('datum', 'N/A')} ({km_formatted} km):")
+                        response_parts.append(f"- {datum_formatted} ({km_formatted} km):")
                         response_parts.append(f"  Typ: {service.get('service_typ', 'N/A')}")
                         response_parts.append(f"  Arbeiten: {', '.join(service.get('arbeiten', []))}")
                         kosten = service.get('kosten', 0)
@@ -429,9 +437,21 @@ VERBOTENE WÖRTER: Verwende NIEMALS "Entschuldigung", "Es tut mir leid", "Sorry"
                         kosten = arbeit.get('geschätzte_kosten', 0)
                         response_parts.append(f"  Geschätzte Kosten: {kosten:.2f} Schweizer Franken")
                 
-                # 5. Nächster Service
+                # 5. Nächster Service - mit Datum-Formatierung
                 if vehicle_data.get("nächster_service_fällig"):
-                    response_parts.append(f"\n📅 Nächster Service fällig: {vehicle_data['nächster_service_fällig']}")
+                    service_text = vehicle_data['nächster_service_fällig']
+                    # Versuche Datum im Text zu finden und zu formatieren
+                    if 'oder' in service_text and '-' in service_text:
+                        parts = service_text.split('oder')
+                        if len(parts) > 1:
+                            datum_teil = parts[1].strip()
+                            if '-' in datum_teil:
+                                datum_parts = datum_teil.split('-')
+                                if len(datum_parts) == 3:
+                                    datum_formatted = f"{datum_parts[2]}.{datum_parts[1]}.{datum_parts[0]}"
+                                    service_text = f"{parts[0].strip()} oder {datum_formatted}"
+                    
+                    response_parts.append(f"\n📅 Nächster Service fällig: {service_text}")
                 
                 final_response = "\n".join(response_parts)
                 
