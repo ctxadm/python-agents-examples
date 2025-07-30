@@ -387,14 +387,29 @@ VERBOTENE WÖRTER: Verwende NIEMALS "Entschuldigung", "Es tut mir leid", "Sorry"
                 response_parts.append(f"- Kennzeichen: {vehicle_data.get('kennzeichen', 'N/A')}")
                 response_parts.append(f"- Fahrzeug: {vehicle_data.get('marke', '')} {vehicle_data.get('modell', '')}")
                 response_parts.append(f"- Baujahr: {vehicle_data.get('baujahr', 'N/A')}")
-                response_parts.append(f"- Kilometerstand: {vehicle_data.get('kilometerstand', 'N/A'):,} km".replace(',', '.'))
+                
+                # Kilometerstand mit Formatierung für bessere TTS-Aussprache
+                km = vehicle_data.get('kilometerstand', 0)
+                if isinstance(km, (int, float)):
+                    km_formatted = f"{km:,}".replace(',', '.')
+                    response_parts.append(f"- Kilometerstand: {km_formatted} km")
+                else:
+                    response_parts.append(f"- Kilometerstand: {km} km")
+                
                 response_parts.append(f"- Fahrzeug-ID: {vehicle_data.get('fahrzeug_id', 'N/A')}")
                 
                 # 2. Letzte Services
                 if vehicle_data.get("letzte_services"):
                     response_parts.append("\n🔧 LETZTE SERVICES:")
                     for service in vehicle_data["letzte_services"]:
-                        response_parts.append(f"- {service.get('datum', 'N/A')} ({service.get('km_stand', 'N/A')} km):")
+                        # Kilometerstand formatieren für bessere TTS-Aussprache
+                        km_stand = service.get('km_stand', 0)
+                        if isinstance(km_stand, (int, float)):
+                            km_formatted = f"{km_stand:,}".replace(',', '.')
+                        else:
+                            km_formatted = str(km_stand)
+                        
+                        response_parts.append(f"- {service.get('datum', 'N/A')} ({km_formatted} km):")
                         response_parts.append(f"  Typ: {service.get('service_typ', 'N/A')}")
                         response_parts.append(f"  Arbeiten: {', '.join(service.get('arbeiten', []))}")
                         kosten = service.get('kosten', 0)
