@@ -391,7 +391,7 @@ VERBOTENE WÖRTER: Verwende NIEMALS "Entschuldigung", "Es tut mir leid", "Sorry"
                 # Kilometerstand mit Formatierung für bessere TTS-Aussprache
                 km = vehicle_data.get('kilometerstand', 0)
                 if isinstance(km, (int, float)):
-                    km_formatted = f"{km:,}".replace(',', '.')
+                    km_formatted = f"{km:,}".replace(',', ' ')
                     response_parts.append(f"- Kilometerstand: {km_formatted} km")
                 else:
                     response_parts.append(f"- Kilometerstand: {km} km")
@@ -413,7 +413,7 @@ VERBOTENE WÖRTER: Verwende NIEMALS "Entschuldigung", "Es tut mir leid", "Sorry"
                         # Kilometerstand formatieren für bessere TTS-Aussprache
                         km_stand = service.get('km_stand', 0)
                         if isinstance(km_stand, (int, float)):
-                            km_formatted = f"{km_stand:,}".replace(',', '.')
+                            km_formatted = f"{km_stand:,}".replace(',', ' ')
                         else:
                             km_formatted = str(km_stand)
                         
