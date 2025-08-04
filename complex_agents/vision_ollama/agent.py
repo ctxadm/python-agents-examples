@@ -254,7 +254,7 @@ async def entrypoint(ctx: JobContext):
         
         # WICHTIG: Verwende ein Model das besser mit Instructions umgeht
         # Option 1: Llama 3.2 (besser für Instructions)
-        ollama_model = "llama3.2:latest"
+        ollama_model = "llava-llama3:latest"
         
         # Option 2: Falls du ein deutsches Model hast
         # ollama_model = "em_german_leo_mistral:latest"
