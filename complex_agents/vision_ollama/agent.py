@@ -88,37 +88,82 @@ Bei Fragen zum Bild:
 
 VERBOTENE WÖRTER: "Entschuldigung", "Es tut mir leid", "Sorry" """)
         
-        self._vision_context = None  # Will be set from session
+        # Store frame directly in agent like original
+        self._latest_frame = None
+        self._video_stream = None
+        self._tasks = []
         logger.info(f"✅ VisionAssistant initialized for worker {WORKER_ID}")
     
     async def on_enter(self):
         """Wird aufgerufen wenn der Agent die Session betritt"""
         logger.info("🎯 Vision Agent on_enter called")
         
-        # Get vision context from session
+        # Get room from job context
         from livekit.agents import get_job_context
-        ctx = get_job_context()
+        room = get_job_context().room
         
-        # Find the session userdata
-        if hasattr(self, '_session') and hasattr(self._session, 'userdata'):
-            self._vision_context = self._session.userdata.vision_context
-            logger.info("✅ Vision context linked to agent")
+        # Find video tracks from remote participants
+        if room.remote_participants:
+            for participant in room.remote_participants.values():
+                for publication in participant.track_publications.values():
+                    if publication.track and publication.track.kind == rtc.TrackKind.KIND_VIDEO:
+                        logger.info(f"📹 Found video track from {participant.identity}")
+                        self._create_video_stream(publication.track)
+                        break
+        
+        # Watch for new video tracks
+        @room.on("track_subscribed")
+        def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+            if track.kind == rtc.TrackKind.KIND_VIDEO:
+                logger.info(f"📹 New video track subscribed from {participant.identity}")
+                self._create_video_stream(track)
     
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
         """Called after user finishes speaking - add vision frame to message"""
-        if self._vision_context and self._vision_context.has_recent_frame():
-            logger.info(f"📸 Adding frame to user message: {self._vision_context.latest_frame.width}x{self._vision_context.latest_frame.height}")
+        if self._latest_frame:
+            logger.info(f"📸 Adding frame to user message")
             
-            # Add frame to the message content
+            # Convert content to list if it's a string
             if isinstance(new_message.content, str):
-                new_message.content = [new_message.content, ImageContent(image=self._vision_context.latest_frame)]
-            elif isinstance(new_message.content, list):
-                new_message.content.append(ImageContent(image=self._vision_context.latest_frame))
+                new_message.content = [new_message.content]
             
-            # Update analysis count
-            self._vision_context.analysis_count += 1
+            # Append frame like in original agent
+            new_message.content.append(ImageContent(image=self._latest_frame))
+            
+            # Don't clear the frame - keep it for next time
+            # self._latest_frame = None  # REMOVED
         else:
-            logger.warning("⚠️ No recent frame available for vision analysis")
+            logger.warning("⚠️ No frame available for vision analysis")
+    
+    def _create_video_stream(self, track: rtc.Track):
+        """Create video stream to capture frames"""
+        # Close existing stream
+        if self._video_stream is not None:
+            self._video_stream.close()
+        
+        # Create new stream
+        self._video_stream = rtc.VideoStream(track)
+        logger.info("✅ Video stream created")
+        
+        async def read_stream():
+            """Read frames from video stream"""
+            frame_count = 0
+            try:
+                async for event in self._video_stream:
+                    frame_count += 1
+                    self._latest_frame = event.frame
+                    
+                    # Log every 30 frames
+                    if frame_count % 30 == 0:
+                        logger.info(f"📸 Captured {frame_count} frames, latest: {event.frame.width}x{event.frame.height}")
+                        
+            except Exception as e:
+                logger.error(f"❌ Error reading video stream: {e}")
+        
+        # Store the async task
+        task = asyncio.create_task(read_stream())
+        task.add_done_callback(lambda t: self._tasks.remove(t) if t in self._tasks else None)
+        self._tasks.append(task)
 
 
 async def request_handler(ctx: JobContext):
@@ -226,17 +271,11 @@ async def entrypoint(ctx: JobContext):
             max_endpointing_delay=3.0
         )
         
-        # 6. Setup video tracking
-        await setup_video_tracking(ctx.room, session)
-        
-        # 7. Create agent
+        # 6. Create and start agent
         agent = VisionAssistant()
         
-        # 8. Start session (GENAU WIE GARAGE AGENT!)
+        # 7. Start session (GENAU WIE GARAGE AGENT!)
         logger.info(f"🏁 [{session_id}] Starting session...")
-        
-        # Link session to agent for vision context access
-        agent._session = session
         
         await session.start(
             room=ctx.room,
@@ -325,15 +364,6 @@ Aktivieren Sie bitte Ihre Kamera und fragen Sie mich dann, was ich sehe!"""
     
     finally:
         # Cleanup (wie Garage Agent)
-        if session:
-            # Cancel video task if exists
-            if session.userdata.vision_context.video_task:
-                session.userdata.vision_context.video_task.cancel()
-                try:
-                    await session.userdata.vision_context.video_task
-                except asyncio.CancelledError:
-                    pass
-        
         if session and not session_closed:
             try:
                 await session.aclose()
@@ -343,82 +373,6 @@ Aktivieren Sie bitte Ihre Kamera und fragen Sie mich dann, was ich sehe!"""
         
         logger.info(f"✅ [{session_id}] Cleanup complete")
         logger.info("="*50)
-
-
-async def setup_video_tracking(room: rtc.Room, session: AgentSession[VisionUserData]):
-    """Setup video stream tracking"""
-    logger.info("📹 Setting up video tracking...")
-    
-    # Find existing video tracks
-    video_found = False
-    for participant in room.remote_participants.values():
-        for publication in participant.track_publications.values():
-            if publication.track and publication.track.kind == rtc.TrackKind.KIND_VIDEO:
-                logger.info(f"📹 Found existing video track from {participant.identity}")
-                await create_video_stream(publication.track, session)
-                video_found = True
-                break
-        if video_found:
-            break
-    
-    # Watch for new video tracks
-    @room.on("track_subscribed")
-    def on_track_subscribed(
-        track: rtc.Track,
-        publication: rtc.RemoteTrackPublication,
-        participant: rtc.RemoteParticipant
-    ):
-        if track.kind == rtc.TrackKind.KIND_VIDEO:
-            logger.info(f"📹 New video track subscribed from {participant.identity}")
-            asyncio.create_task(create_video_stream(track, session))
-
-
-async def create_video_stream(track: rtc.Track, session: AgentSession[VisionUserData]):
-    """Create video stream to capture frames"""
-    vision_ctx = session.userdata.vision_context
-    
-    # Cancel old task if exists
-    if vision_ctx.video_task and not vision_ctx.video_task.done():
-        logger.info("🔄 Cancelling old video task")
-        vision_ctx.video_task.cancel()
-        try:
-            await vision_ctx.video_task
-        except asyncio.CancelledError:
-            pass
-    
-    # Clean up old stream
-    if vision_ctx.video_stream is not None:
-        vision_ctx.video_stream = None
-    
-    # Create new stream
-    vision_ctx.video_stream = rtc.VideoStream(track)
-    logger.info("✅ Video stream created")
-    
-    async def read_stream():
-        """Read frames from video stream"""
-        try:
-            async for event in vision_ctx.video_stream:
-                vision_ctx.frame_count += 1
-                vision_ctx.latest_frame = event.frame
-                vision_ctx.frame_timestamp = asyncio.get_event_loop().time()
-                
-                # Log every 30 frames
-                if vision_ctx.frame_count % 30 == 0:
-                    logger.info(f"📸 Captured {vision_ctx.frame_count} frames, latest: {event.frame.width}x{event.frame.height}")
-                
-                # Update conversation state
-                if session.userdata.conversation_state == ConversationState.AWAITING_FRAME:
-                    session.userdata.conversation_state = ConversationState.ANALYZING
-                    
-        except asyncio.CancelledError:
-            logger.info("📹 Video stream reading cancelled")
-            raise
-        except Exception as e:
-            logger.error(f"❌ Error reading video stream: {e}")
-    
-    # Store the task
-    vision_ctx.video_task = asyncio.create_task(read_stream())
-    logger.info("✅ Video stream reading task started")
 
 
 if __name__ == "__main__":
