@@ -137,43 +137,6 @@ VERBOTENE WÖRTER: "Entschuldigung", "Es tut mir leid", "Sorry" """)
         else:
             logger.warning("⚠️ No frame available for vision analysis")
     
-    def _resize_frame(self, frame: rtc.VideoFrame, max_width: int = 1280, max_height: int = 720) -> rtc.VideoFrame:
-        """Resize frame if it's too large to improve performance"""
-        if frame.width <= max_width and frame.height <= max_height:
-            return frame
-        
-        try:
-            # Convert VideoFrame to PIL Image
-            image = Image.frombytes('RGBA', (frame.width, frame.height), frame.data)
-            
-            # Calculate new size maintaining aspect ratio
-            aspect_ratio = frame.width / frame.height
-            if aspect_ratio > max_width / max_height:
-                new_width = max_width
-                new_height = int(max_width / aspect_ratio)
-            else:
-                new_height = max_height
-                new_width = int(max_height * aspect_ratio)
-            
-            # Resize image
-            resized_image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            
-            # Convert back to VideoFrame
-            resized_data = resized_image.tobytes()
-            resized_frame = rtc.VideoFrame(
-                width=new_width,
-                height=new_height,
-                type=rtc.VideoBufferType.RGBA,
-                data=resized_data
-            )
-            
-            logger.info(f"📐 Resized frame from {frame.width}x{frame.height} to {new_width}x{new_height}")
-            return resized_frame
-            
-        except Exception as e:
-            logger.error(f"❌ Error resizing frame: {e}")
-            return frame  # Return original if resize fails
-    
     def _create_video_stream(self, track: rtc.Track):
         """Create video stream to capture frames"""
         # Close existing stream
@@ -191,13 +154,15 @@ VERBOTENE WÖRTER: "Entschuldigung", "Es tut mir leid", "Sorry" """)
                 async for event in self._video_stream:
                     frame_count += 1
                     
-                    # Resize frame if needed
-                    resized_frame = self._resize_frame(event.frame)
-                    self._latest_frame = resized_frame
+                    # Store frame directly without resizing for now
+                    self._latest_frame = event.frame
                     
                     # Log every 30 frames
                     if frame_count % 30 == 0:
-                        logger.info(f"📸 Captured {frame_count} frames, latest: {resized_frame.width}x{resized_frame.height}")
+                        logger.info(f"📸 Captured {frame_count} frames, latest: {event.frame.width}x{event.frame.height}")
+                        # Log frame format for debugging
+                        if hasattr(event.frame, 'type'):
+                            logger.debug(f"📹 Frame format: {event.frame.type}")
                         
             except Exception as e:
                 logger.error(f"❌ Error reading video stream: {e}")
