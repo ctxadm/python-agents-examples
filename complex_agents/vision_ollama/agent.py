@@ -1,4 +1,4 @@
-# LiveKit Agents - Vision Agent (Production Ready) - OLLAMA FIXED
+# LiveKit Agents - Vision Agent (Production Ready) - ZURÜCK ZUR FUNKTIONIERENDEN VERSION
 import logging
 import os
 import asyncio
@@ -70,29 +70,32 @@ class VisionAssistant(Agent):
     """Vision Assistant für Code-Analyse"""
     
     def __init__(self) -> None:
-        # SUPER WICHTIG: Die Instructions müssen EXTREM deutlich sein
-        super().__init__(instructions="""SYSTEM: Du bist ein deutscher Code-Analyse-Experte. ANTWORTE IMMER AUF DEUTSCH!
+        # Instructions mit Fokus auf KURZE Antworten
+        super().__init__(instructions="""Du bist ein Code-Analyse-Spezialist mit Vision-Fähigkeiten. 
 
-WENN DU EIN BILD MIT CODE SIEHST:
-1. SCHAUE DIR JEDE ZEILE GENAU AN
-2. SUCHE NACH TIPPFEHLERN (wie "trom" statt "from", "imoprt" statt "import")
-3. NENNE DIE EXAKTE ZEILENNUMMER DES FEHLERS
-4. ANTWORTE IM FORMAT: "Ich sehe Python-Code. FEHLER in Zeile [X]: [Problem]. LÖSUNG: [Korrektur]"
+🚨 ABSOLUTE REGEL: ANTWORTE IMMER UND AUSSCHLIESSLICH AUF DEUTSCH! NIEMALS ENGLISCH!
 
-BEISPIEL-ANTWORT FÜR DEN CODE IM BILD:
-"Ich sehe Python-Code mit einem LiveKit Vision Agent. 
-SYNTAX-FEHLER in Zeile 15: 'trom' ist falsch geschrieben.
-LÖSUNG: Ändern Sie 'trom livekit.plugins import openai, silero' zu 'from livekit.plugins import openai, silero'"
+DEINE ROLLE:
+Ich bin ein erfahrener Programmier-Experte, der Code-Probleme durch visuelle Analyse löst.
+
+WENN DU CODE IM BILD SIEHST:
+1. FINDE DEN FEHLER
+2. ANTWORTE KURZ (MAX 2 SÄTZE!)
+
+ANTWORT-FORMAT:
+"Fehler in Zeile [X]: [Problem]. 
+Korrektur: [Lösung]."
+
+BEISPIEL:
+"Fehler in Zeile 15: 'trom' statt 'from'.
+Korrektur: from livekit.plugins import openai, silero"
 
 VERBOTEN:
 - Englisch sprechen
-- Allgemeine Erklärungen über Features
-- Den Code-Fehler ignorieren
+- Lange Erklärungen
+- Mehr als 2 Sätze
 
-PFLICHT:
-- Deutsch sprechen
-- Code-Fehler mit Zeilennummer finden
-- Konkrete Lösung vorschlagen""")
+REGEL: EXTREM KURZ UND PRÄZISE!""")
         
         # Store frame directly in agent like original
         self._latest_frame = None
@@ -105,17 +108,21 @@ PFLICHT:
         logger.info("🎯 Code Vision Agent on_enter called")
         
         # Get room from job context
-        from livekit.agents import get_job_context
         room = get_job_context().room
         
-        # Find video tracks from remote participants
+        # Find video tracks from remote participants (wie im funktionierenden Code)
         if room.remote_participants:
-            for participant in room.remote_participants.values():
-                for publication in participant.track_publications.values():
-                    if publication.track and publication.track.kind == rtc.TrackKind.KIND_VIDEO:
-                        logger.info(f"📹 Found video track from {participant.identity}")
-                        self._create_video_stream(publication.track)
-                        break
+            remote_participant = list(room.remote_participants.values())[0]
+            video_tracks = [
+                publication.track
+                for publication in list(remote_participant.track_publications.values())
+                if publication.track and publication.track.kind == rtc.TrackKind.KIND_VIDEO
+            ]
+            if video_tracks:
+                logger.info(f"📹 Found {len(video_tracks)} video track(s)")
+                self._create_video_stream(video_tracks[0])
+            else:
+                logger.warning("⚠️ No video tracks found in initial scan")
         
         # Watch for new video tracks
         @room.on("track_subscribed")
@@ -126,34 +133,25 @@ PFLICHT:
     
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
         """Called after user finishes speaking - add vision frame to message"""
+        logger.info(f"📍 on_user_turn_completed called!")
+        
         if self._latest_frame:
             logger.info(f"📸 Adding frame to user message")
             
-            # Convert content to list if it's a string
-            if isinstance(new_message.content, str):
-                user_text = new_message.content
-                new_message.content = [new_message.content]
-                
-                # WICHTIG: Füge explizite Anweisung hinzu wenn es um Code geht
-                if "code" in user_text.lower() or "fehler" in user_text.lower() or "problem" in user_text.lower():
-                    new_message.content[0] = f"{user_text}\n\nBITTE ANALYSIERE DEN CODE IM BILD UND FINDE DEN SYNTAX-FEHLER! ANTWORTE AUF DEUTSCH!"
-            
-            # Log user message for debugging
-            logger.info(f"🎯 User message: {new_message.content[0] if new_message.content else 'No content'}")
-            
-            # Append frame like in original agent
+            # GENAU WIE IM FUNKTIONIERENDEN CODE - direkt append!
             new_message.content.append(ImageContent(image=self._latest_frame))
             
-            # Don't clear the frame - keep it for next time
-            # self._latest_frame = None  # REMOVED
+            logger.info(f"✅ Frame attached to message")
+            
+            # Optional: Clear frame after use (wie im Beispiel)
+            # self._latest_frame = None
         else:
-            logger.warning("⚠️ No frame available for vision analysis")
+            logger.error("❌ NO FRAME AVAILABLE! This is why agent can't see the image!")
     
     def _create_video_stream(self, track: rtc.Track):
         """Create video stream to capture frames"""
-        # Close existing stream
-        if self._video_stream is not None:
-            self._video_stream.close()
+        # WICHTIG: KEIN close() - VideoStream hat diese Methode nicht!
+        # Einfach überschreiben
         
         # Create new stream
         self._video_stream = rtc.VideoStream(track)
@@ -166,20 +164,17 @@ PFLICHT:
                 async for event in self._video_stream:
                     frame_count += 1
                     
-                    # Store frame directly without resizing for now
+                    # Store frame directly
                     self._latest_frame = event.frame
                     
                     # Log every 30 frames
                     if frame_count % 30 == 0:
                         logger.info(f"📸 Captured {frame_count} frames, latest: {event.frame.width}x{event.frame.height}")
-                        # Log frame format for debugging
-                        if hasattr(event.frame, 'type'):
-                            logger.debug(f"📹 Frame format: {event.frame.type}")
                         
             except Exception as e:
                 logger.error(f"❌ Error reading video stream: {e}")
         
-        # Store the async task
+        # Store the async task (wie im funktionierenden Code)
         task = asyncio.create_task(read_stream())
         task.add_done_callback(lambda t: self._tasks.remove(t) if t in self._tasks else None)
         self._tasks.append(task)
@@ -229,6 +224,26 @@ async def entrypoint(ctx: JobContext):
         participant = await ctx.wait_for_participant()
         logger.info(f"✅ [{session_id}] Participant joined: {participant.identity}")
         
+        # 2.5 WICHTIG: Warte auf Video Track VOR Audio Track!
+        video_track_received = False
+        logger.info(f"🔍 [{session_id}] Looking for video tracks...")
+        
+        for i in range(10):
+            for track_pub in participant.track_publications.values():
+                if track_pub.kind == rtc.TrackKind.KIND_VIDEO and track_pub.track is not None:
+                    logger.info(f"📹 [{session_id}] Video track found!")
+                    video_track_received = True
+                    break
+            
+            if video_track_received:
+                break
+                
+            await asyncio.sleep(0.5)
+            logger.info(f"⏳ [{session_id}] Waiting for video track... ({i+1}/10)")
+        
+        if not video_track_received:
+            logger.warning(f"⚠️ [{session_id}] No video track found after 5s")
+        
         # 3. Wait for audio track
         audio_track_received = False
         max_wait_time = 10
@@ -249,22 +264,19 @@ async def entrypoint(ctx: JobContext):
         if not audio_track_received:
             logger.warning(f"⚠️ [{session_id}] No audio track found after {max_wait_time}s, continuing anyway...")
         
-        # 4. Configure LLM - NUR llava-llama3 ist vision-fähig!
+        # 4. Configure LLM - WICHTIG: llava-llama3 für Vision!
         ollama_host = os.getenv("OLLAMA_HOST", "http://172.16.0.136:11434")
-        
-        # WICHTIG: NUR llava-llama3 kann Bilder analysieren!
         ollama_model = os.getenv("OLLAMA_MODEL", "llava-llama3:latest")
         
-        # Create LLM with vision model
+        # VERWENDE with_ollama wie im funktionierenden Garage Agent!
         llm = openai.LLM.with_ollama(
             model=ollama_model,
             base_url=f"{ollama_host}/v1",
             temperature=0.0,  # Deterministisch für konsistente Antworten
         )
-        
         logger.info(f"🤖 [{session_id}] Using Ollama Vision: {ollama_model} at {ollama_host}")
         
-        # 5. Create session with German-focused configuration
+        # 5. Create session
         session = AgentSession[VisionUserData](
             userdata=VisionUserData(
                 authenticated_user=None,
@@ -286,7 +298,7 @@ async def entrypoint(ctx: JobContext):
             ),
             tts=openai.TTS(
                 model="tts-1",
-                voice="nova"  # oder "alloy" für männliche Stimme
+                voice="nova"
             ),
             min_endpointing_delay=0.3,
             max_endpointing_delay=3.0
@@ -323,15 +335,8 @@ async def entrypoint(ctx: JobContext):
         def on_response_generated(event):
             response_preview = str(event)[:200] if hasattr(event, '__str__') else "Unknown"
             logger.info(f"[{session_id}] 🤖 Generated response preview: {response_preview}...")
-            
-            # Check if response is in English (hallucination detection)
-            if hasattr(event, '__str__'):
-                response_str = str(event)
-                english_indicators = ["is a feature", "you will need", "can be useful", "this can be"]
-                if any(indicator in response_str.lower() for indicator in english_indicators):
-                    logger.error(f"⚠️ ENGLISH RESPONSE DETECTED! Model is ignoring German instructions!")
         
-        # 8. Initial greeting - DEUTSCH!
+        # 8. Initial greeting
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
         
         try:
@@ -365,7 +370,7 @@ Welches Code-Problem kann ich für Sie lösen?"""
         except Exception as e:
             logger.error(f"[{session_id}] Greeting error after all retries: {e}", exc_info=True)
         
-        logger.info(f"✅ [{session_id}] Vision Agent ready!")
+        logger.info(f"✅ [{session_id}] Vision Agent ready with Ollama Vision!")
         
         # Wait for disconnect
         disconnect_event = asyncio.Event()
