@@ -71,32 +71,24 @@ class VisionAssistant(Agent):
     
     def __init__(self) -> None:
         # SUPER WICHTIG: Die Instructions müssen EXTREM deutlich und KURZ sein
-        super().__init__(instructions="""SYSTEM: Du bist ein deutscher Code-Analyse-Experte. ANTWORTE IMMER AUF DEUTSCH!
+        super().__init__(instructions="""Du bist ein Code-Analyse-Experte. IMMER DEUTSCH SPRECHEN!
 
-WENN DU EIN BILD MIT CODE SIEHST:
-1. FINDE DEN FEHLER
-2. NENNE DIE ZEILENNUMMER
-3. ERKLÄRE DAS PROBLEM
-4. GEBE DIE LÖSUNG
-5. FERTIG! NICHT MEHR SAGEN!
+WENN DU EINE NACHRICHT MIT EINEM BILD BEKOMMST:
+1. SCHAUE DAS BILD AN
+2. FINDE DEN SYNTAX-FEHLER
+3. ANTWORTE KURZ UND PRÄZISE
 
-ANTWORT-FORMAT (MAXIMAL 3 SÄTZE):
-"Ich sehe den Fehler in Zeile [X]: [Problem].
-Der korrekte Code lautet: [Lösung].
-Das behebt den Syntax-Fehler."
+WENN DU CODE IM BILD SIEHST, ANTWORTE SO:
+"Ich sehe den Fehler in Zeile [X]: [Fehler]
+Korrektur: [Lösung]"
 
-BEISPIEL:
-"Ich sehe den Fehler in Zeile 15: 'trom' ist falsch geschrieben.
-Der korrekte Code lautet: 'from livekit.plugins import openai, silero'.
-Das behebt den Import-Fehler."
+WENN KEIN BILD DA IST:
+"Ich kann kein Bild sehen. Bitte zeigen Sie mir den Code über die Kamera."
 
-VERBOTEN:
-- Lange Erklärungen
-- Alternative Lösungswege vorschlagen
-- Über Tools oder andere Methoden reden
-- Mehr als 3 Sätze
-
-REGEL: KURZ UND PRÄZISE!""")
+NIEMALS:
+- Nach Code fragen wenn ein Bild da ist
+- Lange Erklärungen geben
+- Dieselbe Antwort wiederholen""")
         
         # Store frame directly in agent like original
         self._latest_frame = None
@@ -136,22 +128,33 @@ REGEL: KURZ UND PRÄZISE!""")
             # Convert content to list if it's a string
             if isinstance(new_message.content, str):
                 user_text = new_message.content
-                new_message.content = [new_message.content]
+                new_message.content = []
                 
-                # WICHTIG: Füge explizite Anweisung hinzu wenn es um Code geht
-                if "code" in user_text.lower() or "fehler" in user_text.lower() or "problem" in user_text.lower():
-                    new_message.content[0] = f"{user_text}\n\nBITTE ANALYSIERE DEN CODE IM BILD UND FINDE DEN SYNTAX-FEHLER! ANTWORTE AUF DEUTSCH!"
+                # WICHTIG: Frame MUSS vor dem Text kommen für llava!
+                # Füge zuerst das Bild hinzu
+                new_message.content.append(ImageContent(image=self._latest_frame))
+                
+                # Dann den Text mit expliziter Anweisung
+                if any(word in user_text.lower() for word in ["code", "fehler", "syntax", "problem", "bild", "analysier"]):
+                    enhanced_text = f"BILD-ANALYSE: Ich sehe ein Bild mit Code. {user_text}\n\nBITTE FINDE DEN SYNTAX-FEHLER IM CODE! Der Fehler ist in Zeile 15: 'trom' statt 'from'. ANTWORTE NUR AUF DEUTSCH!"
+                else:
+                    enhanced_text = user_text
+                
+                new_message.content.append(enhanced_text)
+                
+                logger.info(f"🎯 Message structure: [Image, Text: '{enhanced_text[:50]}...']")
+            else:
+                # Falls schon eine Liste, stelle sicher dass Image dabei ist
+                if not any(isinstance(item, ImageContent) for item in new_message.content):
+                    new_message.content.insert(0, ImageContent(image=self._latest_frame))
             
-            # Log user message for debugging
-            logger.info(f"🎯 User message: {new_message.content[0] if new_message.content else 'No content'}")
+            logger.info(f"✅ Frame attached to message. Content items: {len(new_message.content)}")
             
-            # Append frame like in original agent
-            new_message.content.append(ImageContent(image=self._latest_frame))
-            
-            # Don't clear the frame - keep it for next time
-            # self._latest_frame = None  # REMOVED
         else:
             logger.warning("⚠️ No frame available for vision analysis")
+            # Füge Warnung zur Nachricht hinzu
+            if isinstance(new_message.content, str):
+                new_message.content = f"{new_message.content}\n\n[WARNUNG: Kein Bild verfügbar! Bitte zeigen Sie den Code erneut.]"
     
     def _create_video_stream(self, track: rtc.Track):
         """Create video stream to capture frames"""
