@@ -1,4 +1,4 @@
-# LiveKit Agents - Vision Agent (Garage-Style Implementation)
+# LiveKit Agents - Vision Agent (Production Ready)
 import logging
 import os
 import asyncio
@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from livekit import agents, rtc
 from livekit.agents import JobContext, WorkerOptions, cli, RunContext
 from livekit.agents.voice import AgentSession, Agent
-from livekit.agents.llm import function_tool, ImageContent, ChatMessage
+from livekit.agents.llm import function_tool, ImageContent, ChatContext, ChatMessage
 from livekit.plugins import openai, silero
 
 load_dotenv()
@@ -287,26 +287,12 @@ async def entrypoint(ctx: JobContext):
         # 7. Create agent
         agent = VisionAssistant()
         
-        # 8. Create agent with custom chat handler
-        agent = VisionAssistant()
-        
-        # Override the agent's chat method to add frames
-        original_chat = agent._fn_ctx._fn if hasattr(agent, '_fn_ctx') else None
-        
-        async def chat_with_vision(chat_ctx: agents.llm.ChatContext):
-            """Add latest frame to user messages before processing"""
-            # Add frame to the last user message
-            if session.userdata.vision_context.has_recent_frame() and chat_ctx.messages:
-                for msg in reversed(chat_ctx.messages):
-                    if msg.role == "user":
-                        logger.info(f"📸 Adding frame to user message")
-                        if isinstance(msg.content, str):
-                            msg.content = [msg.content, ImageContent(image=session.userdata.vision_context.latest_frame)]
-                        elif isinstance(msg.content, list) and not any(isinstance(c, ImageContent) for c in msg.content):
-                
-        
-        # 9. Start session
+        # 8. Start session (GENAU WIE GARAGE AGENT!)
         logger.info(f"🏁 [{session_id}] Starting session...")
+        
+        # Link session to agent for vision context access
+        agent._session = session
+        
         await session.start(
             room=ctx.room,
             agent=agent
@@ -333,7 +319,7 @@ async def entrypoint(ctx: JobContext):
             response_preview = str(event)[:200] if hasattr(event, '__str__') else "Unknown"
             logger.info(f"[{session_id}] 🤖 Generated response preview: {response_preview}...")
         
-        # 10. Initial greeting
+        # 9. Initial greeting
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
         
         try:
