@@ -1,4 +1,4 @@
-# LiveKit Agents - Vision Agent (LiveKit 1.1.0+ Compatible)
+# LiveKit Agents - Vision Agent (LiveKit 1.1.0+ Compatible) - FIXED
 import asyncio
 import logging
 import os
@@ -56,29 +56,38 @@ class VisionAgent(Agent):
         logger.info(f"✅ Vision Agent initialized")
     
     async def on_enter(self):
+        """Called when agent enters the room"""
+        logger.info("🚪 on_enter called - Agent entering room")
         room = get_job_context().room
         
         # Find the first video track (if any) from the remote participant
         if room.remote_participants:
             remote_participant = list(room.remote_participants.values())[0]
+            logger.info(f"👤 Found remote participant: {remote_participant.identity}")
+            
             video_tracks = [
                 publication.track
                 for publication in list(remote_participant.track_publications.values())
                 if publication.track and publication.track.kind == rtc.TrackKind.KIND_VIDEO
             ]
+            
             if video_tracks:
-                logger.info(f"📹 Found video track")
+                logger.info(f"📹 Found {len(video_tracks)} video track(s)")
                 self._create_video_stream(video_tracks[0])
+            else:
+                logger.warning("⚠️ No video tracks found yet")
+        else:
+            logger.warning("⚠️ No remote participants yet")
         
         # Watch for new video tracks not yet published
         @room.on("track_subscribed")
         def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
             if track.kind == rtc.TrackKind.KIND_VIDEO:
-                logger.info("📹 New video track subscribed")
+                logger.info(f"📹 New video track subscribed from {participant.identity}")
                 self._create_video_stream(track)
     
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
-        # Add the latest video frame, if any, to the new message
+        """Add the latest video frame to the user's message"""
         logger.info("📍 on_user_turn_completed called!")
         
         if self._latest_frame:
@@ -86,22 +95,38 @@ class VisionAgent(Agent):
             new_message.content.append(ImageContent(image=self._latest_frame))
             # Clear frame after use (wie im Original)
             self._latest_frame = None
-            logger.info("✅ Frame attached")
+            logger.info("✅ Frame attached to message")
         else:
             logger.warning("⚠️ No frame available")
     
-    # Helper method to buffer the latest video frame from the user's track
     def _create_video_stream(self, track: rtc.Track):
-        # Note: VideoStream doesn't have close() method - just overwrite
+        """Create video stream to capture frames"""
+        # Close any existing stream (we only want one at a time)
+        if self._video_stream is not None:
+            try:
+                self._video_stream.close()
+            except:
+                pass  # Ignore if close doesn't exist
         
         # Create a new stream to receive frames
         self._video_stream = rtc.VideoStream(track)
         logger.info("✅ Video stream created")
         
+        frame_count = 0
+        
         async def read_stream():
-            async for event in self._video_stream:
-                # Store the latest frame for use later
-                self._latest_frame = event.frame
+            nonlocal frame_count
+            try:
+                async for event in self._video_stream:
+                    # Store the latest frame for use later
+                    self._latest_frame = event.frame
+                    frame_count += 1
+                    
+                    # Log every 30 frames (about once per second)
+                    if frame_count % 30 == 0:
+                        logger.info(f"📸 Captured {frame_count} frames")
+            except Exception as e:
+                logger.error(f"❌ Error reading video stream: {e}")
         
         # Store the async task
         task = asyncio.create_task(read_stream())
@@ -109,31 +134,29 @@ class VisionAgent(Agent):
         self._tasks.append(task)
 
 
-async def request_handler(ctx: JobContext):
-    """Request handler"""
-    room_name = ctx.room.name if ctx.room else "unknown"
-    logger.info(f"[{AGENT_NAME}] 📥 Request for room: {room_name}")
-    
-    if room_name.startswith("vision_room_"):
-        logger.info(f"[{AGENT_NAME}] ✅ Accepting")
-        await ctx.accept()
+# Request handler entfernt - nicht nötig für einfache Setups
 
 
 async def entrypoint(ctx: JobContext):
-    # WICHTIG: KEIN ctx.connect() mehr in Version 1.1.0+!
+    """Main entrypoint - matches working example"""
     logger.info("🏁 Starting Vision Agent (LiveKit 1.1.0+)")
+    logger.info(f"🏠 Room: {ctx.room.name if ctx.room else 'unknown'}")
     
+    # Create session and start agent
     session = AgentSession()
     await session.start(
         agent=VisionAgent(),
         room=ctx.room
     )
     
-    logger.info("✅ Agent started")
+    logger.info("✅ Agent session started")
+    # WICHTIG: KEIN await danach - session managed sich selbst!
 
 
 if __name__ == "__main__":
+    logger.info(f"🏁 Starting Vision Worker: {WORKER_ID}")
+    
     cli.run_app(WorkerOptions(
-        entrypoint_fnc=entrypoint,
-        request_handler=request_handler
+        entrypoint_fnc=entrypoint
+        # request_handler removed - wie im funktionierenden Beispiel
     ))
