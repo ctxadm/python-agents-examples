@@ -68,13 +68,13 @@ class VisionAssistant(Agent):
     """Vision Assistant für Bildanalyse"""
     
     def __init__(self) -> None:
-        # Instructions genau wie Garage Agent strukturiert  
+        # Instructions OHNE Function Tools  
         super().__init__(instructions="""Du bist ein Vision-Assistent der sehen und beschreiben kann. ANTWORTE NUR AUF DEUTSCH.
 
 KRITISCHE REGELN:
-1. Du KANNST das Kamerabild sehen und analysieren
+1. Du KANNST das Kamerabild sehen - es wird automatisch hinzugefügt wenn verfügbar
 2. Beschreibe NUR was du tatsächlich siehst - NICHTS erfinden!
-3. Wenn kein Bild verfügbar → "Ich kann gerade kein Bild sehen"
+3. Wenn kein Bild im Context → "Ich kann gerade kein Bild sehen"
 4. Halte Antworten kurz und präzise (max. 50 Wörter)
 5. NIEMALS Entschuldigungen - nutze "Leider" statt "Sorry"
 
@@ -119,61 +119,6 @@ VERBOTENE WÖRTER: "Entschuldigung", "Es tut mir leid", "Sorry" """)
             self._vision_context.analysis_count += 1
         else:
             logger.warning("⚠️ No recent frame available for vision analysis")
-    
-    @function_tool
-    async def analyze_current_frame(self,
-                                  context: RunContext[VisionUserData]) -> str:
-        """
-        Analysiert das aktuelle Kamerabild und gibt eine Beschreibung zurück.
-        
-        Returns:
-            Beschreibung des Bildinhalts oder Fehlermeldung
-        """
-        logger.info("🔍 Analyzing current frame...")
-        
-        vision_ctx = context.userdata.vision_context
-        
-        # Check if we have a recent frame
-        if not vision_ctx.has_recent_frame(max_age_seconds=2.0):
-            logger.warning("⚠️ No recent frame available")
-            return "Ich kann gerade kein aktuelles Bild sehen. Bitte stellen Sie sicher, dass Ihre Kamera aktiv ist."
-        
-        # Frame statistics
-        vision_ctx.analysis_count += 1
-        frame_age = asyncio.get_event_loop().time() - vision_ctx.frame_timestamp
-        
-        logger.info(f"📸 Frame info: {vision_ctx.latest_frame.width}x{vision_ctx.latest_frame.height}, age: {frame_age:.1f}s")
-        
-        # Update conversation state
-        context.userdata.conversation_state = ConversationState.ANALYZING
-        
-        # Store the frame for the LLM to process
-        context.userdata.last_analysis = f"Frame captured: {vision_ctx.latest_frame.width}x{vision_ctx.latest_frame.height}"
-        
-        # The actual vision analysis happens in the LLM when it processes the image
-        # We just confirm we have a frame ready
-        return "Ich analysiere das Bild..."
-    
-    @function_tool
-    async def get_video_statistics(self,
-                                 context: RunContext[VisionUserData]) -> str:
-        """
-        Gibt Statistiken über den Video-Stream zurück.
-        
-        Returns:
-            Video-Stream Statistiken
-        """
-        vision_ctx = context.userdata.vision_context
-        session_duration = asyncio.get_event_loop().time() - context.userdata.session_start_time
-        
-        stats = f"""📊 VIDEO STATISTIKEN:
-- Frames empfangen: {vision_ctx.frame_count}
-- Analysen durchgeführt: {vision_ctx.analysis_count}  
-- Session-Dauer: {session_duration:.1f} Sekunden
-- Video aktiv: {'Ja' if vision_ctx.video_stream else 'Nein'}
-- Letzte Frame-Größe: {f'{vision_ctx.latest_frame.width}x{vision_ctx.latest_frame.height}' if vision_ctx.latest_frame else 'N/A'}"""
-        
-        return stats
 
 
 async def request_handler(ctx: JobContext):
