@@ -1,4 +1,4 @@
-# LiveKit Agents - Vision Agent (Production Ready) - FINAL
+# LiveKit Agents - Vision Agent (Production Ready) - OLLAMA FIXED
 import logging
 import os
 import asyncio
@@ -70,43 +70,29 @@ class VisionAssistant(Agent):
     """Vision Assistant für Code-Analyse"""
     
     def __init__(self) -> None:
-        # Instructions als Code-Spezialist mit verstärktem Deutsch-Fokus
-        super().__init__(instructions="""Du bist ein Code-Analyse-Spezialist mit Vision-Fähigkeiten. 
+        # SUPER WICHTIG: Die Instructions müssen EXTREM deutlich sein
+        super().__init__(instructions="""SYSTEM: Du bist ein deutscher Code-Analyse-Experte. ANTWORTE IMMER AUF DEUTSCH!
 
-🚨 ABSOLUTE REGEL: ANTWORTE IMMER UND AUSSCHLIESSLICH AUF DEUTSCH! NIEMALS ENGLISCH!
+WENN DU EIN BILD MIT CODE SIEHST:
+1. SCHAUE DIR JEDE ZEILE GENAU AN
+2. SUCHE NACH TIPPFEHLERN (wie "trom" statt "from", "imoprt" statt "import")
+3. NENNE DIE EXAKTE ZEILENNUMMER DES FEHLERS
+4. ANTWORTE IM FORMAT: "Ich sehe Python-Code. FEHLER in Zeile [X]: [Problem]. LÖSUNG: [Korrektur]"
 
-DEINE ROLLE:
-Ich bin ein erfahrener Programmier-Experte, der Code-Probleme durch visuelle Analyse löst. Ich erkenne Syntax-Fehler, Logic-Bugs und Code-Smells in allen gängigen Programmiersprachen.
+BEISPIEL-ANTWORT FÜR DEN CODE IM BILD:
+"Ich sehe Python-Code mit einem LiveKit Vision Agent. 
+SYNTAX-FEHLER in Zeile 15: 'trom' ist falsch geschrieben.
+LÖSUNG: Ändern Sie 'trom livekit.plugins import openai, silero' zu 'from livekit.plugins import openai, silero'"
 
-BEGRÜSSUNG:
-"Hallo! Ich bin Ihr Code-Analyse-Spezialist. Zeigen Sie mir Ihren Code über die Kamera, und ich helfe Ihnen dabei, Syntax-Fehler, Bugs oder Verbesserungsmöglichkeiten zu finden. Welches Code-Problem kann ich für Sie lösen?"
+VERBOTEN:
+- Englisch sprechen
+- Allgemeine Erklärungen über Features
+- Den Code-Fehler ignorieren
 
-WAS ICH TUE:
-- Ich analysiere Code-Screenshots und finde Fehler
-- Ich erkenne Syntax-Probleme in Python, JavaScript, Java, C++, etc.
-- Ich schlage Verbesserungen und Best Practices vor
-- Ich erkläre gefundene Probleme verständlich auf Deutsch
-
-ANTWORT-STRUKTUR bei Code-Analyse:
-"Ich sehe [Programmiersprache]-Code. Gefundene Probleme:
-1. [Fehlertyp]: In Zeile [X] - [Beschreibung]
-2. [Verbesserung]: [Konkreter Lösungsvorschlag]"
-
-BEISPIEL-ANTWORTEN:
-- "Ich sehe Python-Code. Gefundenes Problem: In Zeile 5 fehlt ein Doppelpunkt nach der if-Anweisung."
-- "Ich erkenne JavaScript-Code. Syntax-Fehler: In Zeile 12 fehlt eine schließende Klammer."
-- "Das ist Java-Code. Problem: Die Variable 'result' wird verwendet, aber nie deklariert."
-
-NIEMALS SAGEN:
-- "I'm sorry" → Stattdessen: "Leider"
-- "I cannot see" → Stattdessen: "Ich kann nicht sehen"
-- "The code shows" → Stattdessen: "Der Code zeigt"
-- "Can you please" → Stattdessen: "Können Sie bitte"
-
-WENN KEIN BILD SICHTBAR:
-"Ich kann momentan keinen Code sehen. Bitte positionieren Sie Ihren Code-Editor so, dass ich den Code gut erkennen kann."
-
-DENKE DARAN: Du bist ein DEUTSCHER Code-Experte. Sprich IMMER Deutsch!""")
+PFLICHT:
+- Deutsch sprechen
+- Code-Fehler mit Zeilennummer finden
+- Konkrete Lösung vorschlagen""")
         
         # Store frame directly in agent like original
         self._latest_frame = None
@@ -145,7 +131,15 @@ DENKE DARAN: Du bist ein DEUTSCHER Code-Experte. Sprich IMMER Deutsch!""")
             
             # Convert content to list if it's a string
             if isinstance(new_message.content, str):
+                user_text = new_message.content
                 new_message.content = [new_message.content]
+                
+                # WICHTIG: Füge explizite Anweisung hinzu wenn es um Code geht
+                if "code" in user_text.lower() or "fehler" in user_text.lower() or "problem" in user_text.lower():
+                    new_message.content[0] = f"{user_text}\n\nBITTE ANALYSIERE DEN CODE IM BILD UND FINDE DEN SYNTAX-FEHLER! ANTWORTE AUF DEUTSCH!"
+            
+            # Log user message for debugging
+            logger.info(f"🎯 User message: {new_message.content[0] if new_message.content else 'No content'}")
             
             # Append frame like in original agent
             new_message.content.append(ImageContent(image=self._latest_frame))
@@ -255,19 +249,29 @@ async def entrypoint(ctx: JobContext):
         if not audio_track_received:
             logger.warning(f"⚠️ [{session_id}] No audio track found after {max_wait_time}s, continuing anyway...")
         
-        # 4. Configure LLM - WICHTIGE ÄNDERUNG: Verwende with_ollama wie im Garage Agent!
+        # 4. Configure LLM - Verwende Standard-Model statt spezielles Vision-Model
         ollama_host = os.getenv("OLLAMA_HOST", "http://172.16.0.136:11434")
-        ollama_model = os.getenv("OLLAMA_MODEL", "llava-llama3:latest")
         
-        # VERWENDE with_ollama STATT DIREKTER KONSTRUKTOR!
+        # WICHTIG: Verwende ein Model das besser mit Instructions umgeht
+        # Option 1: Llama 3.2 (besser für Instructions)
+        ollama_model = "llama3.2:latest"
+        
+        # Option 2: Falls du ein deutsches Model hast
+        # ollama_model = "em_german_leo_mistral:latest"
+        
+        # Option 3: Mixtral (gut für mehrsprachige Aufgaben)
+        # ollama_model = "mixtral:latest"
+        
+        # Create LLM with explicit German instructions
         llm = openai.LLM.with_ollama(
             model=ollama_model,
             base_url=f"{ollama_host}/v1",
-            temperature=0.0,  # Deterministisch für konsistente deutsche Antworten
+            temperature=0.0,  # Deterministisch
         )
-        logger.info(f"🤖 [{session_id}] Using Ollama Vision: {ollama_model} at {ollama_host}")
         
-        # 5. Create session
+        logger.info(f"🤖 [{session_id}] Using Ollama: {ollama_model} at {ollama_host} (German mode enforced)")
+        
+        # 5. Create session with German-focused configuration
         session = AgentSession[VisionUserData](
             userdata=VisionUserData(
                 authenticated_user=None,
@@ -289,7 +293,7 @@ async def entrypoint(ctx: JobContext):
             ),
             tts=openai.TTS(
                 model="tts-1",
-                voice="nova"
+                voice="nova"  # oder "alloy" für männliche Stimme
             ),
             min_endpointing_delay=0.3,
             max_endpointing_delay=3.0
@@ -298,7 +302,7 @@ async def entrypoint(ctx: JobContext):
         # 6. Create and start agent
         agent = VisionAssistant()
         
-        # 7. Start session (GENAU WIE GARAGE AGENT!)
+        # 7. Start session
         logger.info(f"🏁 [{session_id}] Starting session...")
         
         await session.start(
@@ -309,7 +313,7 @@ async def entrypoint(ctx: JobContext):
         # Warte auf Audio-Stabilisierung
         await asyncio.sleep(2.0)
         
-        # Event handlers (wie Garage Agent)
+        # Event handlers
         @session.on("user_input_transcribed")
         def on_user_input(event):
             logger.info(f"[{session_id}] 🎤 User: {event.transcript}")
@@ -326,8 +330,15 @@ async def entrypoint(ctx: JobContext):
         def on_response_generated(event):
             response_preview = str(event)[:200] if hasattr(event, '__str__') else "Unknown"
             logger.info(f"[{session_id}] 🤖 Generated response preview: {response_preview}...")
+            
+            # Check if response is in English (hallucination detection)
+            if hasattr(event, '__str__'):
+                response_str = str(event)
+                english_indicators = ["is a feature", "you will need", "can be useful", "this can be"]
+                if any(indicator in response_str.lower() for indicator in english_indicators):
+                    logger.error(f"⚠️ ENGLISH RESPONSE DETECTED! Model is ignoring German instructions!")
         
-        # 8. Initial greeting
+        # 8. Initial greeting - DEUTSCH!
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
         
         try:
@@ -340,7 +351,7 @@ Welches Code-Problem kann ich für Sie lösen?"""
             session.userdata.greeting_sent = True
             session.userdata.conversation_state = ConversationState.AWAITING_FRAME
             
-            # Retry-Mechanismus wie Garage Agent
+            # Retry-Mechanismus
             max_retries = 3
             for attempt in range(max_retries):
                 try:
@@ -361,7 +372,7 @@ Welches Code-Problem kann ich für Sie lösen?"""
         except Exception as e:
             logger.error(f"[{session_id}] Greeting error after all retries: {e}", exc_info=True)
         
-        logger.info(f"✅ [{session_id}] Vision Agent ready with Ollama Vision!")
+        logger.info(f"✅ [{session_id}] Vision Agent ready!")
         
         # Wait for disconnect
         disconnect_event = asyncio.Event()
@@ -381,7 +392,7 @@ Welches Code-Problem kann ich für Sie lösen?"""
         raise
     
     finally:
-        # Cleanup (wie Garage Agent)
+        # Cleanup
         if session and not session_closed:
             try:
                 await session.aclose()
