@@ -238,28 +238,26 @@ async def entrypoint(ctx: JobContext) -> None:
     logger.info(f"🤖 Model: {OLLAMA_MODEL}")
     logger.info("=" * 60)
     
-    try:
-        # Create agent
-        agent = VisionAgent()
-        logger.info("✅ Agent instance created")
-        
-        # Create session
-        session = AgentSession()
-        logger.info("✅ AgentSession created")
-        
-        # Start the session
-        logger.info("🚀 Starting agent session...")
-        await session.start(
-            agent=agent,
-            room=ctx.room
-        )
-        
-        logger.info("✅ Vision agent session started successfully")
-        # Session manages its own lifecycle - no need to wait
-        
-    except Exception as e:
-        logger.error(f"❌ Error in entrypoint: {e}", exc_info=True)
-        raise
+    # Create agent
+    agent = VisionAgent()
+    logger.info("✅ Agent instance created")
+    
+    # Create session
+    session = AgentSession()
+    logger.info("✅ AgentSession created")
+    
+    # Start the session
+    logger.info("🚀 Starting agent session...")
+    await session.start(
+        agent=agent,
+        room=ctx.room
+    )
+    
+    logger.info("✅ Vision agent session started successfully")
+    
+    # WICHTIG: Warte bis die Session beendet wird!
+    # Ohne das beendet sich die entrypoint sofort
+    await asyncio.sleep(float('inf'))  # Warte für immer
 
 
 # WICHTIG: Der folgende Code wird NUR ausgeführt wenn das Script direkt gestartet wird
