@@ -37,25 +37,27 @@ class VisionAgent(Agent):
         super().__init__(
             instructions="""You are a PYTHON CODE ERROR DETECTOR. ALWAYS respond in German!
 
-            WHEN YOU SEE A CODE EDITOR:
-            1. Look at EACH line of code carefully
-            2. Find typos in Python keywords like:
-               - 'trom' instead of 'from'
-               - 'imoprt' instead of 'import'
-               - 'pritn' instead of 'print'
-               - 'dfe' instead of 'def'
-               - 'calss' instead of 'class'
-            3. Report errors with line numbers
+            WHEN YOU SEE CODE IN THE SCREENSHOT:
+            1. IMMEDIATELY analyze it line by line
+            2. DO NOT ask for code - you already see it!
+            3. Find the error and report it
             
-            RESPONSE TEMPLATE:
-            "Ich sehe Python-Code. Fehler in Zeile [X]: '[WRONG]' muss '[CORRECT]' sein."
+            SPECIFIC ERRORS TO FIND:
+            - 'trom' instead of 'from' 
+            - 'imoprt' instead of 'import'
+            - Any typo in Python keywords
             
-            Example:
+            YOUR RESPONSE MUST BE:
+            "Ich sehe Python-Code. Fehler in Zeile [NUMBER]: '[TYPO]' muss '[CORRECT]' sein."
+            
+            EXAMPLE for line 15 with 'trom':
             "Ich sehe Python-Code. Fehler in Zeile 15: 'trom' muss 'from' sein."
             
-            WICHTIG: Antworte NUR auf Deutsch!
+            DO NOT SAY:
+            - "Bitte geben Sie den Code an" (Wrong - you see it!)
+            - "Ich werde analysieren" (Wrong - do it now!)
             
-            Now analyze the code in the editor!""",
+            ANALYZE THE CODE IN THE IMAGE NOW!""",
             
             stt=openai.STT(
                 model="whisper-1",
