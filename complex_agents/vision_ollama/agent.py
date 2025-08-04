@@ -39,6 +39,11 @@ class VisionAgentManager:
         self._latest_frame: Optional[rtc.VideoFrame] = None
         self._video_stream: Optional[rtc.VideoStream] = None
         self._frame_task: Optional[asyncio.Task] = None
+        self._session: Optional[AgentSession] = None
+        
+    def set_session(self, session: AgentSession):
+        """Set the agent session reference"""
+        self._session = session
         
     async def setup_video_tracking(self, room: rtc.Room):
         """Setup video tracking for the room"""
@@ -63,7 +68,7 @@ class VisionAgentManager:
         if not video_track_found:
             logger.warning("⚠️ No video tracks found on setup")
         
-        # Listen for new tracks
+        # Listen for new tracks (sync handler with async task creation)
         @room.on("track_subscribed")
         def on_track_subscribed(
             track: rtc.Track,
@@ -73,6 +78,7 @@ class VisionAgentManager:
             logger.info(f"🎬 track_subscribed event: {track.kind} from {participant.identity}")
             if track.kind == rtc.TrackKind.KIND_VIDEO:
                 logger.info(f"📹 New video track subscribed from {participant.identity}")
+                # Create async task for video setup
                 asyncio.create_task(self._setup_video_stream(track))
         
         # Listen for track unsubscribed
@@ -143,41 +149,46 @@ class VisionAgentManager:
         except Exception as e:
             logger.error(f"❌ Error capturing frames: {e}", exc_info=True)
     
-    def get_latest_frame(self) -> Optional[rtc.VideoFrame]:
-        """Get the latest captured frame"""
-        return self._latest_frame
+    def attach_frame_to_message(self, message: ChatMessage):
+        """Attach the latest frame to a message"""
+        if self._latest_frame:
+            logger.info("📸 Attaching video frame to message")
+            try:
+                # Add image content to the message
+                image_content = ImageContent(image=self._latest_frame)
+                message.content.append(image_content)
+                
+                # Clear frame after use
+                self._latest_frame = None
+                logger.info("✅ Frame attached successfully")
+                return True
+            except Exception as e:
+                logger.error(f"❌ Error attaching frame: {e}", exc_info=True)
+        else:
+            logger.warning("⚠️ No video frame available for attachment")
+        return False
     
-    def clear_latest_frame(self):
-        """Clear the latest frame after use"""
-        self._latest_frame = None
+    def cleanup(self):
+        """Cleanup all resources"""
+        self._cleanup_video_stream()
+        self._session = None
 
 
 # Global video manager instance
 video_manager = VisionAgentManager()
 
 
-# Custom callback to attach video frames to messages
-async def on_message_received(context: RunContext, message: ChatMessage):
-    """Callback to process incoming messages and attach video frames"""
-    logger.info("💬 Processing incoming message")
+# Create a custom chat context processor
+class VisionChatContextProcessor:
+    """Process chat context to include video frames"""
     
-    # Get the latest frame from video manager
-    latest_frame = video_manager.get_latest_frame()
+    def __init__(self, video_manager: VisionAgentManager):
+        self.video_manager = video_manager
     
-    if latest_frame:
-        logger.info("📸 Attaching video frame to message")
-        try:
-            # Add image content to the message
-            image_content = ImageContent(image=latest_frame)
-            message.content.append(image_content)
-            
-            # Clear frame after use
-            video_manager.clear_latest_frame()
-            logger.info("✅ Frame attached successfully")
-        except Exception as e:
-            logger.error(f"❌ Error attaching frame: {e}", exc_info=True)
-    else:
-        logger.warning("⚠️ No video frame available for attachment")
+    def process_message(self, message: ChatMessage):
+        """Process a message and attach video frame if available"""
+        if message.role == "user":
+            self.video_manager.attach_frame_to_message(message)
 
 
 async def entrypoint(ctx: JobContext):
@@ -248,20 +259,46 @@ async def entrypoint(ctx: JobContext):
         min_interruption_duration=0.5
     )
     
-    # Setup event handler for processing messages with video
+    # Store session reference in video manager
+    video_manager.set_session(session)
+    
+    # Setup synchronous event handler with async task
+    @session.on("user_turn_started")
+    def on_user_turn_started():
+        """Handle when user starts speaking"""
+        logger.info("🎤 User started speaking")
+    
     @session.on("user_turn_completed")
-    async def handle_user_turn(turn_context: ChatContext, new_message: ChatMessage):
+    def on_user_turn_completed(chat_ctx: ChatContext, new_message: ChatMessage):
         """Handle user turn completion and attach video frame"""
-        await on_message_received(RunContext(), new_message)
+        logger.info("💬 User turn completed")
+        # Attach video frame to the user's message
+        video_manager.attach_frame_to_message(new_message)
+    
+    @session.on("agent_turn_started")
+    def on_agent_turn_started():
+        """Handle when agent starts speaking"""
+        logger.info("🤖 Agent started speaking")
     
     # Start the agent session
     logger.info("🚀 Starting agent session...")
-    await session.start(
-        agent=agent,
-        room=ctx.room
-    )
-    
-    logger.info("✅ Vision agent session started successfully")
+    try:
+        await session.start(
+            agent=agent,
+            room=ctx.room
+        )
+        logger.info("✅ Vision agent session started successfully")
+        
+        # Keep the session running
+        # The session will handle all interactions automatically
+        
+    except Exception as e:
+        logger.error(f"❌ Error in agent session: {e}", exc_info=True)
+        raise
+    finally:
+        # Cleanup
+        video_manager.cleanup()
+        logger.info("🧹 Agent session cleanup completed")
 
 
 # For standalone execution (testing)
