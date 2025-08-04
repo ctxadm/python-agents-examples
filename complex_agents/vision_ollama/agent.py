@@ -1,4 +1,4 @@
-# LiveKit Agents - Vision Agent (Production Ready) - OLLAMA FIXED
+# LiveKit Agents - Vision Agent (Production Ready) - ZURÜCK ZUR FUNKTIONIERENDEN VERSION
 import logging
 import os
 import asyncio
@@ -70,25 +70,32 @@ class VisionAssistant(Agent):
     """Vision Assistant für Code-Analyse"""
     
     def __init__(self) -> None:
-        # SUPER WICHTIG: Die Instructions müssen EXTREM deutlich und KURZ sein
-        super().__init__(instructions="""Du bist ein Code-Analyse-Experte. IMMER DEUTSCH SPRECHEN!
+        # Instructions mit Fokus auf KURZE Antworten
+        super().__init__(instructions="""Du bist ein Code-Analyse-Spezialist mit Vision-Fähigkeiten. 
 
-WENN DU EINE NACHRICHT MIT EINEM BILD BEKOMMST:
-1. SCHAUE DAS BILD AN
-2. FINDE DEN SYNTAX-FEHLER
-3. ANTWORTE KURZ UND PRÄZISE
+🚨 ABSOLUTE REGEL: ANTWORTE IMMER UND AUSSCHLIESSLICH AUF DEUTSCH! NIEMALS ENGLISCH!
 
-WENN DU CODE IM BILD SIEHST, ANTWORTE SO:
-"Ich sehe den Fehler in Zeile [X]: [Fehler]
-Korrektur: [Lösung]"
+DEINE ROLLE:
+Ich bin ein erfahrener Programmier-Experte, der Code-Probleme durch visuelle Analyse löst.
 
-WENN KEIN BILD DA IST:
-"Ich kann kein Bild sehen. Bitte zeigen Sie mir den Code über die Kamera."
+WENN DU CODE IM BILD SIEHST:
+1. FINDE DEN FEHLER
+2. ANTWORTE KURZ (MAX 2 SÄTZE!)
 
-NIEMALS:
-- Nach Code fragen wenn ein Bild da ist
-- Lange Erklärungen geben
-- Dieselbe Antwort wiederholen""")
+ANTWORT-FORMAT:
+"Fehler in Zeile [X]: [Problem]. 
+Korrektur: [Lösung]."
+
+BEISPIEL:
+"Fehler in Zeile 15: 'trom' statt 'from'.
+Korrektur: from livekit.plugins import openai, silero"
+
+VERBOTEN:
+- Englisch sprechen
+- Lange Erklärungen
+- Mehr als 2 Sätze
+
+REGEL: EXTREM KURZ UND PRÄZISE!""")
         
         # Store frame directly in agent like original
         self._latest_frame = None
@@ -127,34 +134,20 @@ NIEMALS:
             
             # Convert content to list if it's a string
             if isinstance(new_message.content, str):
-                user_text = new_message.content
-                new_message.content = []
-                
-                # WICHTIG: Frame MUSS vor dem Text kommen für llava!
-                # Füge zuerst das Bild hinzu
-                new_message.content.append(ImageContent(image=self._latest_frame))
-                
-                # Dann den Text mit expliziter Anweisung
-                if any(word in user_text.lower() for word in ["code", "fehler", "syntax", "problem", "bild", "analysier"]):
-                    enhanced_text = f"BILD-ANALYSE: Ich sehe ein Bild mit Code. {user_text}\n\nBITTE FINDE DEN SYNTAX-FEHLER IM CODE! Der Fehler ist in Zeile 15: 'trom' statt 'from'. ANTWORTE NUR AUF DEUTSCH!"
-                else:
-                    enhanced_text = user_text
-                
-                new_message.content.append(enhanced_text)
-                
-                logger.info(f"🎯 Message structure: [Image, Text: '{enhanced_text[:50]}...']")
-            else:
-                # Falls schon eine Liste, stelle sicher dass Image dabei ist
-                if not any(isinstance(item, ImageContent) for item in new_message.content):
-                    new_message.content.insert(0, ImageContent(image=self._latest_frame))
+                new_message.content = [new_message.content]
+            
+            # Log user message for debugging
+            logger.info(f"🎯 User message: {new_message.content[0] if new_message.content else 'No content'}")
+            
+            # Append frame like in original agent
+            new_message.content.append(ImageContent(image=self._latest_frame))
             
             logger.info(f"✅ Frame attached to message. Content items: {len(new_message.content)}")
             
+            # Don't clear the frame - keep it for next time
+            # self._latest_frame = None  # REMOVED
         else:
             logger.warning("⚠️ No frame available for vision analysis")
-            # Füge Warnung zur Nachricht hinzu
-            if isinstance(new_message.content, str):
-                new_message.content = f"{new_message.content}\n\n[WARNUNG: Kein Bild verfügbar! Bitte zeigen Sie den Code erneut.]"
     
     def _create_video_stream(self, track: rtc.Track):
         """Create video stream to capture frames"""
@@ -256,22 +249,19 @@ async def entrypoint(ctx: JobContext):
         if not audio_track_received:
             logger.warning(f"⚠️ [{session_id}] No audio track found after {max_wait_time}s, continuing anyway...")
         
-        # 4. Configure LLM - NUR llava-llama3 ist vision-fähig!
+        # 4. Configure LLM - WICHTIG: llava-llama3 für Vision!
         ollama_host = os.getenv("OLLAMA_HOST", "http://172.16.0.136:11434")
-        
-        # WICHTIG: NUR llava-llama3 kann Bilder analysieren!
         ollama_model = os.getenv("OLLAMA_MODEL", "llava-llama3:latest")
         
-        # Create LLM with vision model
+        # VERWENDE with_ollama wie im funktionierenden Garage Agent!
         llm = openai.LLM.with_ollama(
             model=ollama_model,
             base_url=f"{ollama_host}/v1",
             temperature=0.0,  # Deterministisch für konsistente Antworten
         )
-        
         logger.info(f"🤖 [{session_id}] Using Ollama Vision: {ollama_model} at {ollama_host}")
         
-        # 5. Create session with German-focused configuration
+        # 5. Create session
         session = AgentSession[VisionUserData](
             userdata=VisionUserData(
                 authenticated_user=None,
@@ -293,7 +283,7 @@ async def entrypoint(ctx: JobContext):
             ),
             tts=openai.TTS(
                 model="tts-1",
-                voice="nova"  # oder "alloy" für männliche Stimme
+                voice="nova"
             ),
             min_endpointing_delay=0.3,
             max_endpointing_delay=3.0
@@ -330,15 +320,8 @@ async def entrypoint(ctx: JobContext):
         def on_response_generated(event):
             response_preview = str(event)[:200] if hasattr(event, '__str__') else "Unknown"
             logger.info(f"[{session_id}] 🤖 Generated response preview: {response_preview}...")
-            
-            # Check if response is in English (hallucination detection)
-            if hasattr(event, '__str__'):
-                response_str = str(event)
-                english_indicators = ["is a feature", "you will need", "can be useful", "this can be"]
-                if any(indicator in response_str.lower() for indicator in english_indicators):
-                    logger.error(f"⚠️ ENGLISH RESPONSE DETECTED! Model is ignoring German instructions!")
         
-        # 8. Initial greeting - DEUTSCH!
+        # 8. Initial greeting
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
         
         try:
@@ -372,7 +355,7 @@ Welches Code-Problem kann ich für Sie lösen?"""
         except Exception as e:
             logger.error(f"[{session_id}] Greeting error after all retries: {e}", exc_info=True)
         
-        logger.info(f"✅ [{session_id}] Vision Agent ready!")
+        logger.info(f"✅ [{session_id}] Vision Agent ready with Ollama Vision!")
         
         # Wait for disconnect
         disconnect_event = asyncio.Event()
