@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from livekit import agents, rtc
 from livekit.agents import JobContext, WorkerOptions, cli, RunContext
 from livekit.agents.voice import AgentSession, Agent
-from livekit.agents.llm import function_tool, ImageContent, ChatContext, ChatMessage
+from livekit.agents.llm import ImageContent, ChatContext, ChatMessage
 from livekit.plugins import openai, silero
 
 load_dotenv()
@@ -303,7 +303,7 @@ async def entrypoint(ctx: JobContext):
             response_preview = str(event)[:200] if hasattr(event, '__str__') else "Unknown"
             logger.info(f"[{session_id}] 🤖 Generated response preview: {response_preview}...")
         
-        # 9. Initial greeting
+        # 8. Initial greeting
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
         
         try:
@@ -338,12 +338,6 @@ Aktivieren Sie bitte Ihre Kamera und fragen Sie mich dann, was ich sehe!"""
             logger.error(f"[{session_id}] Greeting error after all retries: {e}", exc_info=True)
         
         logger.info(f"✅ [{session_id}] Vision Agent ready with Ollama Vision!")
-        
-        # Log video status
-        if session.userdata.vision_context.video_stream:
-            logger.info(f"📹 [{session_id}] Video stream active")
-        else:
-            logger.warning(f"⚠️ [{session_id}] No video stream detected yet")
         
         # Wait for disconnect
         disconnect_event = asyncio.Event()
