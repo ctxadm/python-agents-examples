@@ -1,162 +1,236 @@
-# LiveKit Agents - Vision Agent (LiveKit 1.1.0+ Compatible) - FIXED
+#!/usr/bin/env python3
+"""
+LiveKit Vision Agent - Standalone Version
+Kompatibel mit LiveKit Agents SDK 1.0.x
+"""
+
 import asyncio
 import logging
 import os
-from pathlib import Path
-from dotenv import load_dotenv
+from typing import Optional
+
 from livekit import rtc
-from livekit.agents import JobContext, WorkerOptions, cli, get_job_context
-from livekit.agents.llm import ImageContent, ChatContext, ChatMessage
-from livekit.agents.voice import Agent, AgentSession
+from livekit.agents import (
+    AgentSession,
+    JobContext,
+    WorkerOptions,
+    cli,
+    get_job_context
+)
+from livekit.agents.llm import ChatContext, ChatMessage, ImageContent
+from livekit.agents.voice import Agent
 from livekit.plugins import openai, silero
 
-load_dotenv()
-
-# Logging
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger("vision-agent")
-logger.setLevel(logging.INFO)
 
-# Agent Name für Multi-Worker Setup
-AGENT_NAME = os.getenv("AGENT_NAME", "vision-1")
-WORKER_ID = os.getenv("WORKER_ID", "vision-worker-1")
+# Environment variables with defaults
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://172.16.0.136:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llava-llama3:latest")
 
 
 class VisionAgent(Agent):
+    """Vision-enabled agent for code analysis"""
+    
     def __init__(self) -> None:
-        self._latest_frame = None
-        self._video_stream = None
-        self._tasks = []
+        self._latest_frame: Optional[rtc.VideoFrame] = None
+        self._video_stream: Optional[rtc.VideoStream] = None
+        self._frame_task: Optional[asyncio.Task] = None
         
+        # Initialize parent class with configuration
         super().__init__(
             instructions="""Du bist ein Code-Analyse-Spezialist mit Vision-Fähigkeiten.
-                Du kannst sehen was der User dir über die Kamera zeigt.
-                Verwende keine unaussprechbaren Zeichen.
-                
-                WICHTIGE REGELN:
-                - Antworte IMMER auf Deutsch
-                - Wenn du Code siehst, finde Syntax-Fehler
-                - Nenne immer die Zeilennummer des Fehlers
-                - Gib eine konkrete Korrektur
-                - Halte Antworten kurz (max 2 Sätze)""",
+            Du kannst sehen was der User dir über die Kamera zeigt.
+            
+            WICHTIGE REGELN:
+            - Antworte IMMER auf Deutsch
+            - Wenn du Code siehst, analysiere ihn genau
+            - Finde Syntax-Fehler und nenne die Zeilennummer
+            - Gib konkrete Korrekturen
+            - Halte Antworten kurz und präzise (max 2-3 Sätze)
+            
+            Wenn du nach Code-Fehlern gefragt wirst, schaue genau hin!""",
+            
             stt=openai.STT(
                 model="whisper-1",
                 language="de"
             ),
+            
             llm=openai.LLM.with_ollama(
-                model=os.getenv("OLLAMA_MODEL", "llava-llama3:latest"),
-                base_url=f"{os.getenv('OLLAMA_HOST', 'http://172.16.0.136:11434')}/v1",
-                temperature=0.0
+                model=OLLAMA_MODEL,
+                base_url=f"{OLLAMA_HOST}/v1",
+                temperature=0.0  # Deterministisch für Code-Analyse
             ),
+            
             tts=openai.TTS(
                 model="tts-1",
-                voice="nova"
+                voice="nova",
+                speed=1.0
             ),
-            vad=silero.VAD.load()
+            
+            vad=silero.VAD.load(
+                min_speech_duration=0.2,
+                min_silence_duration=0.5
+            )
         )
-        logger.info(f"✅ Vision Agent initialized")
+        
+        logger.info(f"✅ VisionAgent initialized with Ollama at {OLLAMA_HOST}")
     
-    async def on_enter(self):
+    async def on_enter(self) -> None:
         """Called when agent enters the room"""
-        logger.info("🚪 on_enter called - Agent entering room")
-        room = get_job_context().room
+        logger.info("🚪 Agent entering room")
         
-        # Find the first video track (if any) from the remote participant
-        if room.remote_participants:
-            remote_participant = list(room.remote_participants.values())[0]
-            logger.info(f"👤 Found remote participant: {remote_participant.identity}")
+        # Get current room from job context
+        try:
+            room = get_job_context().room
+            logger.info(f"📍 Room name: {room.name}")
+            logger.info(f"👥 Participants: {len(room.remote_participants)}")
             
-            video_tracks = [
-                publication.track
-                for publication in list(remote_participant.track_publications.values())
-                if publication.track and publication.track.kind == rtc.TrackKind.KIND_VIDEO
-            ]
+            # Subscribe to existing video tracks
+            for participant in room.remote_participants.values():
+                logger.info(f"👤 Checking participant: {participant.identity}")
+                
+                for publication in participant.track_publications.values():
+                    if (publication.track and 
+                        publication.track.kind == rtc.TrackKind.KIND_VIDEO and
+                        publication.subscribed):
+                        logger.info(f"📹 Found subscribed video track from {participant.identity}")
+                        self._setup_video_stream(publication.track)
+                        break
             
-            if video_tracks:
-                logger.info(f"📹 Found {len(video_tracks)} video track(s)")
-                self._create_video_stream(video_tracks[0])
-            else:
-                logger.warning("⚠️ No video tracks found yet")
-        else:
-            logger.warning("⚠️ No remote participants yet")
-        
-        # Watch for new video tracks not yet published
-        @room.on("track_subscribed")
-        def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
-            if track.kind == rtc.TrackKind.KIND_VIDEO:
-                logger.info(f"📹 New video track subscribed from {participant.identity}")
-                self._create_video_stream(track)
+            # Listen for new tracks
+            @room.on("track_subscribed")
+            def on_track_subscribed(
+                track: rtc.Track,
+                publication: rtc.RemoteTrackPublication,
+                participant: rtc.RemoteParticipant
+            ):
+                if track.kind == rtc.TrackKind.KIND_VIDEO:
+                    logger.info(f"📹 New video track subscribed from {participant.identity}")
+                    self._setup_video_stream(track)
+            
+            # Listen for track unsubscribed
+            @room.on("track_unsubscribed")
+            def on_track_unsubscribed(
+                track: rtc.Track,
+                publication: rtc.RemoteTrackPublication,
+                participant: rtc.RemoteParticipant
+            ):
+                if track.kind == rtc.TrackKind.KIND_VIDEO:
+                    logger.info(f"📹 Video track unsubscribed from {participant.identity}")
+                    self._cleanup_video_stream()
+                    
+        except Exception as e:
+            logger.error(f"❌ Error in on_enter: {e}")
     
-    async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
-        """Add the latest video frame to the user's message"""
-        logger.info("📍 on_user_turn_completed called!")
+    async def on_user_turn_completed(
+        self, 
+        turn_ctx: ChatContext, 
+        new_message: ChatMessage
+    ) -> None:
+        """Attach video frame to user's message"""
+        logger.info("💬 on_user_turn_completed called")
         
         if self._latest_frame:
-            logger.info("📸 Adding frame to message")
-            new_message.content.append(ImageContent(image=self._latest_frame))
-            # Clear frame after use (wie im Original)
+            logger.info("📸 Attaching video frame to message")
+            
+            # Create image content from frame
+            image_content = ImageContent(image=self._latest_frame)
+            new_message.content.append(image_content)
+            
+            # Clear frame after use
             self._latest_frame = None
-            logger.info("✅ Frame attached to message")
+            logger.info("✅ Frame attached successfully")
         else:
-            logger.warning("⚠️ No frame available")
+            logger.warning("⚠️ No video frame available")
     
-    def _create_video_stream(self, track: rtc.Track):
-        """Create video stream to capture frames"""
-        # Close any existing stream (we only want one at a time)
-        if self._video_stream is not None:
+    def _setup_video_stream(self, track: rtc.Track) -> None:
+        """Setup video stream from track"""
+        try:
+            # Cleanup existing stream
+            self._cleanup_video_stream()
+            
+            # Create new video stream
+            self._video_stream = rtc.VideoStream(track)
+            logger.info("📹 Video stream created")
+            
+            # Start frame capture task
+            self._frame_task = asyncio.create_task(self._capture_frames())
+            
+        except Exception as e:
+            logger.error(f"❌ Error setting up video stream: {e}")
+    
+    def _cleanup_video_stream(self) -> None:
+        """Cleanup video stream and tasks"""
+        if self._frame_task and not self._frame_task.done():
+            self._frame_task.cancel()
+            self._frame_task = None
+        
+        if self._video_stream:
             try:
                 self._video_stream.close()
             except:
-                pass  # Ignore if close doesn't exist
-        
-        # Create a new stream to receive frames
-        self._video_stream = rtc.VideoStream(track)
-        logger.info("✅ Video stream created")
-        
+                pass
+            self._video_stream = None
+    
+    async def _capture_frames(self) -> None:
+        """Capture frames from video stream"""
         frame_count = 0
         
-        async def read_stream():
-            nonlocal frame_count
-            try:
-                async for event in self._video_stream:
-                    # Store the latest frame for use later
+        try:
+            logger.info("🎥 Starting frame capture")
+            
+            async for event in self._video_stream:
+                if hasattr(event, 'frame'):
                     self._latest_frame = event.frame
                     frame_count += 1
                     
-                    # Log every 30 frames (about once per second)
+                    # Log progress every 30 frames (~1 second)
                     if frame_count % 30 == 0:
                         logger.info(f"📸 Captured {frame_count} frames")
-            except Exception as e:
-                logger.error(f"❌ Error reading video stream: {e}")
-        
-        # Store the async task
-        task = asyncio.create_task(read_stream())
-        task.add_done_callback(lambda t: self._tasks.remove(t) if t in self._tasks else None)
-        self._tasks.append(task)
+                        
+        except asyncio.CancelledError:
+            logger.info(f"🛑 Frame capture stopped after {frame_count} frames")
+        except Exception as e:
+            logger.error(f"❌ Error capturing frames: {e}")
 
 
-# Request handler entfernt - nicht nötig für einfache Setups
-
-
-async def entrypoint(ctx: JobContext):
-    """Main entrypoint - matches working example"""
-    logger.info("🏁 Starting Vision Agent (LiveKit 1.1.0+)")
-    logger.info(f"🏠 Room: {ctx.room.name if ctx.room else 'unknown'}")
+async def entrypoint(ctx: JobContext) -> None:
+    """Main entrypoint for the agent"""
+    logger.info("=" * 50)
+    logger.info("🚀 Vision Agent Starting")
+    logger.info(f"📍 Room: {ctx.room.name if ctx.room else 'Unknown'}")
+    logger.info(f"🖥️ Ollama: {OLLAMA_HOST}")
+    logger.info(f"🤖 Model: {OLLAMA_MODEL}")
+    logger.info("=" * 50)
     
-    # Create session and start agent
+    # Create and start agent session
+    agent = VisionAgent()
     session = AgentSession()
+    
+    # Start the session - it will manage itself
     await session.start(
-        agent=VisionAgent(),
+        agent=agent,
         room=ctx.room
     )
     
-    logger.info("✅ Agent session started")
-    # WICHTIG: KEIN await danach - session managed sich selbst!
+    logger.info("✅ Agent session started successfully")
+    # Session manages its own lifecycle - no need to wait
+
+
+def main():
+    """Main entry point"""
+    logger.info("🏁 Starting Vision Agent Worker")
+    
+    # Run the agent
+    cli.run_app(WorkerOptions(
+        entrypoint_fnc=entrypoint
+    ))
 
 
 if __name__ == "__main__":
-    logger.info(f"🏁 Starting Vision Worker: {WORKER_ID}")
-    
-    cli.run_app(WorkerOptions(
-        entrypoint_fnc=entrypoint
-        # request_handler removed - wie im funktionierenden Beispiel
-    ))
+    main()
