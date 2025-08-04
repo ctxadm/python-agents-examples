@@ -37,6 +37,9 @@ class VisionAgent(Agent):
         self._latest_frame: Optional[rtc.VideoFrame] = None
         self._video_stream: Optional[rtc.VideoStream] = None
         self._tasks = []
+        self._frame_count = 0
+        
+        logger.info("🔧 Initializing VisionAgent...")
         
         # Initialize parent class with configuration
         super().__init__(
@@ -152,7 +155,10 @@ class VisionAgent(Agent):
     ) -> None:
         """Attach video frame to user's message"""
         logger.info("💬 on_user_turn_completed called")
-        logger.info(f"📝 User message: {new_message.content}")
+        logger.info(f"📝 User message type: {type(new_message.content)}")
+        logger.info(f"📝 User message content: {new_message.content}")
+        logger.info(f"🖼️ Latest frame available: {self._latest_frame is not None}")
+        logger.info(f"📊 Total frames captured: {self._frame_count}")
         
         if self._latest_frame:
             logger.info("📸 Attaching video frame to message")
@@ -160,19 +166,29 @@ class VisionAgent(Agent):
             try:
                 # Create image content from frame
                 image_content = ImageContent(image=self._latest_frame)
+                logger.info(f"✅ ImageContent created: {type(image_content)}")
                 
                 # Handle different content types
                 if new_message.content is None:
                     new_message.content = [image_content]
+                    logger.info("📎 Set content as new list with image")
                 elif isinstance(new_message.content, str):
                     # Convert string to list with text and image
-                    new_message.content = [new_message.content, image_content] if new_message.content else [image_content]
+                    original_text = new_message.content
+                    new_message.content = [original_text, image_content] if original_text else [image_content]
+                    logger.info(f"📎 Converted string to list: [{original_text}, ImageContent]")
                 elif isinstance(new_message.content, list):
                     # Append image to existing list
                     new_message.content.append(image_content)
+                    logger.info(f"📎 Appended to existing list. Length: {len(new_message.content)}")
                 else:
                     # For any other type, create a list
                     new_message.content = [new_message.content, image_content]
+                    logger.info(f"📎 Created new list with existing content and image")
+                
+                # Log the final message structure
+                logger.info(f"📋 Final message content type: {type(new_message.content)}")
+                logger.info(f"📋 Final message content length: {len(new_message.content) if isinstance(new_message.content, list) else 'N/A'}")
                 
                 # Clear frame after use
                 self._latest_frame = None
@@ -203,6 +219,7 @@ class VisionAgent(Agent):
                     async for event in self._video_stream:
                         if hasattr(event, 'frame'):
                             self._latest_frame = event.frame
+                            self._frame_count += 1
                             frame_count += 1
                             
                             # Log progress every 30 frames (~1 second)
@@ -263,7 +280,28 @@ async def entrypoint(ctx: JobContext):
     
     # Create agent
     agent = VisionAgent()
-    logger.info("✅ Agent instance created")
+    # Add debug logging
+    logger.info("📊 Agent configuration:")
+    logger.info(f"  - STT: {type(agent._stt)}")
+    logger.info(f"  - LLM: {type(agent._llm)}")
+    logger.info(f"  - TTS: {type(agent._tts)}")
+    logger.info(f"  - VAD: {type(agent._vad)}")
+    
+    # Override the chat method to log what's being sent
+    original_chat = agent._llm.chat
+    
+    async def debug_chat(chat_ctx: ChatContext, **kwargs):
+        logger.info("🔍 LLM chat() called")
+        logger.info(f"📨 Number of messages: {len(chat_ctx.messages)}")
+        for i, msg in enumerate(chat_ctx.messages):
+            logger.info(f"  Message {i}: role={msg.role}, content_type={type(msg.content)}")
+            if isinstance(msg.content, list):
+                logger.info(f"    Content list length: {len(msg.content)}")
+                for j, item in enumerate(msg.content):
+                    logger.info(f"      Item {j}: {type(item)}")
+        return await original_chat(chat_ctx, **kwargs)
+    
+    agent._llm.chat = debug_chat
     
     # Create session
     session = AgentSession()
