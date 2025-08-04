@@ -342,10 +342,8 @@ async def entrypoint(ctx: JobContext):
         try:
             greeting_text = """Hallo! Ich bin Ihr Code-Analyse-Spezialist.
 
-Zeigen Sie mir Ihren Code über die Kamera, und ich helfe Ihnen dabei, Syntax-Fehler, Bugs oder Verbesserungsmöglichkeiten zu finden.
-
-Welches Code-Problem kann ich für Sie lösen?"""
-            
+Zeigen Sie mir Ihren Code über Ihren Bildschirm damit ich diesen analysieren kann."""
+        
             session.userdata.greeting_sent = True
             session.userdata.conversation_state = ConversationState.AWAITING_FRAME
             
