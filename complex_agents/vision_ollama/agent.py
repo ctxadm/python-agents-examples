@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import Enum
 from dotenv import load_dotenv
 from livekit import agents, rtc
-from livekit.agents import JobContext, WorkerOptions, cli, RunContext
+from livekit.agents import JobContext, WorkerOptions, cli, RunContext, get_job_context
 from livekit.agents.voice import AgentSession, Agent
 from livekit.agents.llm import ImageContent, ChatContext, ChatMessage
 from livekit.plugins import openai, silero
@@ -228,10 +228,14 @@ async def entrypoint(ctx: JobContext):
         video_track_received = False
         logger.info(f"🔍 [{session_id}] Looking for video tracks...")
         
+        # Speichere Video-Track für später
+        video_track = None
+        
         for i in range(10):
             for track_pub in participant.track_publications.values():
                 if track_pub.kind == rtc.TrackKind.KIND_VIDEO and track_pub.track is not None:
                     logger.info(f"📹 [{session_id}] Video track found!")
+                    video_track = track_pub.track
                     video_track_received = True
                     break
             
@@ -304,7 +308,7 @@ async def entrypoint(ctx: JobContext):
             max_endpointing_delay=3.0
         )
         
-        # 6. Create and start agent
+        # 6. Create and start agent - WICHTIG: Agent MUSS VOR session.start() erstellt werden!
         agent = VisionAssistant()
         
         # 7. Start session
@@ -315,8 +319,29 @@ async def entrypoint(ctx: JobContext):
             agent=agent
         )
         
-        # Warte auf Audio-Stabilisierung
-        await asyncio.sleep(2.0)
+        # 7.5 WICHTIG: Video-Stream initialisieren falls gefunden!
+        await asyncio.sleep(1.0)
+        
+        if video_track and hasattr(agent, '_create_video_stream'):
+            logger.info(f"🎬 [{session_id}] Initializing video stream with found track...")
+            agent._create_video_stream(video_track)
+        
+        # Zusätzlich: Manuell nach Video-Tracks suchen
+        logger.info(f"🔍 [{session_id}] Manual video track search...")
+        if ctx.room.remote_participants:
+            for participant_id, participant in ctx.room.remote_participants.items():
+                logger.info(f"👤 Checking participant: {participant.identity}")
+                for pub_id, publication in participant.track_publications.items():
+                    if publication.track and publication.track.kind == rtc.TrackKind.KIND_VIDEO:
+                        logger.info(f"📹 Found video track in manual search!")
+                        if hasattr(agent, '_create_video_stream') and not video_track:
+                            agent._create_video_stream(publication.track)
+                        break
+        else:
+            logger.warning(f"⚠️ [{session_id}] No remote participants found!")
+        
+        # Warte auf Stream-Initialisierung
+        await asyncio.sleep(1.0)
         
         # Event handlers
         @session.on("user_input_transcribed")
@@ -340,10 +365,8 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
         
         try:
-            greeting_text = """Hallo! Ich bin Ihr Code-Analyse-Spezialist.
-
-Wie kann ich helfen?"""
-        
+            greeting_text = """Hi, wie gehts dir? Wie kann ich helfen?"""
+            
             session.userdata.greeting_sent = True
             session.userdata.conversation_state = ConversationState.AWAITING_FRAME
             
