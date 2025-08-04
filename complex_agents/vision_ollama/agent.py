@@ -70,29 +70,33 @@ class VisionAssistant(Agent):
     """Vision Assistant für Code-Analyse"""
     
     def __init__(self) -> None:
-        # SUPER WICHTIG: Die Instructions müssen EXTREM deutlich sein
+        # SUPER WICHTIG: Die Instructions müssen EXTREM deutlich und KURZ sein
         super().__init__(instructions="""SYSTEM: Du bist ein deutscher Code-Analyse-Experte. ANTWORTE IMMER AUF DEUTSCH!
 
 WENN DU EIN BILD MIT CODE SIEHST:
-1. SCHAUE DIR JEDE ZEILE GENAU AN
-2. SUCHE NACH TIPPFEHLERN (wie "trom" statt "from", "imoprt" statt "import")
-3. NENNE DIE EXAKTE ZEILENNUMMER DES FEHLERS
-4. ANTWORTE IM FORMAT: "Ich sehe Python-Code. FEHLER in Zeile [X]: [Problem]. LÖSUNG: [Korrektur]"
+1. FINDE DEN FEHLER
+2. NENNE DIE ZEILENNUMMER
+3. ERKLÄRE DAS PROBLEM
+4. GEBE DIE LÖSUNG
+5. FERTIG! NICHT MEHR SAGEN!
 
-BEISPIEL-ANTWORT FÜR DEN CODE IM BILD:
-"Ich sehe Python-Code mit einem LiveKit Vision Agent. 
-SYNTAX-FEHLER in Zeile 15: 'trom' ist falsch geschrieben.
-LÖSUNG: Ändern Sie 'trom livekit.plugins import openai, silero' zu 'from livekit.plugins import openai, silero'"
+ANTWORT-FORMAT (MAXIMAL 3 SÄTZE):
+"Ich sehe den Fehler in Zeile [X]: [Problem].
+Der korrekte Code lautet: [Lösung].
+Das behebt den Syntax-Fehler."
+
+BEISPIEL:
+"Ich sehe den Fehler in Zeile 15: 'trom' ist falsch geschrieben.
+Der korrekte Code lautet: 'from livekit.plugins import openai, silero'.
+Das behebt den Import-Fehler."
 
 VERBOTEN:
-- Englisch sprechen
-- Allgemeine Erklärungen über Features
-- Den Code-Fehler ignorieren
+- Lange Erklärungen
+- Alternative Lösungswege vorschlagen
+- Über Tools oder andere Methoden reden
+- Mehr als 3 Sätze
 
-PFLICHT:
-- Deutsch sprechen
-- Code-Fehler mit Zeilennummer finden
-- Konkrete Lösung vorschlagen""")
+REGEL: KURZ UND PRÄZISE!""")
         
         # Store frame directly in agent like original
         self._latest_frame = None
@@ -249,27 +253,20 @@ async def entrypoint(ctx: JobContext):
         if not audio_track_received:
             logger.warning(f"⚠️ [{session_id}] No audio track found after {max_wait_time}s, continuing anyway...")
         
-        # 4. Configure LLM - Verwende Standard-Model statt spezielles Vision-Model
+        # 4. Configure LLM - NUR llava-llama3 ist vision-fähig!
         ollama_host = os.getenv("OLLAMA_HOST", "http://172.16.0.136:11434")
         
-        # WICHTIG: Verwende ein Model das besser mit Instructions umgeht
-        # Option 1: Llama 3.2 (besser für Instructions)
-        ollama_model = "llava-llama3:latest"
+        # WICHTIG: NUR llava-llama3 kann Bilder analysieren!
+        ollama_model = os.getenv("OLLAMA_MODEL", "llava-llama3:latest")
         
-        # Option 2: Falls du ein deutsches Model hast
-        # ollama_model = "em_german_leo_mistral:latest"
-        
-        # Option 3: Mixtral (gut für mehrsprachige Aufgaben)
-        # ollama_model = "mixtral:latest"
-        
-        # Create LLM with explicit German instructions
+        # Create LLM with vision model
         llm = openai.LLM.with_ollama(
             model=ollama_model,
             base_url=f"{ollama_host}/v1",
-            temperature=0.0,  # Deterministisch
+            temperature=0.0,  # Deterministisch für konsistente Antworten
         )
         
-        logger.info(f"🤖 [{session_id}] Using Ollama: {ollama_model} at {ollama_host} (German mode enforced)")
+        logger.info(f"🤖 [{session_id}] Using Ollama Vision: {ollama_model} at {ollama_host}")
         
         # 5. Create session with German-focused configuration
         session = AgentSession[VisionUserData](
