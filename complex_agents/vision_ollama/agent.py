@@ -2,7 +2,7 @@
 """
 Vision Agent für LiveKit Multi-Agent System
 Kompatibel mit LiveKit Agents 1.0.23 (NEUE API)
-Pfad: python-agents/complex-agents/vision_ollama/agent.py
+Pfad: python-agents/complex_agents/vision_ollama/agent.py
 """
 
 import asyncio
@@ -228,6 +228,10 @@ async def entrypoint(ctx: JobContext) -> None:
     logger.info("=" * 60)
     
     try:
+        # WICHTIG: Connect zum Room!
+        await ctx.connect()
+        logger.info("✅ Connected to LiveKit room")
+        
         # Create agent
         agent = VisionAgent()
         logger.info("✅ Agent instance created")
@@ -244,23 +248,29 @@ async def entrypoint(ctx: JobContext) -> None:
         )
         
         logger.info("✅ Vision agent session started successfully")
-        # Session manages its own lifecycle - no need to wait
+        
+        # WICHTIG: Warte bis die Session beendet wird!
+        await asyncio.Event().wait()
         
     except Exception as e:
         logger.error(f"❌ Error in entrypoint: {e}", exc_info=True)
         raise
 
 
-# For testing as standalone
+# WICHTIG: Der folgende Code wird NUR ausgeführt wenn das Script direkt gestartet wird
+# NICHT wenn es über den Multi-Agent Wrapper importiert wird!
+# Für den Multi-Agent Wrapper wird NUR die entrypoint Funktion oben verwendet.
+
 if __name__ == "__main__":
+    # Dieser Block wird NICHT vom Multi-Agent Wrapper ausgeführt!
     from livekit.agents import JobRequest, WorkerOptions
     
     async def request_handler(request: JobRequest) -> None:
-        """Accept vision room requests"""
+        """Accept vision room requests - NUR für Standalone Mode"""
         room_name = request.room.name if request.room else "unknown"
         logger.info(f"📥 Request for room: {room_name}")
         
-        if room_name.startswith("vision_room_"):
+        if room_name.startswith("vision_room"):
             logger.info(f"✅ Accepting vision room: {room_name}")
             await request.accept()
         else:
