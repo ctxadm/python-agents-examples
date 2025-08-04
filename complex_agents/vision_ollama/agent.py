@@ -67,38 +67,56 @@ class VisionUserData:
 
 
 class VisionAssistant(Agent):
-    """Vision Assistant für Bildanalyse"""
+    """Vision Assistant für Code-Analyse"""
     
     def __init__(self) -> None:
-        # Instructions OHNE Function Tools  
-        super().__init__(instructions="""Du bist ein Vision-Assistent der sehen und beschreiben kann. ANTWORTE NUR AUF DEUTSCH.
+        # Instructions als Code-Spezialist mit verstärktem Deutsch-Fokus
+        super().__init__(instructions="""Du bist ein Code-Analyse-Spezialist mit Vision-Fähigkeiten. 
 
-KRITISCHE REGELN:
-1. Du KANNST das Kamerabild sehen - es wird automatisch hinzugefügt wenn verfügbar
-2. Beschreibe NUR was du tatsächlich siehst - NICHTS erfinden!
-3. Wenn kein Bild im Context → "Ich kann gerade kein Bild sehen"
-4. Halte Antworten kurz und präzise (max. 50 Wörter)
-5. NIEMALS Entschuldigungen - nutze "Leider" statt "Sorry"
+🚨 ABSOLUTE REGEL: ANTWORTE IMMER UND AUSSCHLIESSLICH AUF DEUTSCH! NIEMALS ENGLISCH!
 
-ANTWORT-STRUKTUR bei Bildanalyse:
-"Ich sehe: [Kurze, präzise Beschreibung des Bildinhalts]"
+DEINE ROLLE:
+Ich bin ein erfahrener Programmier-Experte, der Code-Probleme durch visuelle Analyse löst. Ich erkenne Syntax-Fehler, Logic-Bugs und Code-Smells in allen gängigen Programmiersprachen.
 
-Bei Fragen zum Bild:
-- Beantworte NUR was direkt gefragt wird
-- Sei spezifisch und akkurat
-- Keine Spekulationen über nicht sichtbare Dinge
+BEGRÜSSUNG:
+"Hallo! Ich bin Ihr Code-Analyse-Spezialist. Zeigen Sie mir Ihren Code über die Kamera, und ich helfe Ihnen dabei, Syntax-Fehler, Bugs oder Verbesserungsmöglichkeiten zu finden. Welches Code-Problem kann ich für Sie lösen?"
 
-VERBOTENE WÖRTER: "Entschuldigung", "Es tut mir leid", "Sorry" """)
+WAS ICH TUE:
+- Ich analysiere Code-Screenshots und finde Fehler
+- Ich erkenne Syntax-Probleme in Python, JavaScript, Java, C++, etc.
+- Ich schlage Verbesserungen und Best Practices vor
+- Ich erkläre gefundene Probleme verständlich auf Deutsch
+
+ANTWORT-STRUKTUR bei Code-Analyse:
+"Ich sehe [Programmiersprache]-Code. Gefundene Probleme:
+1. [Fehlertyp]: In Zeile [X] - [Beschreibung]
+2. [Verbesserung]: [Konkreter Lösungsvorschlag]"
+
+BEISPIEL-ANTWORTEN:
+- "Ich sehe Python-Code. Gefundenes Problem: In Zeile 5 fehlt ein Doppelpunkt nach der if-Anweisung."
+- "Ich erkenne JavaScript-Code. Syntax-Fehler: In Zeile 12 fehlt eine schließende Klammer."
+- "Das ist Java-Code. Problem: Die Variable 'result' wird verwendet, aber nie deklariert."
+
+NIEMALS SAGEN:
+- "I'm sorry" → Stattdessen: "Leider"
+- "I cannot see" → Stattdessen: "Ich kann nicht sehen"
+- "The code shows" → Stattdessen: "Der Code zeigt"
+- "Can you please" → Stattdessen: "Können Sie bitte"
+
+WENN KEIN BILD SICHTBAR:
+"Ich kann momentan keinen Code sehen. Bitte positionieren Sie Ihren Code-Editor so, dass ich den Code gut erkennen kann."
+
+DENKE DARAN: Du bist ein DEUTSCHER Code-Experte. Sprich IMMER Deutsch!""")
         
         # Store frame directly in agent like original
         self._latest_frame = None
         self._video_stream = None
         self._tasks = []
-        logger.info(f"✅ VisionAssistant initialized for worker {WORKER_ID}")
+        logger.info(f"✅ Code-Vision-Assistant initialized for worker {WORKER_ID}")
     
     async def on_enter(self):
         """Wird aufgerufen wenn der Agent die Session betritt"""
-        logger.info("🎯 Vision Agent on_enter called")
+        logger.info("🎯 Code Vision Agent on_enter called")
         
         # Get room from job context
         from livekit.agents import get_job_context
@@ -241,14 +259,27 @@ async def entrypoint(ctx: JobContext):
         ollama_host = os.getenv("OLLAMA_HOST", "http://172.16.0.136:11434")
         ollama_model = os.getenv("OLLAMA_MODEL", "llava-llama3:latest")
         
+        # System-Message für deutsches Verhalten
+        system_message = """Du bist ein deutschsprachiger Code-Analyse-Experte. 
+WICHTIG: Antworte IMMER auf Deutsch, NIEMALS auf Englisch!
+Analysiere Code-Probleme und erkläre sie auf Deutsch.
+Wenn du 'I' sagen würdest, sage 'Ich'.
+Wenn du 'The code' sagen würdest, sage 'Der Code'.
+Übersetze ALLE Antworten ins Deutsche!"""
+        
         llm = openai.LLM(
             model=ollama_model,
             base_url=f"{ollama_host}/v1",
             api_key="ollama",
             timeout=300.0,  # ERHÖHT von 120 auf 300 Sekunden
             temperature=0.0,  # Deterministisch wie Garage Agent
+            extra_body={
+                "system": system_message,
+                "language": "de",
+                "response_language": "German"
+            }
         )
-        logger.info(f"🤖 [{session_id}] Using Ollama Vision: {ollama_model} at {ollama_host} with 300s timeout")
+        logger.info(f"🤖 [{session_id}] Using Ollama Vision: {ollama_model} at {ollama_host} with German enforcement")
         
         # 5. Create session
         session = AgentSession[VisionUserData](
@@ -314,11 +345,11 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
         
         try:
-            greeting_text = """Hallo! Ich bin Ihr Vision-Assistent.
+            greeting_text = """Hallo! Ich bin Ihr Code-Analyse-Spezialist.
 
-Ich kann sehen was Sie mir über Ihre Kamera zeigen und Ihre Fragen dazu beantworten.
+Zeigen Sie mir Ihren Code über die Kamera, und ich helfe Ihnen dabei, Syntax-Fehler, Bugs oder Verbesserungsmöglichkeiten zu finden.
 
-Aktivieren Sie bitte Ihre Kamera und fragen Sie mich dann, was ich sehe!"""
+Welches Code-Problem kann ich für Sie lösen?"""
             
             session.userdata.greeting_sent = True
             session.userdata.conversation_state = ConversationState.AWAITING_FRAME
