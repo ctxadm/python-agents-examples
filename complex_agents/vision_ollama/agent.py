@@ -1,4 +1,4 @@
-# LiveKit Agents - Vision Agent (Production Ready) - ZURÜCK ZUR FUNKTIONIERENDEN VERSION
+# LiveKit Agents - Vision Agent (Production Ready) - OLLAMA FIXED
 import logging
 import os
 import asyncio
@@ -70,32 +70,29 @@ class VisionAssistant(Agent):
     """Vision Assistant für Code-Analyse"""
     
     def __init__(self) -> None:
-        # Instructions mit Fokus auf KURZE Antworten
-        super().__init__(instructions="""Du bist ein Code-Analyse-Spezialist mit Vision-Fähigkeiten. 
+        # SUPER WICHTIG: Die Instructions müssen EXTREM deutlich sein
+        super().__init__(instructions="""SYSTEM: Du bist ein deutscher Code-Analyse-Experte. ANTWORTE IMMER AUF DEUTSCH!
 
-🚨 ABSOLUTE REGEL: ANTWORTE IMMER UND AUSSCHLIESSLICH AUF DEUTSCH! NIEMALS ENGLISCH!
+WENN DU EIN BILD MIT CODE SIEHST:
+1. SCHAUE DIR JEDE ZEILE GENAU AN
+2. SUCHE NACH TIPPFEHLERN (wie "trom" statt "from", "imoprt" statt "import")
+3. NENNE DIE EXAKTE ZEILENNUMMER DES FEHLERS
+4. ANTWORTE IM FORMAT: "Ich sehe Python-Code. FEHLER in Zeile [X]: [Problem]. LÖSUNG: [Korrektur]"
 
-DEINE ROLLE:
-Ich bin ein erfahrener Programmier-Experte, der Code-Probleme durch visuelle Analyse löst.
-
-WENN DU CODE IM BILD SIEHST:
-1. FINDE DEN FEHLER
-2. ANTWORTE KURZ (MAX 2 SÄTZE!)
-
-ANTWORT-FORMAT:
-"Fehler in Zeile [X]: [Problem]. 
-Korrektur: [Lösung]."
-
-BEISPIEL:
-"Fehler in Zeile 15: 'trom' statt 'from'.
-Korrektur: from livekit.plugins import openai, silero"
+BEISPIEL-ANTWORT FÜR DEN CODE IM BILD:
+"Ich sehe Python-Code mit einem LiveKit Vision Agent. 
+SYNTAX-FEHLER in Zeile 15: 'trom' ist falsch geschrieben.
+LÖSUNG: Ändern Sie 'trom livekit.plugins import openai, silero' zu 'from livekit.plugins import openai, silero'"
 
 VERBOTEN:
 - Englisch sprechen
-- Lange Erklärungen
-- Mehr als 2 Sätze
+- Allgemeine Erklärungen über Features
+- Den Code-Fehler ignorieren
 
-REGEL: EXTREM KURZ UND PRÄZISE!""")
+PFLICHT:
+- Deutsch sprechen
+- Code-Fehler mit Zeilennummer finden
+- Konkrete Lösung vorschlagen""")
         
         # Store frame directly in agent like original
         self._latest_frame = None
@@ -134,15 +131,18 @@ REGEL: EXTREM KURZ UND PRÄZISE!""")
             
             # Convert content to list if it's a string
             if isinstance(new_message.content, str):
+                user_text = new_message.content
                 new_message.content = [new_message.content]
+                
+                # WICHTIG: Füge explizite Anweisung hinzu wenn es um Code geht
+                if "code" in user_text.lower() or "fehler" in user_text.lower() or "problem" in user_text.lower():
+                    new_message.content[0] = f"{user_text}\n\nBITTE ANALYSIERE DEN CODE IM BILD UND FINDE DEN SYNTAX-FEHLER! ANTWORTE AUF DEUTSCH!"
             
             # Log user message for debugging
             logger.info(f"🎯 User message: {new_message.content[0] if new_message.content else 'No content'}")
             
             # Append frame like in original agent
             new_message.content.append(ImageContent(image=self._latest_frame))
-            
-            logger.info(f"✅ Frame attached to message. Content items: {len(new_message.content)}")
             
             # Don't clear the frame - keep it for next time
             # self._latest_frame = None  # REMOVED
@@ -249,19 +249,22 @@ async def entrypoint(ctx: JobContext):
         if not audio_track_received:
             logger.warning(f"⚠️ [{session_id}] No audio track found after {max_wait_time}s, continuing anyway...")
         
-        # 4. Configure LLM - WICHTIG: llava-llama3 für Vision!
+        # 4. Configure LLM - NUR llava-llama3 ist vision-fähig!
         ollama_host = os.getenv("OLLAMA_HOST", "http://172.16.0.136:11434")
+        
+        # WICHTIG: NUR llava-llama3 kann Bilder analysieren!
         ollama_model = os.getenv("OLLAMA_MODEL", "llava-llama3:latest")
         
-        # VERWENDE with_ollama wie im funktionierenden Garage Agent!
+        # Create LLM with vision model
         llm = openai.LLM.with_ollama(
             model=ollama_model,
             base_url=f"{ollama_host}/v1",
             temperature=0.0,  # Deterministisch für konsistente Antworten
         )
+        
         logger.info(f"🤖 [{session_id}] Using Ollama Vision: {ollama_model} at {ollama_host}")
         
-        # 5. Create session
+        # 5. Create session with German-focused configuration
         session = AgentSession[VisionUserData](
             userdata=VisionUserData(
                 authenticated_user=None,
@@ -283,7 +286,7 @@ async def entrypoint(ctx: JobContext):
             ),
             tts=openai.TTS(
                 model="tts-1",
-                voice="nova"
+                voice="nova"  # oder "alloy" für männliche Stimme
             ),
             min_endpointing_delay=0.3,
             max_endpointing_delay=3.0
@@ -320,8 +323,15 @@ async def entrypoint(ctx: JobContext):
         def on_response_generated(event):
             response_preview = str(event)[:200] if hasattr(event, '__str__') else "Unknown"
             logger.info(f"[{session_id}] 🤖 Generated response preview: {response_preview}...")
+            
+            # Check if response is in English (hallucination detection)
+            if hasattr(event, '__str__'):
+                response_str = str(event)
+                english_indicators = ["is a feature", "you will need", "can be useful", "this can be"]
+                if any(indicator in response_str.lower() for indicator in english_indicators):
+                    logger.error(f"⚠️ ENGLISH RESPONSE DETECTED! Model is ignoring German instructions!")
         
-        # 8. Initial greeting
+        # 8. Initial greeting - DEUTSCH!
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
         
         try:
@@ -355,7 +365,7 @@ Welches Code-Problem kann ich für Sie lösen?"""
         except Exception as e:
             logger.error(f"[{session_id}] Greeting error after all retries: {e}", exc_info=True)
         
-        logger.info(f"✅ [{session_id}] Vision Agent ready with Ollama Vision!")
+        logger.info(f"✅ [{session_id}] Vision Agent ready!")
         
         # Wait for disconnect
         disconnect_event = asyncio.Event()
