@@ -68,7 +68,7 @@ class VisionAssistant(Agent):
     """Vision Assistant für Bildanalyse"""
     
     def __init__(self) -> None:
-        # Instructions genau wie Garage Agent strukturiert
+        # Instructions genau wie Garage Agent strukturiert  
         super().__init__(instructions="""Du bist ein Vision-Assistent der sehen und beschreiben kann. ANTWORTE NUR AUF DEUTSCH.
 
 KRITISCHE REGELN:
@@ -88,11 +88,37 @@ Bei Fragen zum Bild:
 
 VERBOTENE WÖRTER: "Entschuldigung", "Es tut mir leid", "Sorry" """)
         
+        self._vision_context = None  # Will be set from session
         logger.info(f"✅ VisionAssistant initialized for worker {WORKER_ID}")
     
     async def on_enter(self):
         """Wird aufgerufen wenn der Agent die Session betritt"""
         logger.info("🎯 Vision Agent on_enter called")
+        
+        # Get vision context from session
+        from livekit.agents import get_job_context
+        ctx = get_job_context()
+        
+        # Find the session userdata
+        if hasattr(self, '_session') and hasattr(self._session, 'userdata'):
+            self._vision_context = self._session.userdata.vision_context
+            logger.info("✅ Vision context linked to agent")
+    
+    async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
+        """Called after user finishes speaking - add vision frame to message"""
+        if self._vision_context and self._vision_context.has_recent_frame():
+            logger.info(f"📸 Adding frame to user message: {self._vision_context.latest_frame.width}x{self._vision_context.latest_frame.height}")
+            
+            # Add frame to the message content
+            if isinstance(new_message.content, str):
+                new_message.content = [new_message.content, ImageContent(image=self._vision_context.latest_frame)]
+            elif isinstance(new_message.content, list):
+                new_message.content.append(ImageContent(image=self._vision_context.latest_frame))
+            
+            # Update analysis count
+            self._vision_context.analysis_count += 1
+        else:
+            logger.warning("⚠️ No recent frame available for vision analysis")
     
     @function_tool
     async def analyze_current_frame(self,
@@ -121,8 +147,12 @@ VERBOTENE WÖRTER: "Entschuldigung", "Es tut mir leid", "Sorry" """)
         # Update conversation state
         context.userdata.conversation_state = ConversationState.ANALYZING
         
-        # Return frame info (the actual analysis happens in the LLM with the frame)
-        return f"Bildanalyse läuft... (Frame: {vision_ctx.latest_frame.width}x{vision_ctx.latest_frame.height})"
+        # Store the frame for the LLM to process
+        context.userdata.last_analysis = f"Frame captured: {vision_ctx.latest_frame.width}x{vision_ctx.latest_frame.height}"
+        
+        # The actual vision analysis happens in the LLM when it processes the image
+        # We just confirm we have a frame ready
+        return "Ich analysiere das Bild..."
     
     @function_tool
     async def get_video_statistics(self,
@@ -257,14 +287,14 @@ async def entrypoint(ctx: JobContext):
         # 7. Create agent
         agent = VisionAssistant()
         
-        # 8. Hook for adding frames to messages
-        original_before_llm_cb = session.before_llm_cb
+        # 8. Create agent with custom chat handler
+        agent = VisionAssistant()
         
-        async def add_frame_to_message(agent: Agent, chat_ctx: agents.llm.ChatContext):
-            """Add latest frame to user messages"""
-            if original_before_llm_cb:
-                await original_before_llm_cb(agent, chat_ctx)
-            
+        # Override the agent's chat method to add frames
+        original_chat = agent._fn_ctx._fn if hasattr(agent, '_fn_ctx') else None
+        
+        async def chat_with_vision(chat_ctx: agents.llm.ChatContext):
+            """Add latest frame to user messages before processing"""
             # Add frame to the last user message
             if session.userdata.vision_context.has_recent_frame() and chat_ctx.messages:
                 for msg in reversed(chat_ctx.messages):
@@ -273,10 +303,7 @@ async def entrypoint(ctx: JobContext):
                         if isinstance(msg.content, str):
                             msg.content = [msg.content, ImageContent(image=session.userdata.vision_context.latest_frame)]
                         elif isinstance(msg.content, list) and not any(isinstance(c, ImageContent) for c in msg.content):
-                            msg.content.append(ImageContent(image=session.userdata.vision_context.latest_frame))
-                        break
-        
-        session.before_llm_cb = add_frame_to_message
+                
         
         # 9. Start session
         logger.info(f"🏁 [{session_id}] Starting session...")
