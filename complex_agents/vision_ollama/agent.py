@@ -96,17 +96,44 @@ class VisionAgent(Agent):
         """Called when agent enters the room"""
         logger.info("🚪 Agent entering room - on_enter called")
         
+        # WICHTIG: Wir müssen etwas warten, bis die Video-Tracks verfügbar sind
+        await asyncio.sleep(1.0)
+        
         try:
             room = get_job_context().room
             logger.info(f"📍 Room name: {room.name}")
             logger.info(f"👥 Remote participants: {len(room.remote_participants)}")
             
-            # Check for existing video tracks
+            # Listen for new tracks FIRST (before checking existing ones)
+            @room.on("track_subscribed")
+            def on_track_subscribed(
+                track: rtc.Track,
+                publication: rtc.RemoteTrackPublication,
+                participant: rtc.RemoteParticipant
+            ):
+                logger.info(f"🎬 track_subscribed event: {track.kind} from {participant.identity}")
+                if track.kind == rtc.TrackKind.KIND_VIDEO:
+                    logger.info(f"📹 New video track subscribed from {participant.identity}")
+                    self._setup_video_stream(track)
+            
+            @room.on("track_unsubscribed")
+            def on_track_unsubscribed(
+                track: rtc.Track,
+                publication: rtc.RemoteTrackPublication,
+                participant: rtc.RemoteParticipant
+            ):
+                if track.kind == rtc.TrackKind.KIND_VIDEO:
+                    logger.info(f"📹 Video track unsubscribed from {participant.identity}")
+                    self._cleanup_video_stream()
+            
+            # Now check for existing video tracks
             video_track_found = False
             for participant in room.remote_participants.values():
                 logger.info(f"👤 Checking participant: {participant.identity}")
                 
-                for publication in participant.track_publications.values():
+                for pub_id, publication in participant.track_publications.items():
+                    logger.info(f"  📎 Publication {pub_id}: kind={publication.kind if hasattr(publication, 'kind') else 'unknown'}, subscribed={publication.subscribed}")
+                    
                     if publication.track and publication.track.kind == rtc.TrackKind.KIND_VIDEO:
                         if publication.subscribed:
                             logger.info(f"📹 Found subscribed video track from {participant.identity}")
@@ -120,30 +147,7 @@ class VisionAgent(Agent):
                     break
             
             if not video_track_found:
-                logger.warning("⚠️ No video tracks found on enter")
-            
-            # Listen for new tracks
-            @room.on("track_subscribed")
-            def on_track_subscribed(
-                track: rtc.Track,
-                publication: rtc.RemoteTrackPublication,
-                participant: rtc.RemoteParticipant
-            ):
-                logger.info(f"🎬 track_subscribed event: {track.kind} from {participant.identity}")
-                if track.kind == rtc.TrackKind.KIND_VIDEO:
-                    logger.info(f"📹 New video track subscribed from {participant.identity}")
-                    self._setup_video_stream(track)
-            
-            # Listen for track unsubscribed
-            @room.on("track_unsubscribed")
-            def on_track_unsubscribed(
-                track: rtc.Track,
-                publication: rtc.RemoteTrackPublication,
-                participant: rtc.RemoteParticipant
-            ):
-                if track.kind == rtc.TrackKind.KIND_VIDEO:
-                    logger.info(f"📹 Video track unsubscribed from {participant.identity}")
-                    self._cleanup_video_stream()
+                logger.warning("⚠️ No video tracks found on enter - waiting for track_subscribed event")
                     
         except Exception as e:
             logger.error(f"❌ Error in on_enter: {e}", exc_info=True)
@@ -286,22 +290,6 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"  - LLM: {type(agent._llm)}")
     logger.info(f"  - TTS: {type(agent._tts)}")
     logger.info(f"  - VAD: {type(agent._vad)}")
-    
-    # Override the chat method to log what's being sent
-    original_chat = agent._llm.chat
-    
-    async def debug_chat(chat_ctx: ChatContext, **kwargs):
-        logger.info("🔍 LLM chat() called")
-        logger.info(f"📨 Number of messages: {len(chat_ctx.messages)}")
-        for i, msg in enumerate(chat_ctx.messages):
-            logger.info(f"  Message {i}: role={msg.role}, content_type={type(msg.content)}")
-            if isinstance(msg.content, list):
-                logger.info(f"    Content list length: {len(msg.content)}")
-                for j, item in enumerate(msg.content):
-                    logger.info(f"      Item {j}: {type(item)}")
-        return await original_chat(chat_ctx, **kwargs)
-    
-    agent._llm.chat = debug_chat
     
     # Create session
     session = AgentSession()
