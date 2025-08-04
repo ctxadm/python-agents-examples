@@ -1,4 +1,4 @@
-# LiveKit Agents - Vision Agent (Production Ready) - FIXED
+# LiveKit Agents - Vision Agent (Production Ready) - FINAL
 import logging
 import os
 import asyncio
@@ -255,17 +255,15 @@ async def entrypoint(ctx: JobContext):
         if not audio_track_received:
             logger.warning(f"⚠️ [{session_id}] No audio track found after {max_wait_time}s, continuing anyway...")
         
-        # 4. Configure LLM with Ollama Vision - OHNE extra_body
+        # 4. Configure LLM - WICHTIGE ÄNDERUNG: Verwende with_ollama wie im Garage Agent!
         ollama_host = os.getenv("OLLAMA_HOST", "http://172.16.0.136:11434")
         ollama_model = os.getenv("OLLAMA_MODEL", "llava-llama3:latest")
         
-        # Create LLM ohne extra_body
-        llm = openai.LLM(
+        # VERWENDE with_ollama STATT DIREKTER KONSTRUKTOR!
+        llm = openai.LLM.with_ollama(
             model=ollama_model,
             base_url=f"{ollama_host}/v1",
-            api_key="ollama",
-            timeout=300.0,
-            temperature=0.0
+            temperature=0.0,  # Deterministisch für konsistente deutsche Antworten
         )
         logger.info(f"🤖 [{session_id}] Using Ollama Vision: {ollama_model} at {ollama_host}")
         
@@ -287,7 +285,7 @@ async def entrypoint(ctx: JobContext):
             ),
             stt=openai.STT(
                 model="whisper-1",
-                language="de"
+                language="de"  # Deutsch für STT
             ),
             tts=openai.TTS(
                 model="tts-1",
@@ -300,7 +298,7 @@ async def entrypoint(ctx: JobContext):
         # 6. Create and start agent
         agent = VisionAssistant()
         
-        # 7. Start session
+        # 7. Start session (GENAU WIE GARAGE AGENT!)
         logger.info(f"🏁 [{session_id}] Starting session...")
         
         await session.start(
@@ -311,7 +309,7 @@ async def entrypoint(ctx: JobContext):
         # Warte auf Audio-Stabilisierung
         await asyncio.sleep(2.0)
         
-        # Event handlers
+        # Event handlers (wie Garage Agent)
         @session.on("user_input_transcribed")
         def on_user_input(event):
             logger.info(f"[{session_id}] 🎤 User: {event.transcript}")
@@ -342,7 +340,7 @@ Welches Code-Problem kann ich für Sie lösen?"""
             session.userdata.greeting_sent = True
             session.userdata.conversation_state = ConversationState.AWAITING_FRAME
             
-            # Retry-Mechanismus
+            # Retry-Mechanismus wie Garage Agent
             max_retries = 3
             for attempt in range(max_retries):
                 try:
@@ -383,7 +381,7 @@ Welches Code-Problem kann ich für Sie lösen?"""
         raise
     
     finally:
-        # Cleanup
+        # Cleanup (wie Garage Agent)
         if session and not session_closed:
             try:
                 await session.aclose()
