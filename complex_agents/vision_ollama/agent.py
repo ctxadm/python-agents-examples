@@ -239,10 +239,6 @@ async def entrypoint(ctx: JobContext) -> None:
     logger.info("=" * 60)
     
     try:
-        # WICHTIG: Connect zum Room!
-        await ctx.connect()
-        logger.info("✅ Connected to LiveKit room")
-        
         # Create agent
         agent = VisionAgent()
         logger.info("✅ Agent instance created")
@@ -259,9 +255,7 @@ async def entrypoint(ctx: JobContext) -> None:
         )
         
         logger.info("✅ Vision agent session started successfully")
-        
-        # WICHTIG: Warte bis die Session beendet wird!
-        await asyncio.Event().wait()
+        # Session manages its own lifecycle - no need to wait
         
     except Exception as e:
         logger.error(f"❌ Error in entrypoint: {e}", exc_info=True)
