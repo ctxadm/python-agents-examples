@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Vision Agent für LiveKit Multi-Agent System - FINALE VERSION
-Kompatibel mit LiveKit Agents 1.0.23 und Ollama llava-llama3
+Vision Agent für LiveKit - Direkte Ollama API Integration
+Umgeht den OpenAI Wrapper komplett
 """
 
 import asyncio
 import logging
 import os
 import base64
+import requests
+import json
 from typing import Optional
 from livekit import rtc
 from livekit.agents import (
@@ -16,7 +18,7 @@ from livekit.agents import (
     cli,
     get_job_context
 )
-from livekit.agents.llm import ChatContext, ChatMessage, ImageContent
+from livekit.agents.llm import ChatContext, ChatMessage, ImageContent, LLM
 from livekit.agents.voice import Agent, AgentSession
 from livekit.agents.utils import images
 from livekit.plugins import openai, silero
@@ -30,53 +32,149 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://172.16.0.136:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llava-llama3:latest")
 
 
-class VisionAgent(Agent):
-    """Vision-enabled agent for code analysis"""
+class DirectOllamaLLM(LLM):
+    """Custom LLM that calls Ollama directly"""
+    
+    def __init__(self, model: str, base_url: str):
+        self.model = model
+        self.base_url = base_url
+        super().__init__()
+    
+    async def chat(
+        self,
+        chat_ctx: ChatContext,
+        fnc_ctx=None,
+        temperature: float = 0.0,
+        n: int = 1,
+        parallel_tool_calls: bool = False,
+        stream: bool = True,
+    ):
+        """Direct Ollama API call"""
+        messages = chat_ctx.messages
+        
+        # Get the last message
+        if not messages:
+            return
+            
+        last_message = messages[-1]
+        
+        # Check if there's an image
+        image_data = None
+        text_content = ""
+        
+        if isinstance(last_message.content, list):
+            for item in last_message.content:
+                if isinstance(item, str):
+                    text_content += item + " "
+                elif isinstance(item, ImageContent) and hasattr(item, 'image'):
+                    # Convert frame to base64
+                    try:
+                        encode_options = images.EncodeOptions(
+                            format="JPEG",
+                            quality=85,
+                            resize_options=images.ResizeOptions(
+                                width=1024,
+                                height=1024,
+                                strategy="scale_aspect_fit"
+                            )
+                        )
+                        jpeg_bytes = images.encode(item.image, encode_options)
+                        image_data = base64.b64encode(jpeg_bytes).decode('utf-8')
+                        logger.info(f"✅ Converted image for Ollama: {len(image_data)} bytes")
+                    except Exception as e:
+                        logger.error(f"Failed to convert image: {e}")
+        else:
+            text_content = str(last_message.content)
+        
+        # Build the prompt with clear instructions
+        if image_data:
+            prompt = f"""Du bist ein Python Code Analyzer. Analysiere das Bild und finde Tippfehler.
+
+SUCHE SPEZIELL NACH:
+- 'trom' statt 'from'  
+- 'imoprt' statt 'import'
+- 'defn' statt 'def'
+- 'retrun' statt 'return'
+
+User sagt: {text_content}
+
+Schaue dir das Bild GENAU an. Wenn du Python Code siehst, finde ALLE Tippfehler!
+Antworte im Format: "Ich sehe Python-Code. Fehler in Zeile [NUMMER]: '[TIPPFEHLER]' muss '[RICHTIG]' sein."
+"""
+        else:
+            prompt = text_content
+        
+        # Make direct Ollama API call
+        try:
+            logger.info("🚀 Calling Ollama API directly...")
+            
+            payload = {
+                "model": self.model,
+                "prompt": prompt,
+                "stream": False,
+                "temperature": temperature
+            }
+            
+            if image_data:
+                payload["images"] = [image_data]
+            
+            response = requests.post(
+                f"{self.base_url}/api/generate",
+                json=payload,
+                timeout=30
+            )
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            answer = result.get('response', 'Keine Antwort erhalten')
+            logger.info(f"✅ Ollama response: {answer[:200]}...")
+            
+            # Return as async generator for compatibility
+            async def response_generator():
+                yield answer
+            
+            return response_generator()
+            
+        except Exception as e:
+            logger.error(f"❌ Ollama API error: {e}")
+            async def error_generator():
+                yield "Entschuldigung, es gab einen Fehler bei der Bildanalyse."
+            return error_generator()
+
+
+class VisionAgentDirect(Agent):
+    """Vision Agent with direct Ollama integration"""
     
     def __init__(self) -> None:
         self._latest_frame = None
         self._video_stream = None
         self._tasks = []
         
+        # Use our custom LLM
+        custom_llm = DirectOllamaLLM(
+            model=OLLAMA_MODEL,
+            base_url=OLLAMA_HOST
+        )
+        
         super().__init__(
             instructions="""Du bist ein KI-Assistent mit Bildschirm-Sichtfähigkeiten für Python-Code-Analyse.
-            
-Du KANNST den Bildschirm des Nutzers sehen, wenn er seinen Bildschirm teilt!
 
-DEINE AUFGABE: Finde Tippfehler in Python-Code auf dem geteilten Bildschirm.
+WICHTIG: Du KANNST den Bildschirm sehen! Sage NIEMALS dass du ihn nicht sehen kannst!
 
-WENN DER NUTZER NACH DEM BILDSCHIRM FRAGT:
-- Sage: "Ja, ich kann Ihren Bildschirm sehen. Zeigen Sie mir bitte den Python-Code."
-
-WENN DU CODE IM BILD SIEHST:
-1. Schaue dir jede Zeile genau an
-2. Suche nach falsch geschriebenen Python-Keywords
-3. Melde den Fehler sofort
-
-HÄUFIGE TIPPFEHLER DIE DU FINDEN MUSST:
+Deine Aufgabe: Finde Tippfehler in Python-Code, besonders:
 - 'trom' statt 'from'
 - 'imoprt' statt 'import'
-- 'defn' statt 'def'
-- 'retrun' statt 'return'
+- andere falsch geschriebene Keywords
 
-ANTWORT-FORMAT:
-"Ich sehe Python-Code. Fehler in Zeile [NUMMER]: '[TIPPFEHLER]' muss '[RICHTIG]' sein."
-
-WICHTIG:
-- Sage NIEMALS "Ich kann den Bildschirm nicht sehen" - Du KANNST ihn sehen!
-- Wenn kein Code sichtbar → "Bitte zeigen Sie mir den Python-Code auf Ihrem Bildschirm"
-- Wenn Code sichtbar → Analysiere und finde den Fehler""",
+Wenn du Code siehst, melde SOFORT alle Fehler!""",
             
             stt=openai.STT(
                 model="whisper-1",
                 language="de"
             ),
             
-            llm=openai.LLM.with_ollama(
-                model=OLLAMA_MODEL,
-                base_url=f"{OLLAMA_HOST}/v1",
-                temperature=0.0
-            ),
+            llm=custom_llm,
             
             tts=openai.TTS(
                 model="tts-1",
@@ -90,7 +188,7 @@ WICHTIG:
             )
         )
         
-        logger.info(f"✅ VisionAgent initialized")
+        logger.info("✅ VisionAgentDirect initialized with custom Ollama LLM")
     
     async def on_enter(self):
         """Called when agent enters the room"""
@@ -98,7 +196,7 @@ WICHTIG:
         
         room = get_job_context().room
         
-        # Find the first video track (if any) from the remote participant
+        # Find video tracks
         if room.remote_participants:
             remote_participant = list(room.remote_participants.values())[0]
             video_tracks = [
@@ -121,32 +219,25 @@ WICHTIG:
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
         """Add the latest video frame to the new message"""
         logger.info("💬 on_user_turn_completed called")
-        logger.info(f"🖼️ Latest frame available: {self._latest_frame is not None}")
         
         if self._latest_frame:
-            logger.info("📸 Attaching video frame to message")
+            logger.info("📸 Attaching video frame")
             try:
-                # WICHTIG: Verwende das LiveKit-Standard Format
-                # Stelle sicher, dass content eine Liste ist
+                # Standard LiveKit format
                 if not hasattr(new_message, 'content'):
                     new_message.content = []
                 elif isinstance(new_message.content, str):
-                    # Wenn content ein String ist, konvertiere zu Liste
                     new_message.content = [new_message.content]
                 elif not isinstance(new_message.content, list):
                     new_message.content = [str(new_message.content)]
                 
-                # Füge das Frame als ImageContent hinzu (LiveKit Standard)
+                # Add the frame
                 new_message.content.append(ImageContent(image=self._latest_frame))
                 
-                logger.info(f"✅ Frame attached! Content items: {len(new_message.content)}")
-                logger.info(f"📊 Frame details: Type={self._latest_frame.type}, Size={self._latest_frame.width}x{self._latest_frame.height}")
-                
-                # NICHT löschen für Debugging
-                # self._latest_frame = None
+                logger.info(f"✅ Frame attached for direct Ollama processing")
                 
             except Exception as e:
-                logger.error(f"❌ Error attaching frame: {e}", exc_info=True)
+                logger.error(f"❌ Error: {e}", exc_info=True)
         else:
             logger.warning("⚠️ No video frame available")
     
@@ -154,225 +245,64 @@ WICHTIG:
         """Helper method to buffer the latest video frame"""
         logger.info("🎥 Creating video stream")
         
-        # Close any existing stream
         if self._video_stream is not None:
             self._video_stream.close()
         
-        # Create a new stream
         self._video_stream = rtc.VideoStream(track)
         
         async def read_stream():
             frame_count = 0
             async for event in self._video_stream:
-                # Store the latest frame
                 self._latest_frame = event.frame
                 frame_count += 1
                 
                 if frame_count % 30 == 0:
-                    logger.info(f"📸 Captured {frame_count} frames (Type: {event.frame.type}, Size: {event.frame.width}x{event.frame.height})")
+                    logger.info(f"📸 Captured {frame_count} frames")
                 
                 if frame_count == 1:
-                    logger.info(f"🎉 First frame captured! Type: {event.frame.type}, Size: {event.frame.width}x{event.frame.height}")
+                    logger.info(f"🎉 First frame captured! Type: {event.frame.type}")
         
-        # Store the async task
         task = asyncio.create_task(read_stream())
         task.add_done_callback(lambda t: self._tasks.remove(t) if t in self._tasks else None)
         self._tasks.append(task)
 
 
+# Use the same entrypoint structure as before
 async def entrypoint(ctx: JobContext):
     """Main entrypoint"""
     logger.info("="*50)
-    logger.info("🚀 Vision Agent Starting")
+    logger.info("🚀 Vision Agent (Direct Ollama) Starting")
     logger.info(f"📍 Room: {ctx.room.name if ctx.room else 'Unknown'}")
-    logger.info("="*50)
-    
-    # Connect to room
-    await ctx.connect()
-    logger.info("✅ Connected to room")
-    
-    # Create session with agent
-    session = AgentSession()
-    await session.start(
-        agent=VisionAgent(),
-        room=ctx.room
-    )
-    
-    logger.info("✅ Vision Agent session started")
-
-
-async def request_handler(ctx: JobContext):
-    """Request handler"""
-    room_name = ctx.room.name if ctx.room else "unknown"
-    logger.info(f"📨 Job request received for room: {room_name}")
-    
-    # Accept vision rooms
-    if room_name.startswith("vision_room"):
-        logger.info(f"✅ Accepting vision room: {room_name}")
-        await ctx.accept()
-    else:
-        logger.info(f"❌ Rejecting non-vision room: {room_name}")
-        await ctx.reject()
-
-
-async def entrypoint_full(ctx: JobContext):
-    """Full entrypoint with complete session management"""
-    room_name = ctx.room.name if ctx.room else "unknown"
-    session_id = f"{room_name}_{int(asyncio.get_event_loop().time())}"
-    
-    logger.info("="*50)
-    logger.info(f"🏁 Starting Vision Agent Session: {session_id}")
-    logger.info(f"📍 Room: {room_name}")
     logger.info(f"🖥️ Ollama: {OLLAMA_HOST}")
     logger.info(f"🤖 Model: {OLLAMA_MODEL}")
     logger.info("="*50)
     
-    session = None
-    session_closed = False
+    await ctx.connect()
+    logger.info("✅ Connected to room")
     
-    # Register disconnect handler
-    def on_disconnect():
-        nonlocal session_closed
-        logger.info(f"[{session_id}] Room disconnected event received")
-        session_closed = True
+    # Wait for participant
+    participant = await ctx.wait_for_participant()
+    logger.info(f"✅ Participant joined: {participant.identity}")
     
-    if ctx.room:
-        ctx.room.on("disconnected", on_disconnect)
+    # Create session with our custom agent
+    session = AgentSession()
+    await session.start(
+        agent=VisionAgentDirect(),
+        room=ctx.room
+    )
     
-    try:
-        # 1. Connect to room
-        await ctx.connect()
-        logger.info(f"✅ [{session_id}] Connected to room")
-        
-        # 2. Wait for participant
-        participant = await ctx.wait_for_participant()
-        logger.info(f"✅ [{session_id}] Participant joined: {participant.identity}")
-        
-        # 3. Wait for audio track
-        audio_track_received = False
-        max_wait_time = 10
-        
-        for i in range(max_wait_time):
-            for track_pub in participant.track_publications.values():
-                if track_pub.kind == rtc.TrackKind.KIND_AUDIO and track_pub.track is not None:
-                    logger.info(f"✅ [{session_id}] Audio track found and subscribed")
-                    audio_track_received = True
-                    break
-            
-            if audio_track_received:
-                break
-            
-            await asyncio.sleep(1)
-            logger.info(f"⏳ [{session_id}] Waiting for audio track... ({i+1}/{max_wait_time})")
-        
-        if not audio_track_received:
-            logger.warning(f"⚠️ [{session_id}] No audio track found after {max_wait_time}s, continuing anyway...")
-        
-        # 4. Create agent
-        agent = VisionAgent()
-        logger.info(f"✅ [{session_id}] Vision Agent created")
-        
-        # 5. Check for video tracks
-        video_track_found = False
-        for track_pub in participant.track_publications.values():
-            if track_pub.kind == rtc.TrackKind.KIND_VIDEO and track_pub.track is not None:
-                logger.info(f"📹 [{session_id}] Found existing video track")
-                video_track_found = True
-                break
-        
-        if not video_track_found:
-            logger.info(f"⚠️ [{session_id}] No video track found initially")
-        
-        # 6. Create session
-        session = AgentSession()
-        
-        # 7. Setup event handlers
-        @session.on("user_input_transcribed")
-        def on_user_input(event):
-            logger.info(f"[{session_id}] 🎤 User: {event.transcript}")
-        
-        @session.on("agent_state_changed")
-        def on_state_changed(event):
-            logger.info(f"[{session_id}] 🤖 Agent state: {event}")
-        
-        @session.on("agent_response_generated")
-        def on_response_generated(event):
-            response_preview = str(event)[:200] if hasattr(event, '__str__') else "Unknown"
-            logger.info(f"[{session_id}] 🤖 Response: {response_preview}...")
-        
-        # 8. Start session
-        logger.info(f"🏁 [{session_id}] Starting session...")
-        await session.start(
-            room=ctx.room,
-            agent=agent
-        )
-        
-        # Wait for stabilization
-        await asyncio.sleep(2.0)
-        
-        # 9. Initial greeting
-        logger.info(f"📢 [{session_id}] Sending initial greeting...")
-        
-        greeting_text = """Hallo! Ich bin Ihr Python Code-Assistent mit Bildschirm-Sichtfähigkeiten.
-        
-Ich kann Tippfehler in Python-Code für Sie finden. Bitte teilen Sie Ihren Bildschirm und zeigen Sie mir den Code.
-
-Ich werde speziell nach häufigen Tippfehlern wie 'trom' statt 'from' suchen!"""
-        
-        # Send greeting with retry
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                await session.say(
-                    greeting_text,
-                    allow_interruptions=True,
-                    add_to_chat_ctx=True
-                )
-                logger.info(f"✅ [{session_id}] Initial greeting sent successfully")
-                break
-            except Exception as e:
-                logger.warning(f"[{session_id}] Greeting attempt {attempt+1} failed: {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1.0)
-        
-        logger.info(f"✅ [{session_id}] Vision Agent ready!")
-        
-        # Wait for disconnect
-        disconnect_event = asyncio.Event()
-        
-        def handle_disconnect():
-            nonlocal session_closed
-            session_closed = True
-            disconnect_event.set()
-        
-        ctx.room.on("disconnected", handle_disconnect)
-        
-        await disconnect_event.wait()
-        logger.info(f"[{session_id}] Session ending...")
-        
-    except Exception as e:
-        logger.error(f"❌ [{session_id}] Error: {e}", exc_info=True)
-        raise
+    logger.info("✅ Vision Agent session started")
     
-    finally:
-        # Cleanup
-        if session and not session_closed:
-            try:
-                await session.aclose()
-                logger.info(f"✅ [{session_id}] Session closed")
-            except:
-                pass
+    # Send greeting
+    await asyncio.sleep(2.0)
+    await session.say(
+        """Hallo! Ich bin Ihr Python Code-Assistent.
         
-        logger.info(f"✅ [{session_id}] Cleanup complete")
-        logger.info("="*50)
-
-
-# Verwende den vollständigen entrypoint
-entrypoint = entrypoint_full
+Ich kann Ihren Bildschirm sehen und werde nach Tippfehlern in Ihrem Code suchen.
+Zeigen Sie mir einfach den Code mit dem Fehler!""",
+        allow_interruptions=True
+    )
 
 
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(
-        entrypoint_fnc=entrypoint,
-        request_fnc=request_handler
-    ))
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
