@@ -100,7 +100,7 @@ class VisionAgent(Agent):
         logger.info("🚪 Agent entering room - on_enter called")
         
         # WICHTIG: Wir müssen etwas warten, bis die Video-Tracks verfügbar sind
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(2.0)  # Erhöht von 1.0 auf 2.0
         
         try:
             room = get_job_context().room
@@ -115,6 +115,7 @@ class VisionAgent(Agent):
                 participant: rtc.RemoteParticipant
             ):
                 logger.info(f"🎬 track_subscribed event: {track.kind} from {participant.identity}")
+                logger.info(f"   Track info: sid={track.sid}, name={track.name}")
                 if track.kind == rtc.TrackKind.KIND_VIDEO:
                     logger.info(f"📹 New video track subscribed from {participant.identity}")
                     self._setup_video_stream(track)
@@ -140,6 +141,7 @@ class VisionAgent(Agent):
                     if publication.track and publication.track.kind == rtc.TrackKind.KIND_VIDEO:
                         if publication.subscribed:
                             logger.info(f"📹 Found subscribed video track from {participant.identity}")
+                            logger.info(f"   Track details: sid={publication.track.sid}, name={publication.track.name}")
                             self._setup_video_stream(publication.track)
                             video_track_found = True
                             break
@@ -175,6 +177,9 @@ class VisionAgent(Agent):
                 image_content = ImageContent(image=self._latest_frame)
                 logger.info(f"✅ ImageContent created: {type(image_content)}")
                 
+                # Log frame info
+                logger.info(f"🖼️ Frame info: {self._latest_frame.width}x{self._latest_frame.height}")
+                
                 # Handle different content types
                 if new_message.content is None:
                     new_message.content = [image_content]
@@ -183,7 +188,7 @@ class VisionAgent(Agent):
                     # Convert string to list with text and image
                     original_text = new_message.content
                     new_message.content = [original_text, image_content] if original_text else [image_content]
-                    logger.info(f"📎 Converted string to list: [{original_text}, ImageContent]")
+                    logger.info(f"📎 Converted string to list: ['{original_text}', ImageContent]")
                 elif isinstance(new_message.content, list):
                     # Append image to existing list
                     new_message.content.append(image_content)
@@ -195,15 +200,27 @@ class VisionAgent(Agent):
                 
                 # Log the final message structure
                 logger.info(f"📋 Final message content type: {type(new_message.content)}")
-                logger.info(f"📋 Final message content length: {len(new_message.content) if isinstance(new_message.content, list) else 'N/A'}")
+                if isinstance(new_message.content, list):
+                    logger.info(f"📋 Final message content length: {len(new_message.content)}")
+                    for i, item in enumerate(new_message.content):
+                        logger.info(f"  Item {i}: type={type(item)}, value={item if isinstance(item, str) else 'ImageContent'}")
                 
-                # Clear frame after use
-                self._latest_frame = None
+                # DO NOT clear frame - keep it for debugging
+                # self._latest_frame = None
                 logger.info("✅ Frame attached successfully to user message")
             except Exception as e:
                 logger.error(f"❌ Error attaching frame: {e}", exc_info=True)
         else:
             logger.warning("⚠️ No video frame available for attachment")
+        
+        # Log the entire chat context for debugging
+        logger.info(f"📚 Chat context has {len(turn_ctx.messages)} messages")
+        for i, msg in enumerate(turn_ctx.messages[-3:]):  # Last 3 messages
+            logger.info(f"  Message {i}: role={msg.role}, content_type={type(msg.content)}")
+            if isinstance(msg.content, list):
+                logger.info(f"    Content items: {len(msg.content)}")
+                for j, item in enumerate(msg.content):
+                    logger.info(f"      Item {j}: {type(item)}")
     
     def _setup_video_stream(self, track: rtc.Track) -> None:
         """Setup video stream from track"""
