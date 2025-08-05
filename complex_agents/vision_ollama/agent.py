@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Vision Agent für LiveKit Multi-Agent System
-Kompatibel mit LiveKit Agents 1.0.23
-Basiert auf dem funktionierenden Beispiel-Code
+Vision Agent für LiveKit Multi-Agent System - KORRIGIERT
+Kompatibel mit LiveKit Agents 1.0.23 und Ollama llava-llama3
+Verwendet LiveKit's eingebaute Image Utils für Bildkonvertierung
 """
 
 import asyncio
 import logging
 import os
+import base64
 from typing import Optional
 from livekit import rtc
 from livekit.agents import (
@@ -18,6 +19,7 @@ from livekit.agents import (
 )
 from livekit.agents.llm import ChatContext, ChatMessage, ImageContent
 from livekit.agents.voice import Agent, AgentSession
+from livekit.agents.utils import images
 from livekit.plugins import openai, silero
 
 # Setup logging
@@ -118,28 +120,65 @@ WICHTIG:
                 self._create_video_stream(track)
     
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
-        """Add the latest video frame to the new message"""
+        """Add the latest video frame to the new message - Alternative Version mit LiveKit Utils"""
         logger.info("💬 on_user_turn_completed called")
         logger.info(f"🖼️ Latest frame available: {self._latest_frame is not None}")
         
         if self._latest_frame:
-            logger.info("📸 Attaching video frame to message")
+            logger.info("📸 Processing video frame for Ollama")
             try:
-                # Ensure content is a list
-                if not hasattr(new_message, 'content'):
-                    new_message.content = []
-                elif not isinstance(new_message.content, list):
-                    new_message.content = []
+                # Verwende LiveKit's eingebaute Image Utils
+                encode_options = images.EncodeOptions(
+                    format="JPEG",
+                    quality=85,
+                    resize_options=images.ResizeOptions(
+                        width=1024,
+                        height=1024,
+                        strategy="scale_aspect_fit"
+                    )
+                )
                 
-                # Append the frame
-                new_message.content.append(ImageContent(image=self._latest_frame))
-                logger.info(f"✅ Frame attached! Content items: {len(new_message.content)}")
+                # Konvertiere Frame zu JPEG bytes
+                jpeg_bytes = images.encode(self._latest_frame, encode_options)
                 
-                # Keep frame for debugging (don't clear immediately)
-                # self._latest_frame = None
+                # Konvertiere zu Base64 (ohne data URL prefix)
+                base64_image = base64.b64encode(jpeg_bytes).decode('utf-8')
+                
+                logger.info(f"✅ Frame konvertiert zu Base64 JPEG (Größe: {len(base64_image)} bytes)")
+                
+                # Für Ollama API Format anpassen
+                if hasattr(new_message, 'content'):
+                    if isinstance(new_message.content, str):
+                        # Erstelle Ollama-kompatibles Format
+                        new_message.content = {
+                            "content": new_message.content,
+                            "images": [base64_image]
+                        }
+                    elif isinstance(new_message.content, list):
+                        # Ersetze ImageContent mit base64 string
+                        text_content = []
+                        for item in new_message.content:
+                            if not isinstance(item, ImageContent):
+                                text_content.append(str(item))
+                        
+                        # Kombiniere Text-Inhalte
+                        combined_text = " ".join(text_content) if text_content else "Analysiere dieses Bild"
+                        
+                        new_message.content = {
+                            "content": combined_text,
+                            "images": [base64_image]
+                        }
+                else:
+                    # Setze content mit image
+                    new_message.content = {
+                        "content": "Bitte analysiere dieses Bild",
+                        "images": [base64_image]
+                    }
+                
+                logger.info("✅ Frame erfolgreich für Ollama konvertiert und angehängt")
                 
             except Exception as e:
-                logger.error(f"❌ Error attaching frame: {e}", exc_info=True)
+                logger.error(f"❌ Error processing frame: {e}", exc_info=True)
         else:
             logger.warning("⚠️ No video frame available")
     
@@ -162,10 +201,10 @@ WICHTIG:
                 frame_count += 1
                 
                 if frame_count % 30 == 0:
-                    logger.info(f"📸 Captured {frame_count} frames")
+                    logger.info(f"📸 Captured {frame_count} frames (Type: {event.frame.type}, Size: {event.frame.width}x{event.frame.height})")
                 
                 if frame_count == 1:
-                    logger.info("🎉 First frame captured!")
+                    logger.info(f"🎉 First frame captured! Type: {event.frame.type}, Size: {event.frame.width}x{event.frame.height}")
         
         # Store the async task
         task = asyncio.create_task(read_stream())
