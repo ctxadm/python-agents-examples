@@ -205,22 +205,13 @@ class VisionAgent(Agent):
                     for i, item in enumerate(new_message.content):
                         logger.info(f"  Item {i}: type={type(item)}, value={item if isinstance(item, str) else 'ImageContent'}")
                 
-                # DO NOT clear frame - keep it for debugging
-                # self._latest_frame = None
+                # Clear frame after use
+                self._latest_frame = None
                 logger.info("✅ Frame attached successfully to user message")
             except Exception as e:
                 logger.error(f"❌ Error attaching frame: {e}", exc_info=True)
         else:
             logger.warning("⚠️ No video frame available for attachment")
-        
-        # Log the entire chat context for debugging
-        logger.info(f"📚 Chat context has {len(turn_ctx.messages)} messages")
-        for i, msg in enumerate(turn_ctx.messages[-3:]):  # Last 3 messages
-            logger.info(f"  Message {i}: role={msg.role}, content_type={type(msg.content)}")
-            if isinstance(msg.content, list):
-                logger.info(f"    Content items: {len(msg.content)}")
-                for j, item in enumerate(msg.content):
-                    logger.info(f"      Item {j}: {type(item)}")
     
     def _setup_video_stream(self, track: rtc.Track) -> None:
         """Setup video stream from track"""
@@ -304,6 +295,8 @@ async def entrypoint(ctx: JobContext):
     
     # Create agent
     agent = VisionAgent()
+    logger.info("✅ Agent instance created")
+    
     # Add debug logging
     logger.info("📊 Agent configuration:")
     logger.info(f"  - STT: {type(agent._stt)}")
