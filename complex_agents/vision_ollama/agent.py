@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Vision Agent für LiveKit Multi-Agent System - KORRIGIERT
+Vision Agent für LiveKit Multi-Agent System - FINALE VERSION
 Kompatibel mit LiveKit Agents 1.0.23 und Ollama llava-llama3
-Verwendet LiveKit's eingebaute Image Utils für Bildkonvertierung
 """
 
 import asyncio
@@ -54,7 +53,7 @@ WENN DU CODE IM BILD SIEHST:
 2. Suche nach falsch geschriebenen Python-Keywords
 3. Melde den Fehler sofort
 
-HÄUFIGE TIPPFEHLER:
+HÄUFIGE TIPPFEHLER DIE DU FINDEN MUSST:
 - 'trom' statt 'from'
 - 'imoprt' statt 'import'
 - 'defn' statt 'def'
@@ -120,65 +119,34 @@ WICHTIG:
                 self._create_video_stream(track)
     
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
-        """Add the latest video frame to the new message - Alternative Version mit LiveKit Utils"""
+        """Add the latest video frame to the new message"""
         logger.info("💬 on_user_turn_completed called")
         logger.info(f"🖼️ Latest frame available: {self._latest_frame is not None}")
         
         if self._latest_frame:
-            logger.info("📸 Processing video frame for Ollama")
+            logger.info("📸 Attaching video frame to message")
             try:
-                # Verwende LiveKit's eingebaute Image Utils
-                encode_options = images.EncodeOptions(
-                    format="JPEG",
-                    quality=85,
-                    resize_options=images.ResizeOptions(
-                        width=1024,
-                        height=1024,
-                        strategy="scale_aspect_fit"
-                    )
-                )
+                # WICHTIG: Verwende das LiveKit-Standard Format
+                # Stelle sicher, dass content eine Liste ist
+                if not hasattr(new_message, 'content'):
+                    new_message.content = []
+                elif isinstance(new_message.content, str):
+                    # Wenn content ein String ist, konvertiere zu Liste
+                    new_message.content = [new_message.content]
+                elif not isinstance(new_message.content, list):
+                    new_message.content = [str(new_message.content)]
                 
-                # Konvertiere Frame zu JPEG bytes
-                jpeg_bytes = images.encode(self._latest_frame, encode_options)
+                # Füge das Frame als ImageContent hinzu (LiveKit Standard)
+                new_message.content.append(ImageContent(image=self._latest_frame))
                 
-                # Konvertiere zu Base64 (ohne data URL prefix)
-                base64_image = base64.b64encode(jpeg_bytes).decode('utf-8')
+                logger.info(f"✅ Frame attached! Content items: {len(new_message.content)}")
+                logger.info(f"📊 Frame details: Type={self._latest_frame.type}, Size={self._latest_frame.width}x{self._latest_frame.height}")
                 
-                logger.info(f"✅ Frame konvertiert zu Base64 JPEG (Größe: {len(base64_image)} bytes)")
-                
-                # Für Ollama API Format anpassen
-                if hasattr(new_message, 'content'):
-                    if isinstance(new_message.content, str):
-                        # Erstelle Ollama-kompatibles Format
-                        new_message.content = {
-                            "content": new_message.content,
-                            "images": [base64_image]
-                        }
-                    elif isinstance(new_message.content, list):
-                        # Ersetze ImageContent mit base64 string
-                        text_content = []
-                        for item in new_message.content:
-                            if not isinstance(item, ImageContent):
-                                text_content.append(str(item))
-                        
-                        # Kombiniere Text-Inhalte
-                        combined_text = " ".join(text_content) if text_content else "Analysiere dieses Bild"
-                        
-                        new_message.content = {
-                            "content": combined_text,
-                            "images": [base64_image]
-                        }
-                else:
-                    # Setze content mit image
-                    new_message.content = {
-                        "content": "Bitte analysiere dieses Bild",
-                        "images": [base64_image]
-                    }
-                
-                logger.info("✅ Frame erfolgreich für Ollama konvertiert und angehängt")
+                # NICHT löschen für Debugging
+                # self._latest_frame = None
                 
             except Exception as e:
-                logger.error(f"❌ Error processing frame: {e}", exc_info=True)
+                logger.error(f"❌ Error attaching frame: {e}", exc_info=True)
         else:
             logger.warning("⚠️ No video frame available")
     
@@ -349,7 +317,7 @@ async def entrypoint_full(ctx: JobContext):
         
 Ich kann Tippfehler in Python-Code für Sie finden. Bitte teilen Sie Ihren Bildschirm und zeigen Sie mir den Code.
 
-Der Code den Sie mir zeigen hat einen Tippfehler - ich werde ihn finden!"""
+Ich werde speziell nach häufigen Tippfehlern wie 'trom' statt 'from' suchen!"""
         
         # Send greeting with retry
         max_retries = 3
