@@ -14,7 +14,8 @@ from livekit import rtc
 from livekit.agents import (
     JobContext, 
     WorkerOptions,
-    cli
+    cli,
+    get_job_context
 )
 from livekit.agents.llm import ChatContext, ChatMessage, ImageContent
 from livekit.agents.voice import Agent, AgentSession
@@ -43,9 +44,14 @@ class VisionAgent(Agent):
         
         # Initialize parent class with configuration
         super().__init__(
-            instructions="""Du bist ein Python Fehler-Finder. Antworte IMMER auf Deutsch!
+            instructions="""Du bist ein KI-Assistent mit Bildschirm-Sichtfähigkeiten für Python-Code-Analyse. 
+            
+WICHTIG: Du KANNST den Bildschirm des Nutzers sehen, wenn er seinen Bildschirm teilt!
 
-DEINE AUFGABE: Finde Tippfehler in Python-Code.
+DEINE AUFGABE: Finde Tippfehler in Python-Code auf dem geteilten Bildschirm.
+
+WENN DER NUTZER NACH DEM BILDSCHIRM FRAGT:
+- Sage: "Ja, ich kann Ihren Bildschirm sehen. Zeigen Sie mir bitte den Python-Code."
 
 WENN DU CODE IM BILD SIEHST:
 1. Schaue dir jede Zeile genau an
@@ -66,9 +72,9 @@ Wenn du siehst: trom math import sqrt
 Sage: "Ich sehe Python-Code. Fehler in Zeile 15: 'trom' muss 'from' sein."
 
 WICHTIG:
-- Wenn kein Code sichtbar → "Bitte teilen Sie Ihren Bildschirm"
-- Wenn Code sichtbar → Analysiere und finde den Fehler
-- Sei präzise mit der Zeilennummer und dem Fehler""",
+- Sage NIEMALS "Ich kann den Bildschirm nicht sehen" - Du KANNST ihn sehen!
+- Wenn kein Code sichtbar → "Bitte zeigen Sie mir den Python-Code auf Ihrem Bildschirm"
+- Wenn Code sichtbar → Analysiere und finde den Fehler""",
             
             stt=openai.STT(
                 model="whisper-1",
@@ -102,46 +108,86 @@ WICHTIG:
         # Parent on_enter kümmert sich um Audio
         await super().on_enter()
         logger.info("✅ Parent on_enter completed")
+        
+        # Get room context
+        room = get_job_context().room
+        
+        # Find the first video track (if any) from the remote participant
+        if room.remote_participants:
+            remote_participant = list(room.remote_participants.values())[0]
+            video_tracks = [
+                publication.track
+                for publication in list(remote_participant.track_publications.values())
+                if publication.track and publication.track.kind == rtc.TrackKind.KIND_VIDEO
+            ]
+            
+            if video_tracks:
+                logger.info(f"📹 Found {len(video_tracks)} video track(s) on enter")
+                self.setup_video_stream(video_tracks[0])
+            else:
+                logger.info("⚠️ No video tracks found on enter")
+        
+        # Watch for new video tracks
+        @room.on("track_subscribed")
+        def on_track_subscribed(
+            track: rtc.Track, 
+            publication: rtc.RemoteTrackPublication, 
+            participant: rtc.RemoteParticipant
+        ):
+            logger.info(f"🎬 New track subscribed: {track.kind}")
+            if track.kind == rtc.TrackKind.KIND_VIDEO:
+                logger.info(f"📹 Setting up video stream for new track")
+                self.setup_video_stream(track)
     
-    async def on_user_turn_completed(
-        self, 
-        turn_ctx: ChatContext, 
-        new_message: ChatMessage
-    ) -> None:
-        """Attach video frame to user's message"""
-        logger.info("💬 on_user_turn_completed called")
-        logger.info(f"📝 User message content: {new_message.content}")
+    async def on_thinking(self, turn_ctx: ChatContext) -> None:
+        """Called when agent starts thinking - HIER fügen wir das Frame hinzu!"""
+        logger.info("🤔 on_thinking called - checking for video frame")
+        logger.info(f"📊 Messages in context: {len(turn_ctx.messages) if turn_ctx.messages else 0}")
         logger.info(f"🖼️ Latest frame available: {self._latest_frame is not None}")
         
-        if self._latest_frame:
-            logger.info("📸 Attaching video frame to message")
+        # Füge das aktuelle Frame zur letzten User-Nachricht hinzu
+        if self._latest_frame and turn_ctx.messages:
+            logger.info("📸 Found frame - attaching to last user message")
             
             try:
-                # Create image content from frame
-                image_content = ImageContent(image=self._latest_frame)
+                # Finde die letzte User-Nachricht
+                last_user_msg = None
+                for msg in reversed(turn_ctx.messages):
+                    if msg.role == "user":
+                        last_user_msg = msg
+                        break
                 
-                # Handle different content types
-                if new_message.content is None:
-                    new_message.content = [image_content]
-                elif isinstance(new_message.content, str):
-                    # Convert string to list with text and image
-                    original_text = new_message.content
-                    new_message.content = [original_text, image_content] if original_text else [image_content]
-                elif isinstance(new_message.content, list):
-                    # Append image to existing list
-                    new_message.content.append(image_content)
+                if last_user_msg:
+                    # Erstelle Image-Content vom Frame
+                    image_content = ImageContent(image=self._latest_frame)
+                    
+                    # Stelle sicher, dass content eine Liste ist
+                    if not isinstance(last_user_msg.content, list):
+                        if isinstance(last_user_msg.content, str):
+                            last_user_msg.content = [last_user_msg.content]
+                        else:
+                            last_user_msg.content = []
+                    
+                    # Füge Frame hinzu
+                    last_user_msg.content.append(image_content)
+                    logger.info(f"✅ Frame attached to user message! Content items: {len(last_user_msg.content)}")
+                    
+                    # Log für Debugging
+                    for i, item in enumerate(last_user_msg.content):
+                        if isinstance(item, str):
+                            logger.info(f"  Item {i}: Text = '{item[:50]}...'")
+                        elif isinstance(item, ImageContent):
+                            logger.info(f"  Item {i}: Image (Frame)")
                 else:
-                    # For any other type, create a list
-                    new_message.content = [new_message.content, image_content]
-                
-                logger.info("✅ Frame attached successfully to user message")
-                
-                # Clear frame after use
-                self._latest_frame = None
+                    logger.warning("⚠️ No user message found to attach frame")
+                    
             except Exception as e:
-                logger.error(f"❌ Error attaching frame: {e}", exc_info=True)
+                logger.error(f"❌ Error attaching frame in on_thinking: {e}", exc_info=True)
         else:
-            logger.warning("⚠️ No video frame available for attachment")
+            if not self._latest_frame:
+                logger.info("⚠️ No video frame available")
+            if not turn_ctx.messages:
+                logger.info("⚠️ No messages in context")
     
     def setup_video_stream(self, track: rtc.Track) -> None:
         """Setup video stream from track"""
@@ -169,7 +215,7 @@ WICHTIG:
                             
                             # Log progress every 30 frames (~1 second)
                             if frame_count % 30 == 0:
-                                logger.info(f"📸 Captured {frame_count} frames")
+                                logger.info(f"📸 Captured {frame_count} frames (total: {self._frame_count})")
                             
                             # Log first frame
                             if frame_count == 1:
@@ -335,11 +381,11 @@ async def entrypoint(ctx: JobContext):
         # 9. Initial greeting
         logger.info(f"📢 [{session_id}] Sending initial greeting...")
         
-        greeting_text = """Hallo! Ich bin Ihr Python Code-Assistent.
+        greeting_text = """Hallo! Ich bin Ihr Python Code-Assistent mit Bildschirm-Sichtfähigkeiten.
         
 Ich kann Tippfehler in Python-Code für Sie finden. Bitte teilen Sie Ihren Bildschirm und zeigen Sie mir den Code, den ich überprüfen soll.
 
-Sagen Sie einfach "Prüfe meinen Code" oder ähnliches, wenn Sie bereit sind."""
+Sagen Sie einfach "Siehst du meinen Bildschirm?" wenn Sie bereit sind."""
         
         # Retry mechanism for greeting
         max_retries = 3
