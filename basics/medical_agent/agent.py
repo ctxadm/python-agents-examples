@@ -64,7 +64,7 @@ class MedicalUserData:
     """User data context für den Medical Agent"""
     authenticated_doctor: Optional[str] = None
     rag_url: str = "http://localhost:8000"
-    qdrant_url: str = "http://172.16.0.108:6333"  # NEU: Direkte Qdrant URL
+    qdrant_url: str = "http://172.16.0.205:6333"  # NEU: Direkte Qdrant URL
     current_patient_data: Optional[Dict[str, Any]] = None
     greeting_sent: bool = False
     conversation_state: ConversationState = ConversationState.GREETING
@@ -589,7 +589,7 @@ async def entrypoint(ctx: JobContext):
 
         # 4. Configure LLM with gpt-oss:20B
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
-        qdrant_url = os.getenv("QDRANT_URL", "http://172.16.0.108:6333")
+        qdrant_url = os.getenv("QDRANT_URL", "http://172.16.0.205:6333")
 
         llm = openai.LLM.with_ollama(
             model="gpt-oss:20B",
