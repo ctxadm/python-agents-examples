@@ -68,7 +68,7 @@ class GarageUserData:
     """User data context für den Garage Agent"""
     authenticated_user: Optional[str] = None
     rag_url: str = "http://localhost:8000"
-    qdrant_url: str = "http://172.16.0.108:6333"
+    qdrant_url: str = "http://172.16.0.205:6333"
     current_vehicle_data: Optional[Dict[str, Any]] = None
     greeting_sent: bool = False
     conversation_state: ConversationState = ConversationState.GREETING
@@ -585,7 +585,7 @@ async def entrypoint(ctx: JobContext):
 
         # 4. Configure LLM with Ollama
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
-        qdrant_url = os.getenv("QDRANT_URL", "http://172.16.0.108:6333")
+        qdrant_url = os.getenv("QDRANT_URL", "http://172.16.0.205:6333")
 
         llm = openai.LLM.with_ollama(
             model="gpt-oss:20B",
