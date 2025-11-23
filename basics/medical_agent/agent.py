@@ -587,16 +587,16 @@ async def entrypoint(ctx: JobContext):
         if not audio_track_received:
             logger.warning(f"⚠️ [{session_id}] No audio track found after {max_wait_time}s, continuing anyway...")
 
-        # 4. Configure LLM with Ollama
+        # 4. Configure LLM with gpt-oss:20B
         rag_url = os.getenv("RAG_SERVICE_URL", "http://localhost:8000")
         qdrant_url = os.getenv("QDRANT_URL", "http://172.16.0.108:6333")
 
         llm = openai.LLM.with_ollama(
-            model="llama3.2:latest",
-            base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
+            model="gpt-oss:20B",
+            base_url=os.getenv("OLLAMA_URL", "http://172.16.0.139:11434/v1"),
             temperature=0.0,
         )
-        logger.info(f"🤖 [{session_id}] Using Llama 3.2 with direct Qdrant access")
+        logger.info(f"🤖 [{session_id}] Using gpt-oss:20B with direct Qdrant access")
 
         # 5. Create session - OHNE ungültige Parameter!
         session = AgentSession[MedicalUserData](
