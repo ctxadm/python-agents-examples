@@ -588,11 +588,11 @@ async def entrypoint(ctx: JobContext):
         qdrant_url = os.getenv("QDRANT_URL", "http://172.16.0.108:6333")
 
         llm = openai.LLM.with_ollama(
-            model="llama3.2:latest",
-            base_url=os.getenv("OLLAMA_URL", "http://172.16.0.146:11434/v1"),
+            model="gpt-oss:20B",
+            base_url=os.getenv("OLLAMA_URL", "http://172.16.0.139:11434/v1"),
             temperature=0.0,
         )
-        logger.info(f"🤖 [{session_id}] Using Llama 3.2 with direct Qdrant access")
+        logger.info(f"🤖 [{session_id}] Using gpt-oss:20B with direct Qdrant access")
 
         # 5. Create session
         session = AgentSession[GarageUserData](
