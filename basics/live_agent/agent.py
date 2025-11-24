@@ -78,7 +78,7 @@ async def entrypoint(ctx: JobContext):
         tts=openai.TTS(
             model="tts-1",
             voice="alloy",                                # = thorsten-high → beste deutsche Männerstimme
-            base_url="http://172.16.0.205:8000/v1",       # ← DEINE PIPER SERVER IP
+            base_url="http://172.16.0.220:8888/v1",       # ← DEINE PIPER SERVER IP
             api_key="sk-nokey",
             temperature=0.7,
             response_format="pcm_16000"                   # minimale Latenz
