@@ -61,7 +61,6 @@ async def entrypoint(ctx: JobContext):
             voice="alloy",                              # = thorsten-high
             base_url="http://172.16.0.220:8888/v1",     # deine Piper-Instanz
             api_key="sk-nokey",
-            response_format="pcm_16000"
         ),
         min_endpointing_delay=0.5,
         max_endpointing_delay=4.0
