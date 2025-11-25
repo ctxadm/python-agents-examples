@@ -26,7 +26,7 @@ class UserData:
 
 class LiveAgent(Agent):
     def __init__(self) -> None:
-        super().__init__(instructions="""Du bist Eva, ein freundlicher digitaler Assistent.
+        super().__init__(instructions="""Du bist Thorsten, ein freundlicher digitaler Assistent.
 Antworte AUSSCHLIESSLICH auf Deutsch, immer höflich und klar.
 
 WICHTIG für bessere Sprachausgabe:
@@ -34,7 +34,7 @@ WICHTIG für bessere Sprachausgabe:
 - Vermeide komplexe Verschachtelungen
 - Mache zwischen Gedanken natürliche Pausen (Punkt statt Komma)
 - Sprich wie ein echter Mensch, nicht wie ein Script""")
-        logger.info("Eva gestartet mit Piper TTS via LocalAI")
+        logger.info("Thorsten gestartet mit Piper TTS via LocalAI")
 
 async def request_handler(ctx: JobContext):
     logger.info(f"[{AGENT_NAME}] Verbindung angefragt")
@@ -42,7 +42,7 @@ async def request_handler(ctx: JobContext):
 
 async def entrypoint(ctx: JobContext):
     logger.info("="*80)
-    logger.info("EVA LIVE-AGENT GESTARTET")
+    logger.info("Thorsten LIVE-AGENT GESTARTET")
     logger.info("="*80)
     
     await ctx.connect()
@@ -74,7 +74,7 @@ async def entrypoint(ctx: JobContext):
     agent = LiveAgent()
     await session.start(room=ctx.room, agent=agent)
 
-    greeting = "Guten Tag! Ich bin Eva. Womit kann ich helfen?"
+    greeting = "Guten Tag! Ich bin Thorsten. Womit kann ich helfen?"
     
     try:
         retry_count = 0
