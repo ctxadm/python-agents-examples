@@ -62,7 +62,7 @@ async def entrypoint(ctx: JobContext):
         stt=openai.STT(model="whisper-1", language="de"),
         tts=openai.TTS(
             model="tts-1",
-            voice="alloy",
+            voice="de_DE-eva_k-x_low",
             base_url="http://172.16.0.220:8888/v1",
             api_key="sk-nokey",
         ),
