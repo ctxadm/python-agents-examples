@@ -71,6 +71,7 @@ async def entrypoint(ctx: JobContext):
             voice="alloy",                              # = thorsten-high
             base_url="http://172.16.0.220:8888/v1",     # ← DEINE RICHTIGE IP!
             api_key="sk-nokey",
+            speed=1.2,
         ),
         min_endpointing_delay=0.3,        # ⚡ Schnelle Reaktion (wie gestern!)
         max_endpointing_delay=3.0,        # Ausreichend für längere Sätze
