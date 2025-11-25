@@ -29,12 +29,14 @@ class LiveAgent(Agent):
         super().__init__(instructions="""Du bist Thorsten, ein freundlicher digitaler Assistent.
 Antworte AUSSCHLIESSLICH auf Deutsch, immer höflich und klar.
 
-WICHTIG für bessere Sprachausgabe:
-- Formuliere kurze, klare Sätze (max. 15-20 Wörter)
-- Vermeide komplexe Verschachtelungen
-- Mache zwischen Gedanken natürliche Pausen (Punkt statt Komma)
-- Sprich wie ein echter Mensch, nicht wie ein Script""")
-        logger.info("Thorsten gestartet mit Piper TTS via LocalAI")
+Kommunikationsstil:
+- Antworte natürlich und ausführlich auf Fragen
+- Bei komplexen Themen: Gib vollständige, detaillierte Antworten
+- Bei einfachen Fragen: Sei prägnant
+- Strukturiere längere Antworten mit klaren Gedankenpausen
+- Vermeide Sätze über 25 Wörter ohne Punkt
+- Sprich wie ein echter Mensch""")
+        logger.info("Thorsten gestartet - Piper TTS via LocalAI")
 
 async def request_handler(ctx: JobContext):
     logger.info(f"[{AGENT_NAME}] Verbindung angefragt")
@@ -55,49 +57,35 @@ async def entrypoint(ctx: JobContext):
         temperature=0.7,
     )
 
+    # ✅ OPTIMIERTE KONFIGURATION - NUR VALIDE PARAMETER
     session = AgentSession[UserData](
         userdata=UserData(),
         llm=llm,
-        vad=silero.VAD.load(),
+        vad=silero.VAD.load(
+            min_silence_duration=0.5,     # Optimal für deutsche Sprache
+            min_speech_duration=0.2       # Schnelle Erkennung
+        ),
         stt=openai.STT(model="whisper-1", language="de"),
         tts=openai.TTS(
             model="tts-1",
-            voice="alloy",
-            base_url="http://172.16.0.220:8888/v1",
+            voice="alloy",                              # = thorsten-high
+            base_url="http://172.16.0.220:8888/v1",     # ← DEINE RICHTIGE IP!
             api_key="sk-nokey",
         ),
-        min_endpointing_delay=1.2,    # ← HAUPTÄNDERUNG: von 0.5 auf 1.2
-        max_endpointing_delay=5.0,    # ← HAUPTÄNDERUNG: von 4.0 auf 5.0
-        allow_interruptions=True,
+        min_endpointing_delay=0.3,        # ⚡ Schnelle Reaktion (wie gestern!)
+        max_endpointing_delay=3.0,        # Ausreichend für längere Sätze
     )
 
     agent = LiveAgent()
     await session.start(room=ctx.room, agent=agent)
 
-    greeting = "Guten Tag! Ich bin Thorsten. Womit kann ich helfen?"
+    greeting = "Guten Tag! Ich bin Thorsten. Schön, dass Sie da sind. Womit kann ich Ihnen heute helfen?"
     
     try:
-        retry_count = 0
-        max_retries = 2
-        
-        while retry_count <= max_retries:
-            try:
-                await session.say(
-                    greeting, 
-                    allow_interruptions=True, 
-                    add_to_chat_ctx=True
-                )
-                session.userdata.greeting_sent = True
-                session.userdata.state = ConversationState.TALKING
-                logger.info("✅ Begrüßung erfolgreich")
-                break
-            except Exception as e:
-                retry_count += 1
-                logger.warning(f"⚠️ TTS Retry {retry_count}/{max_retries}: {e}")
-                if retry_count > max_retries:
-                    raise
-                await asyncio.sleep(1)
-                
+        await session.say(greeting, allow_interruptions=True, add_to_chat_ctx=True)
+        session.userdata.greeting_sent = True
+        session.userdata.state = ConversationState.TALKING
+        logger.info("✅ Begrüßung erfolgreich")
     except Exception as e:
         logger.error(f"❌ TTS-Fehler: {e}")
 
