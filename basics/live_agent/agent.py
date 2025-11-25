@@ -42,7 +42,7 @@ async def request_handler(ctx: JobContext):
 
 async def entrypoint(ctx: JobContext):
     logger.info("="*80)
-    logger.info("Thorsten LIVE-AGENT GESTARTET")
+    logger.info("THORSTEN LIVE-AGENT GESTARTET")
     logger.info("="*80)
     
     await ctx.connect()
@@ -66,8 +66,8 @@ async def entrypoint(ctx: JobContext):
             base_url="http://172.16.0.220:8888/v1",
             api_key="sk-nokey",
         ),
-        min_endpointing_delay=0.5,    # ← HAUPTÄNDERUNG: von 0.5 auf 1.2
-        max_endpointing_delay=3.0,    # ← HAUPTÄNDERUNG: von 4.0 auf 5.0
+        min_endpointing_delay=1.2,    # ← HAUPTÄNDERUNG: von 0.5 auf 1.2
+        max_endpointing_delay=5.0,    # ← HAUPTÄNDERUNG: von 4.0 auf 5.0
         allow_interruptions=True,
     )
 
