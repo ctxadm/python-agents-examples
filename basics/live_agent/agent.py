@@ -52,7 +52,7 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"Teilnehmer: {participant.identity}")
 
     llm = openai.LLM.with_ollama(
-        model=os.getenv("OLLAMA_MODEL", "gpt-oss:20B"),
+        model=os.getenv("OLLAMA_MODEL", "GPT-UNIFIED:latest"),
         base_url=os.getenv("OLLAMA_URL", "http://172.16.0.139:11434/v1"),
         temperature=0.7,
     )
@@ -71,10 +71,10 @@ async def entrypoint(ctx: JobContext):
             voice="alloy",                              # = thorsten-high
             base_url="http://172.16.0.220:8888/v1",     # ← DEINE RICHTIGE IP!
             api_key="sk-nokey",
-            speed=1.2,
+            speed=1.05,
         ),
-        min_endpointing_delay=0.3,        # ⚡ Schnelle Reaktion (wie gestern!)
-        max_endpointing_delay=3.0,        # Ausreichend für längere Sätze
+        min_endpointing_delay=0.25,        # ⚡ Schnelle Reaktion (wie gestern!)
+        max_endpointing_delay=2.5,        # Ausreichend für längere Sätze
     )
 
     agent = LiveAgent()
