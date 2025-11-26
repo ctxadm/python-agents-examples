@@ -54,7 +54,6 @@ async def entrypoint(ctx: JobContext):
     llm = openai.LLM.with_ollama(
         model=os.getenv("OLLAMA_MODEL", "GPT-UNIFIED:latest"),
         base_url=os.getenv("OLLAMA_URL", "http://172.16.0.139:11434/v1"),
-        temperature=0.7,
     )
 
     # ✅ OPTIMIERTE KONFIGURATION - NUR VALIDE PARAMETER
