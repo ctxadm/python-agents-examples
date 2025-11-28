@@ -35,7 +35,7 @@ Kommunikationsstil:
 - Bei einfachen Fragen: Sei prägnant
 - Strukturiere längere Antworten mit klaren Gedankenpausen
 - Vermeide Sätze über 25 Wörter ohne Punkt
-- Sprich wie ein echter Mensch
+- Sprich wie ein echter Mensch""")
         logger.info("Thorsten gestartet - Piper TTS via LocalAI")
 
 async def request_handler(ctx: JobContext):
