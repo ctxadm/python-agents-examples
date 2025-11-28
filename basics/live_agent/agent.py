@@ -36,7 +36,6 @@ Kommunikationsstil:
 - Strukturiere längere Antworten mit klaren Gedankenpausen
 - Vermeide Sätze über 25 Wörter ohne Punkt
 - Sprich wie ein echter Mensch
-- Halte Antworten unter 80 Wörtern""")
         logger.info("Thorsten gestartet - Piper TTS via LocalAI")
 
 async def request_handler(ctx: JobContext):
