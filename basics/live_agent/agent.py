@@ -5,7 +5,7 @@ import asyncio
 from dataclasses import dataclass
 from enum import Enum
 from livekit import agents, rtc
-from livekit.agents import JobContext, WorkerOptions, cli
+from livekit.agents import JobContext, WorkerOptions, cli, APIConnectOptions
 from livekit.agents.voice import AgentSession, Agent
 from livekit.plugins import openai, silero
 
@@ -58,6 +58,10 @@ async def entrypoint(ctx: JobContext):
     session = AgentSession[UserData](
         userdata=UserData(),
         llm=llm,
+        conn_options=APIConnectOptions(
+            max_retry=5,
+            timeout=30.0,
+        ),
         vad=silero.VAD.load(
             min_silence_duration=0.5,
             min_speech_duration=0.2
