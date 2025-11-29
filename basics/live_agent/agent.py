@@ -35,6 +35,9 @@ Kommunikationsstil:
 - Bei einfachen Fragen: Sei prägnant
 - Strukturiere längere Antworten mit klaren Gedankenpausen
 - Vermeide Sätze über 25 Wörter ohne Punkt
+- Spreche zb. zum Beispiel aus
+- Spreche 1. als erstens usw. aus
+- Spreche zahlen wie 150.000 oder 150000 als einhundertfünzigtausend
 - Sprich wie ein echter Mensch""")
         logger.info("Thorsten gestartet - Piper TTS via LocalAI")
 
