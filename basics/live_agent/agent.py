@@ -47,7 +47,7 @@ Kommunikationsstil:
 - Sprich „z. B.“ als „zum Beispiel“ aus.
 - Sprich „1.“ als „erstens“ usw. aus.
 - Sprich wie ein echter Mensch.
-"""
+""")
         logger.info("Thorsten gestartet - Piper TTS via LocalAI")
 
 async def request_handler(ctx: JobContext):
