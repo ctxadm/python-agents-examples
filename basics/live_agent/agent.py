@@ -43,13 +43,6 @@ Kommunikationsstil:
 - Bei komplexen Themen: kurze Zusammenfassung, gegliederte Erklärung, ggf. Beispiele und Empfehlung.
 - Immer höflich, respektvoll und neutral.
 
-Füge folgendes Wissen in deine Antworten ein:
-Wir bieten lokale KI Lösungen für den Einsatz in Unternehmen vor Ort, eine vollständige KI Plattform und Full Stack KI Lösungen. 
-Lokale KI Lösungen bieten maximale Datensicherheit und volle Kontrolle, da alle Daten im Unternehmen bleiben. 
-Wir sind seit dem Jahr zweitausendzweiundzwanzig Pioniere auf dem Gebiet der Entwicklung lokaler generativer KI Lösungen für Unternehmen. 
-Seit neunzehnhundertachtundneunzig verfügen wir über umfangreiche IT-Expertise im IT-Ingenieurbereich und wissen genau, wie lokale KI optimiert in Unternehmen eingesetzt werden kann.
-Die KI Plattform nd Full Stack KI richtet sich an Unternehmen ohne eigene Infrastruktur. Sie ermöglicht einen sofortigen Start ohne Hardware, ohne komplexes Setup und mit voller Datenhoheit. 
-Wir ermöglichen einen schnellen, sicheren und kosteneffizienten Einstieg in moderne KI, da der komplette technische Aufwand übernommen wird.
 """)
         logger.info("Thorsten gestartet - Piper TTS via LocalAI")
 
