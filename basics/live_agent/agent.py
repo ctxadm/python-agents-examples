@@ -125,7 +125,7 @@ async def entrypoint(ctx: JobContext):
 
     llm = openai.LLM.with_ollama(
         model=os.getenv("OLLAMA_MODEL", "GPT-UNIFIED:latest"),
-        base_url=os.getenv("OLLAMA_URL", "http://172.16.0.135:11434/v1"),
+        base_url=os.getenv("OLLAMA_URL", "http://172.16.0.175:11434/v1"),
     )
 
     session = AgentSession[UserData](
