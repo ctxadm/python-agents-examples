@@ -201,7 +201,7 @@ async def get_data_travel_info(country: str) -> str:
 
 
 @llm.function_tool
-def get_package_price(country: str, package_size: str) -> str:
+async def get_package_price(country: str, package_size: str) -> str:
     """
     Gibt den Preis für ein spezifisches Data Travel Paket in einem bestimmten Land zurück.
     Nutze diese Funktion wenn ein Kunde nach dem Preis eines bestimmten Datenpakets fragt.
@@ -243,7 +243,7 @@ def get_package_price(country: str, package_size: str) -> str:
 
 
 @llm.function_tool
-def list_countries_in_zone(zone: str) -> str:
+async def list_countries_in_zone(zone: str) -> str:
     """
     Listet alle Länder in einer bestimmten Tarifzone auf.
     Nutze diese Funktion wenn ein Kunde wissen möchte, welche Länder zu einer Zone gehören.
@@ -298,7 +298,7 @@ def list_countries_in_zone(zone: str) -> str:
 
 
 @llm.function_tool
-def get_zone_prices(zone: str) -> str:
+async def get_zone_prices(zone: str) -> str:
     """
     Gibt die Paketpreise für eine bestimmte Tarifzone zurück.
     Nutze diese Funktion wenn ein Kunde nach den generellen Preisen einer Zone fragt.
