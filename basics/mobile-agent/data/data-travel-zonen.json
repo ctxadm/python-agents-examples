@@ -1,0 +1,81 @@
+{
+  "meta": {
+    "beschreibung": "Data Travel Roaming-Datenpakete für die Nutzung von mobilen Daten im Ausland",
+    "waehrung": "CHF",
+    "hinweis_fuer_chatbot": "Bei Kundenanfragen: 1) Suche das Land in 'data-travel-laender.json', 2) Hole die Zone und Pakete direkt aus dem Länder-Eintrag, 3) Wenn Preis = null, ist das Paket nicht verfügbar. Wenn ein Land nicht gefunden wird: 'Dieses Land ist leider nicht in unseren Data Travel Paketen enthalten.'"
+  },
+
+  "alle_pakete": [
+    "Data Travel 100 MB",
+    "Data Travel 500 MB",
+    "Data Travel 1 GB",
+    "Data Travel 5 GB",
+    "Data Travel 10 GB"
+  ],
+
+  "zonen_uebersicht": {
+    "EU/UK": {
+      "beschreibung": "Europa und Grossbritannien",
+      "verfuegbare_pakete": {
+        "Data Travel 100 MB": null,
+        "Data Travel 500 MB": 9.90,
+        "Data Travel 1 GB": 15.90,
+        "Data Travel 5 GB": 42.90,
+        "Data Travel 10 GB": 64.90
+      },
+      "anzahl_laender": 40
+    },
+    "Welt 1": {
+      "beschreibung": "Beliebte Reiseziele weltweit (Amerika, Asien, Ozeanien, Afrika)",
+      "verfuegbare_pakete": {
+        "Data Travel 100 MB": null,
+        "Data Travel 500 MB": 15.90,
+        "Data Travel 1 GB": 21.90,
+        "Data Travel 5 GB": 54.90,
+        "Data Travel 10 GB": 74.90
+      },
+      "anzahl_laender": 60
+    },
+    "Welt 2": {
+      "beschreibung": "Weitere internationale Destinationen",
+      "verfuegbare_pakete": {
+        "Data Travel 100 MB": 9.90,
+        "Data Travel 500 MB": 39.90,
+        "Data Travel 1 GB": 54.90,
+        "Data Travel 5 GB": null,
+        "Data Travel 10 GB": null
+      },
+      "anzahl_laender": 98
+    },
+    "Rest der Welt": {
+      "beschreibung": "Abgelegene Regionen mit eingeschränkter Verfügbarkeit",
+      "verfuegbare_pakete": {
+        "Data Travel 100 MB": 29.90,
+        "Data Travel 500 MB": null,
+        "Data Travel 1 GB": null,
+        "Data Travel 5 GB": null,
+        "Data Travel 10 GB": null
+      },
+      "anzahl_laender": 19
+    }
+  },
+
+  "beispiel_antworten": {
+    "beispiel_1": {
+      "frage": "Was kostet Data Travel 500 MB in Mexiko?",
+      "antwort": "Data Travel 500 MB kostet in Mexiko (Zone Welt 1) CHF 15.90."
+    },
+    "beispiel_2": {
+      "frage": "Welche Pakete gibt es für Thailand?",
+      "antwort": "Für Thailand (Zone Welt 1) sind folgende Data Travel Pakete verfügbar: 500 MB für CHF 15.90, 1 GB für CHF 21.90, 5 GB für CHF 54.90, 10 GB für CHF 74.90."
+    },
+    "beispiel_3": {
+      "frage": "Kann ich 5 GB für Kuba buchen?",
+      "antwort": "Leider ist das Data Travel 5 GB Paket für Kuba (Zone Welt 2) nicht verfügbar. Für Kuba können Sie folgende Pakete buchen: 100 MB für CHF 9.90, 500 MB für CHF 39.90, 1 GB für CHF 54.90."
+    },
+    "beispiel_4": {
+      "frage": "Was kostet Roaming in Afghanistan?",
+      "antwort": "Für Afghanistan (Zone Rest der Welt) ist nur das Data Travel 100 MB Paket für CHF 29.90 verfügbar."
+    }
+  }
+}
