@@ -14,7 +14,7 @@ from livekit.agents.voice import AgentSession, Agent
 from livekit.plugins import openai, silero
 
 # Data Travel Tools importieren
-from data_travel_tools import get_data_travel_tools, get_service
+from .data_travel_tools import get_data_travel_tools, get_service
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mobile-agent")
