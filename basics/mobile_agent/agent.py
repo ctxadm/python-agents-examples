@@ -59,6 +59,12 @@ BEISPIELE wann du Tools nutzen sollst:
 - "Wie teuer ist 1 GB in Mexiko?" → get_package_price("Mexiko", "1 GB")
 - "Welche Länder sind in der EU-Zone?" → list_countries_in_zone("EU/UK")
 - "Was kosten die Pakete in Europa?" → get_zone_prices("EU/UK")
+
+WICHTIG FÜR SCHNELLE ANTWORTEN:
+- Antworte so kurz wie möglich
+- Keine langen Einleitungen
+- Direkt den Preis nennen
+- Maximal 1-2 Sätze pro Antwort
 </DEINE_AUFGABE>
 
 <SECURITY_RULES>
@@ -177,8 +183,8 @@ async def entrypoint(ctx: JobContext):
             tts_conn_options=APIConnectOptions(max_retry=3, timeout=30.0),
         ),
         vad=silero.VAD.load(
-            min_silence_duration=0.5,
-            min_speech_duration=0.2
+            min_silence_duration=0.3,
+            min_speech_duration=0.15
         ),
         stt=openai.STT(model="whisper-1", language="de"),
         tts=openai.TTS(
@@ -186,10 +192,10 @@ async def entrypoint(ctx: JobContext):
             voice="alloy",
             base_url=os.getenv("TTS_URL", "http://172.16.0.220:8888/v1"),
             api_key="sk-nokey",
-            speed=1.05,
+            speed=1.15,
         ),
-        min_endpointing_delay=0.25,
-        max_endpointing_delay=2.5,
+        min_endpointing_delay=0.15,
+        max_endpointing_delay=1.5,
     )
 
     # Agent starten
