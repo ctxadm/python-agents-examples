@@ -146,7 +146,7 @@ def get_service() -> DataTravelService:
 # =============================================================================
 
 @llm.function_tool
-def get_data_travel_info(country: str) -> str:
+async def get_data_travel_info(country: str) -> str:
     """
     Gibt alle verfügbaren Data Travel Roaming-Pakete und Preise für ein bestimmtes Land zurück.
     Nutze diese Funktion wenn ein Kunde nach Roaming-Preisen, Datenpaketen oder 
