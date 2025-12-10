@@ -109,11 +109,19 @@ class DataTravelService:
         return self.resolve_alias(country)
     
     def format_price(self, price: Optional[float]) -> str:
-        """Formatiert Preise für die Ausgabe"""
+        """Formatiert Preise für die Sprachausgabe"""
         if price is None:
             return "nicht verfügbar"
-        return f"CHF {price:.2f}".replace('.', ',')
     
+        # Preis in Franken und Rappen aufteilen
+        franken = int(price)
+        rappen = int(round((price - franken) * 100))
+    
+        if rappen == 0:
+            return f"{franken} Franken"
+        else:
+            return f"{franken} Franken {rappen}"
+            
     def get_available_packages(self, country: str) -> list[tuple[str, float]]:
         """Gibt alle verfügbaren Pakete für ein Land zurück"""
         info = self.get_country_info(country)
