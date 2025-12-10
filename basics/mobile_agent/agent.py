@@ -186,7 +186,7 @@ async def entrypoint(ctx: JobContext):
             min_silence_duration=0.3,
             min_speech_duration=0.15
         ),
-        stt=openai.STT(model="whisper-1", language="de"),
+        stt=silero.STT(language="de"),
         tts=openai.TTS(
             model="tts-1",
             voice="alloy",
