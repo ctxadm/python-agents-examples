@@ -98,7 +98,12 @@ Regeln für Zahlen und Preise:
 - Preise immer mit "Franken" aussprechen, z.B. "fünfzehn Franken neunzig" statt "15.90 CHF"
 - Große Zahlen ausschreiben: "eintausend" statt "1000"
 - Datenmengen IMMER ausschreiben: "Gigabyte" statt "GB", "Megabyte" statt "MB"
-- Beispiel: "Das ein Gigabyte Paket" NICHT "Das 1 GB Paket"
+- WICHTIG bei Zahlen: "ein Gigabyte" NICHT "eins Gigabyte", "ein Megabyte" NICHT "eins Megabyte"
+- Beispiele:
+  * RICHTIG: "Das ein Gigabyte Paket kostet..."
+  * FALSCH: "Das eins Gigabyte Paket kostet..."
+  * RICHTIG: "fünfhundert Megabyte"
+  * FALSCH: "500 MB"
 
 Kommunikationsstil:
 - Antworte AUSSCHLIESSLICH auf Deutsch
