@@ -16,7 +16,7 @@ logger = logging.getLogger("data-travel-tools")
 
 DATA_PATH = os.getenv(
     "DATA_TRAVEL_PATH", 
-    "/home/ctxusr/live.fastlane-ai.ch/agent-dateien/mobile-agent"
+    "/app/basics/mobile_agent/data"
 )
 
 # =============================================================================
@@ -108,20 +108,49 @@ class DataTravelService:
         """Gibt den offiziellen Ländernamen zurück"""
         return self.resolve_alias(country)
     
+    def _zahl_zu_wort(self, zahl: int) -> str:
+        """Konvertiert Zahlen 0-99 zu deutschen Wörtern"""
+        einer = ["", "ein", "zwei", "drei", "vier", "fünf", "sechs", "sieben", "acht", "neun"]
+        zehn_bis_neunzehn = ["zehn", "elf", "zwölf", "dreizehn", "vierzehn", "fünfzehn", 
+                             "sechzehn", "siebzehn", "achtzehn", "neunzehn"]
+        zehner = ["", "", "zwanzig", "dreißig", "vierzig", "fünfzig", 
+                  "sechzig", "siebzig", "achtzig", "neunzig"]
+        
+        if zahl == 0:
+            return "null"
+        if zahl < 10:
+            return einer[zahl]
+        if zahl < 20:
+            return zehn_bis_neunzehn[zahl - 10]
+        
+        z = zahl // 10
+        e = zahl % 10
+        
+        if e == 0:
+            return zehner[z]
+        elif e == 1:
+            return f"einund{zehner[z]}"
+        else:
+            return f"{einer[e]}und{zehner[z]}"
+    
     def format_price(self, price: Optional[float]) -> str:
         """Formatiert Preise für die Sprachausgabe"""
         if price is None:
             return "nicht verfügbar"
-    
+        
         # Preis in Franken und Rappen aufteilen
         franken = int(price)
         rappen = int(round((price - franken) * 100))
-    
+        
+        # Zahlen zu Wörtern konvertieren
+        franken_wort = self._zahl_zu_wort(franken)
+        
         if rappen == 0:
-            return f"{franken} Franken"
+            return f"{franken_wort} Franken"
         else:
-            return f"{franken} Franken {rappen}"
-            
+            rappen_wort = self._zahl_zu_wort(rappen)
+            return f"{franken_wort} Franken {rappen_wort}"
+    
     def get_available_packages(self, country: str) -> list[tuple[str, float]]:
         """Gibt alle verfügbaren Pakete für ein Land zurück"""
         info = self.get_country_info(country)
@@ -385,21 +414,17 @@ if __name__ == "__main__":
     # Service initialisieren
     service = get_service()
     
-    # Test 1: Land mit Alias
-    print("Test 1: England (Alias für Grossbritannien)")
-    print(get_data_travel_info("England"))
+    # Test Zahlen zu Wort
+    print("Test Zahlen:")
+    print(f"15 -> {service._zahl_zu_wort(15)}")
+    print(f"39 -> {service._zahl_zu_wort(39)}")
+    print(f"54 -> {service._zahl_zu_wort(54)}")
+    print(f"21 -> {service._zahl_zu_wort(21)}")
     print()
     
-    # Test 2: Spezifischer Preis
-    print("Test 2: 1 GB Paket für Thailand")
-    print(get_package_price("Thailand", "1 GB"))
+    # Test Preisformatierung
+    print("Test Preise:")
+    print(f"15.90 -> {service.format_price(15.90)}")
+    print(f"39.90 -> {service.format_price(39.90)}")
+    print(f"54.90 -> {service.format_price(54.90)}")
     print()
-    
-    # Test 3: Nicht verfügbares Paket
-    print("Test 3: 5 GB für Kuba (nicht verfügbar)")
-    print(get_package_price("Kuba", "5 GB"))
-    print()
-    
-    # Test 4: Länder in Zone
-    print("Test 4: Länder in EU/UK")
-    print(list_countries_in_zone("EU/UK"))
