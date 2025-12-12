@@ -190,7 +190,7 @@ async def entrypoint(ctx: JobContext):
             min_speech_duration=0.15
         ),
         stt=openai.STT(
-            model="Systran/faster-whisper-tiny",
+            model="Systran/faster-whisper-base",
             language="de",
             base_url="http://172.16.0.220:8787/v1",
             api_key="sk-nokey",
