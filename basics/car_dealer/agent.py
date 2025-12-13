@@ -196,9 +196,9 @@ async def entrypoint(ctx: JobContext):
             api_key="sk-nokey",
         ),
         tts=openai.TTS(
-            model="tts-1",
-            voice="alloy",
-            base_url=os.getenv("TTS_URL", "http://172.16.0.220:8888/v1"),
+            model="tts-1-hd",
+            voice="alex",
+            base_url=os.getenv("TTS_URL", "http://172.16.0.185:8888/v1"),
             api_key="sk-nokey",
             speed=1.15,
         ),
