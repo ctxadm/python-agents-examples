@@ -181,7 +181,7 @@ async def entrypoint(ctx: JobContext):
         llm=llm,
         tools=get_car_dealer_tools(),  # Car Dealer Tools registrieren
         conn_options=SessionConnectOptions(
-            llm_conn_options=APIConnectOptions(max_retry=5, timeout=30.0),
+            llm_conn_options=APIConnectOptions(max_retry=5, timeout=60.0),
             stt_conn_options=APIConnectOptions(max_retry=3, timeout=30.0),
             tts_conn_options=APIConnectOptions(max_retry=3, timeout=90.0),
         ),
