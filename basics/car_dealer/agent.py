@@ -211,7 +211,7 @@ async def entrypoint(ctx: JobContext):
     await session.start(room=ctx.room, agent=agent)
 
     # Begrüßung
-    greeting = "Guten Tag! Ich bin Alex, Ihr digitaler Verkaufsberater. Wie kann ich Ihnen bei der Fahrzeugsuche helfen?"
+    greeting = "Guten Tag! Ich bin Alex, Ihr digitaler Verkaufsberater. Wie kann ich Ihnen helfen?"
     try:
         await session.say(greeting, allow_interruptions=True, add_to_chat_ctx=True)
         session.userdata.greeting_sent = True
