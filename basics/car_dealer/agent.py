@@ -195,7 +195,7 @@ async def entrypoint(ctx: JobContext):
         conn_options=SessionConnectOptions(
             llm_conn_options=APIConnectOptions(max_retry=5, timeout=60.0),
             stt_conn_options=APIConnectOptions(max_retry=3, timeout=30.0),
-            tts_conn_options=APIConnectOptions(max_retry=3, timeout=90.0),
+            tts_conn_options=APIConnectOptions(max_retry=3, timeout=120.0),
         ),
         vad=silero.VAD.load(
             min_silence_duration=0.3,
