@@ -224,7 +224,6 @@ async def entrypoint(ctx: JobContext):
             base_url=os.getenv("TTS_URL", "http://172.16.0.175:8089/v1"),
             api_key="sk-nokey",
             speed=1.15,
-            response_format="mp3",
         ),
         min_endpointing_delay=0.15,
         max_endpointing_delay=1.5,
