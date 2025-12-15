@@ -11,8 +11,9 @@ from livekit import agents, rtc
 from livekit.agents import JobContext, WorkerOptions, cli, APIConnectOptions
 from livekit.agents.voice.agent_session import SessionConnectOptions
 from livekit.agents.voice import AgentSession, Agent
-from livekit.agents.tts import StreamAdapter  # NEU: StreamAdapter importieren
+from livekit.agents.tts import StreamAdapter
 from livekit.plugins import openai, silero
+import httpx  # NEU: httpx importieren
 
 # Car Dealer Tools importieren
 from .car_dealer_tools import get_car_dealer_tools, get_service
@@ -200,24 +201,41 @@ async def entrypoint(ctx: JobContext):
     )
 
     # ==========================================================================
-    # TTS MIT SENTENCE PACING KONFIGURIEREN (NEU)
+    # TTS MIT ERHÖHTEM TIMEOUT UND SENTENCE PACING KONFIGURIEREN
     # ==========================================================================
     
-    # Basis-TTS erstellen
+    # Custom httpx Client mit erhöhtem Timeout (120 Sekunden)
+    http_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(120.0, connect=15.0),  # 120s read, 15s connect
+        follow_redirects=True,
+        limits=httpx.Limits(
+            max_connections=50,
+            max_keepalive_connections=50,
+            keepalive_expiry=120
+        ),
+    )
+    
+    # OpenAI AsyncClient mit custom httpx Client
+    import openai as openai_lib
+    oai_client = openai_lib.AsyncClient(
+        api_key="sk-nokey",
+        base_url=os.getenv("TTS_URL", "http://172.16.0.175:8089/v1"),
+        http_client=http_client,
+    )
+    
+    # Basis-TTS mit custom Client erstellen
     base_tts = openai.TTS(
         model="fish-speech-1.5",
-        base_url=os.getenv("TTS_URL", "http://172.16.0.175:8089/v1"),
-        api_key="sk-nokey",
+        client=oai_client,  # Custom Client mit 120s Timeout
     )
     
     # TTS mit StreamAdapter und Sentence Pacing wrappen
-    # text_pacing=True aktiviert SentenceStreamPacer für flüssigere Sprachausgabe
     tts_with_pacing = StreamAdapter(
         tts=base_tts,
         text_pacing=True,  # Aktiviert Sentence-Buffering!
     )
     
-    logger.info("✅ TTS mit Sentence Pacing konfiguriert")
+    logger.info("✅ TTS mit Sentence Pacing und 120s Timeout konfiguriert")
 
     # ==========================================================================
     # AGENT SESSION ERSTELLEN
@@ -242,7 +260,7 @@ async def entrypoint(ctx: JobContext):
             base_url="http://172.16.0.175:8787/v1",
             api_key="sk-nokey",
         ),
-        tts=tts_with_pacing,  # NEU: Gewrapptes TTS mit Sentence Pacing
+        tts=tts_with_pacing,  # TTS mit Sentence Pacing und erhöhtem Timeout
         min_endpointing_delay=0.15,
         max_endpointing_delay=1.5,
     )
