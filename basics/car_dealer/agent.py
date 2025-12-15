@@ -11,6 +11,7 @@ from livekit import agents, rtc
 from livekit.agents import JobContext, WorkerOptions, cli, APIConnectOptions
 from livekit.agents.voice.agent_session import SessionConnectOptions
 from livekit.agents.voice import AgentSession, Agent
+from livekit.agents.tts import StreamAdapter  # NEU: StreamAdapter importieren
 from livekit.plugins import openai, silero
 
 # Car Dealer Tools importieren
@@ -196,13 +197,36 @@ async def entrypoint(ctx: JobContext):
     llm = openai.LLM.with_ollama(
         model=os.getenv("OLLAMA_MODEL", "gpt-oss:20B"),
         base_url=os.getenv("OLLAMA_URL", "http://172.16.0.175:11434/v1"),
-        )
+    )
 
-    # Agent Session mit Tools erstellen
+    # ==========================================================================
+    # TTS MIT SENTENCE PACING KONFIGURIEREN (NEU)
+    # ==========================================================================
+    
+    # Basis-TTS erstellen
+    base_tts = openai.TTS(
+        model="fish-speech-1.5",
+        base_url=os.getenv("TTS_URL", "http://172.16.0.175:8089/v1"),
+        api_key="sk-nokey",
+    )
+    
+    # TTS mit StreamAdapter und Sentence Pacing wrappen
+    # text_pacing=True aktiviert SentenceStreamPacer für flüssigere Sprachausgabe
+    tts_with_pacing = StreamAdapter(
+        tts=base_tts,
+        text_pacing=True,  # Aktiviert Sentence-Buffering!
+    )
+    
+    logger.info("✅ TTS mit Sentence Pacing konfiguriert")
+
+    # ==========================================================================
+    # AGENT SESSION ERSTELLEN
+    # ==========================================================================
+
     session = AgentSession[UserData](
         userdata=UserData(),
         llm=llm,
-        tools=get_car_dealer_tools(),  # Car Dealer Tools registrieren
+        tools=get_car_dealer_tools(),
         conn_options=SessionConnectOptions(
             llm_conn_options=APIConnectOptions(max_retry=5, timeout=60.0),
             stt_conn_options=APIConnectOptions(max_retry=3, timeout=60.0),
@@ -218,13 +242,7 @@ async def entrypoint(ctx: JobContext):
             base_url="http://172.16.0.175:8787/v1",
             api_key="sk-nokey",
         ),
-        tts=openai.TTS(
-            model="fish-speech-1.5",
-            #voice="default",
-            base_url=os.getenv("TTS_URL", "http://172.16.0.175:8089/v1"),
-            api_key="sk-nokey",
-            speed=1.15,
-        ),
+        tts=tts_with_pacing,  # NEU: Gewrapptes TTS mit Sentence Pacing
         min_endpointing_delay=0.15,
         max_endpointing_delay=1.5,
     )
