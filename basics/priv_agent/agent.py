@@ -201,9 +201,9 @@ class EmailService:
             
             logger.info(f"📤 Verbinde mit {self.host}:{self.port}...")
             
-                with smtplib.SMTP_SSL(self.host, self.port, timeout=30) as server:
-                    server.login(self.user, self.password)
-                    server.sendmail(self.sender, self.recipient, msg.as_string())
+            with smtplib.SMTP_SSL(self.host, self.port, timeout=30) as server:
+                server.login(self.user, self.password)
+                server.sendmail(self.sender, self.recipient, msg.as_string())
             
             logger.info(f"✅ E-Mail gesendet an {self.recipient}")
             return True, f"E-Mail wurde an {self.recipient} gesendet."
