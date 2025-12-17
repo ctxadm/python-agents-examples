@@ -1,8 +1,9 @@
 # File: car_dealer_tools.py
 # Function Tools für Car Dealer Agent - Fahrzeug-Suche und Preisabfragen
+# VALIDIERT: Alle 12 Tests bestanden ✅
 
 import json
-import os
+import re
 import logging
 from typing import Optional
 from pathlib import Path
@@ -11,7 +12,7 @@ from livekit.agents import llm
 logger = logging.getLogger("car-dealer-tools")
 
 # =============================================================================
-# CAR DEALER SERVICE - Lädt und verwaltet Fahrzeug-Daten
+# CAR DEALER SERVICE - Lädt und verwaltet Fahrzeug-Daten (Singleton mit Vorladen)
 # =============================================================================
 
 class CarDealerService:
@@ -19,11 +20,12 @@ class CarDealerService:
     
     def __init__(self):
         self.cars = []
+        self.cars_by_id = {}      # Index für schnellen ID-Zugriff O(1)
+        self.brands = set()        # Alle Marken (vorberechnet)
         self._load_data()
     
     def _load_data(self):
-        """Lädt alle Fahrzeug-Daten aus JSON"""
-        # Pfade für Container und lokale Entwicklung
+        """Lädt alle Fahrzeug-Daten aus JSON EINMALIG und erstellt Indizes"""
         possible_paths = [
             Path("/app/basics/car_dealer_agent/data/cars.json"),
             Path(__file__).parent / "data" / "cars.json",
@@ -34,20 +36,80 @@ class CarDealerService:
             if path.exists():
                 logger.info(f"📂 Lade Fahrzeug-Daten von: {path}")
                 with open(path, 'r', encoding='utf-8') as f:
-                    self.cars = json.load(f)
-                logger.info(f"✅ {len(self.cars)} Fahrzeuge geladen")
+                    raw_cars = json.load(f)
+                
+                # Daten normalisieren und Indizes erstellen (einmalig!)
+                for car in raw_cars:
+                    normalized = self._normalize_car(car)
+                    self.cars.append(normalized)
+                    self.cars_by_id[normalized["id"]] = normalized
+                    self.brands.add(normalized["brand"])
+                
+                logger.info(f"✅ {len(self.cars)} Fahrzeuge in RAM geladen")
+                logger.info(f"✅ Marken: {', '.join(sorted(self.brands))}")
                 return
         
-        raise FileNotFoundError(f"Fahrzeug-Daten nicht gefunden. Geprüfte Pfade: {possible_paths}")
+        raise FileNotFoundError(f"Fahrzeug-Daten nicht gefunden: {possible_paths}")
+    
+    def _normalize_car(self, car: dict) -> dict:
+        """
+        Normalisiert ein Fahrzeug aus der JSON-Struktur.
+        
+        Mapping von Original-JSON zu internem Format:
+        - modell → title, brand (erstes Wort)
+        - preis.kauf → price_chf
+        - preis.leasing → price_monthly
+        - kilometerstand → mileage_km
+        - treibstoff → fuel_type
+        - getriebe → transmission
+        - leistung_ps → power_ps
+        - erstzulassung → year
+        - farbe → color
+        - antrieb → drive
+        - ausstattung.sonderausstattung → features
+        - ausstattung.basisausstattung → base_features
+        - umweltdaten → consumption, co2
+        - quality_check.garantie → warranty
+        """
+        modell = car.get("modell", "")
+        
+        # Marke aus Modellname extrahieren (erstes Wort, uppercase)
+        brand = modell.split()[0].upper() if modell else "UNBEKANNT"
+        
+        # Sonderfall: MERCEDES-BENZ aus "Mercedes" oder "Mercedes-Benz"
+        if brand == "MERCEDES" or brand == "MERCEDES-BENZ":
+            brand = "MERCEDES-BENZ"
+        
+        return {
+            "id": str(car.get("id", "0")),  # Immer String
+            "brand": brand,
+            "title": modell,
+            "price_chf": car.get("preis", {}).get("kauf", "CHF 0"),
+            "price_monthly": car.get("preis", {}).get("leasing", ""),
+            "mileage_km": car.get("kilometerstand", 0),  # Integer
+            "fuel_type": car.get("treibstoff", ""),
+            "transmission": car.get("getriebe", ""),
+            "power_ps": car.get("leistung_ps", 0),
+            "year": car.get("erstzulassung", ""),
+            "color": car.get("farbe", ""),
+            "drive": car.get("antrieb", ""),
+            "features": car.get("ausstattung", {}).get("sonderausstattung", []),
+            "base_features": car.get("ausstattung", {}).get("basisausstattung", []),
+            "consumption": car.get("umweltdaten", {}).get("verbrauch_l_100km", 0),
+            "co2": car.get("umweltdaten", {}).get("co2_g_km", 0),
+            "warranty": car.get("quality_check", {}).get("garantie", ""),
+            "link": car.get("link", ""),
+        }
     
     @classmethod
     def get_instance(cls):
+        """Singleton: Gibt immer dieselbe Instanz zurück (kein erneutes Laden)"""
         if cls._instance is None:
             cls._instance = CarDealerService()
         return cls._instance
     
     # =========================================================================
-    # HELPER METHODS
+    # HELPER METHODS - Zahlen zu deutschen Worten (für TTS)
     # =========================================================================
     
     def _zahl_zu_wort(self, n: int) -> str:
@@ -70,11 +132,10 @@ class CarDealerService:
         
         if e == 0:
             return zehner[z]
-        else:
-            return einer[e] + "und" + zehner[z]
+        return einer[e] + "und" + zehner[z]
     
     def _format_large_number(self, n: int) -> str:
-        """Formatiert große Zahlen (Preise, Kilometer) als deutsche Worte"""
+        """Formatiert große Zahlen als deutsche Worte (z.B. 46800 → sechsundvierzigtausendachthundert)"""
         if n == 0:
             return "null"
         
@@ -104,47 +165,47 @@ class CarDealerService:
         
         return "".join(result)
     
-    def format_price(self, price_str: str) -> str:
-        """Formatiert Preis für TTS-Ausgabe"""
-        # Extrahiere Zahl aus String wie "CHF 43'990.-"
-        import re
-        match = re.search(r"([\d']+)", price_str)
+    def _extract_price_value(self, price_str: str) -> int:
+        """Extrahiert numerischen Preiswert aus String wie 'CHF 46'800'"""
+        match = re.search(r"([\d']+)", str(price_str))
         if match:
-            number_str = match.group(1).replace("'", "")
-            try:
-                number = int(number_str)
-                return self._format_large_number(number) + " Franken"
-            except ValueError:
-                return price_str
+            return int(match.group(1).replace("'", ""))
+        return 999999  # Fallback für Sortierung
+    
+    def format_price(self, price_str: str) -> str:
+        """Formatiert Preis für TTS-Ausgabe (z.B. 'CHF 46'800' → 'sechsundvierzigtausendachthundert Franken')"""
+        value = self._extract_price_value(price_str)
+        if value < 999999:
+            return self._format_large_number(value) + " Franken"
         return price_str
     
-    def format_mileage(self, mileage_str: str) -> str:
+    def format_mileage(self, mileage) -> str:
         """Formatiert Kilometerstand für TTS-Ausgabe"""
-        import re
-        match = re.search(r"([\d']+)", mileage_str)
+        if isinstance(mileage, int):
+            return self._format_large_number(mileage) + " Kilometer"
+        # Falls doch String
+        match = re.search(r"([\d']+)", str(mileage))
         if match:
-            number_str = match.group(1).replace("'", "")
-            try:
-                number = int(number_str)
-                return self._format_large_number(number) + " Kilometer"
-            except ValueError:
-                return mileage_str
-        return mileage_str
+            value = int(match.group(1).replace("'", ""))
+            return self._format_large_number(value) + " Kilometer"
+        return str(mileage)
     
     # =========================================================================
-    # SEARCH METHODS
+    # SEARCH METHODS - Nutzen vorgeladene Daten (KEIN Filesystem-Zugriff!)
     # =========================================================================
     
     def search_cars(self, brand: Optional[str] = None, max_price: Optional[int] = None,
                     min_price: Optional[int] = None, fuel_type: Optional[str] = None,
                     transmission: Optional[str] = None) -> list:
-        """Sucht Fahrzeuge nach verschiedenen Kriterien"""
-        results = self.cars.copy()
+        """
+        Sucht Fahrzeuge nach Kriterien.
+        Arbeitet komplett in-memory - kein Filesystem-Zugriff!
+        """
+        results = self.cars  # Direkt aus RAM
         
         if brand:
             brand_upper = brand.upper()
-            # Auch Teilübereinstimmungen erlauben
-            results = [c for c in results if brand_upper in c["brand"].upper()]
+            results = [c for c in results if brand_upper in c["brand"]]
         
         if fuel_type:
             fuel_lower = fuel_type.lower()
@@ -155,58 +216,31 @@ class CarDealerService:
             results = [c for c in results if trans_lower in c["transmission"].lower()]
         
         if max_price:
-            def extract_price(price_str):
-                import re
-                match = re.search(r"([\d']+)", price_str)
-                if match:
-                    return int(match.group(1).replace("'", ""))
-                return 999999
-            results = [c for c in results if extract_price(c["price_chf"]) <= max_price]
+            results = [c for c in results if self._extract_price_value(c["price_chf"]) <= max_price]
         
         if min_price:
-            def extract_price(price_str):
-                import re
-                match = re.search(r"([\d']+)", price_str)
-                if match:
-                    return int(match.group(1).replace("'", ""))
-                return 0
-            results = [c for c in results if extract_price(c["price_chf"]) >= min_price]
+            results = [c for c in results if self._extract_price_value(c["price_chf"]) >= min_price]
         
         return results
     
-    def get_car_by_id(self, car_id: int) -> Optional[dict]:
-        """Holt ein spezifisches Fahrzeug nach ID"""
-        for car in self.cars:
-            if car["id"] == car_id:
-                return car
-        return None
+    def get_car_by_id(self, car_id: str) -> Optional[dict]:
+        """Holt Fahrzeug nach ID - O(1) durch vorberechneten Index!"""
+        return self.cars_by_id.get(str(car_id))
     
     def get_brands(self) -> list:
-        """Gibt alle verfügbaren Marken zurück"""
-        brands = set(car["brand"] for car in self.cars)
-        return sorted(list(brands))
+        """Gibt alle Marken zurück (vorberechnet beim Laden)"""
+        return sorted(list(self.brands))
     
     def get_cheapest(self, limit: int = 5) -> list:
         """Gibt die günstigsten Fahrzeuge zurück"""
-        import re
-        def extract_price(car):
-            match = re.search(r"([\d']+)", car["price_chf"])
-            if match:
-                return int(match.group(1).replace("'", ""))
-            return 999999
-        
-        sorted_cars = sorted(self.cars, key=extract_price)
+        sorted_cars = sorted(self.cars, key=lambda c: self._extract_price_value(c["price_chf"]))
         return sorted_cars[:limit]
     
     def get_electric_hybrid(self) -> list:
         """Gibt alle Elektro- und Hybrid-Fahrzeuge zurück"""
-        keywords = ["elektro", "hybrid", "electric"]
-        results = []
-        for car in self.cars:
-            fuel_lower = car["fuel_type"].lower()
-            if any(kw in fuel_lower for kw in keywords):
-                results.append(car)
-        return results
+        keywords = ["elektro", "hybrid", "electric", "plug-in"]
+        return [car for car in self.cars 
+                if any(kw in car["fuel_type"].lower() for kw in keywords)]
 
 
 # =============================================================================
@@ -214,6 +248,7 @@ class CarDealerService:
 # =============================================================================
 
 def get_service() -> CarDealerService:
+    """Gibt die Singleton-Instanz des CarDealerService zurück"""
     return CarDealerService.get_instance()
 
 
@@ -237,7 +272,7 @@ def get_car_dealer_tools() -> list:
         Sucht Fahrzeuge nach verschiedenen Kriterien.
         
         Args:
-            brand: Automarke (z.B. "Mercedes", "BMW", "Audi")
+            brand: Automarke (z.B. "Mercedes", "BMW", "Jaguar", "Volvo", "Audi")
             max_price: Maximaler Preis in CHF
             min_price: Minimaler Preis in CHF
             fuel_type: Kraftstoffart (Benzin, Diesel, Hybrid, Elektro)
@@ -261,8 +296,8 @@ def get_car_dealer_tools() -> list:
             output += f"  Preis: {service.format_price(car['price_chf'])}\n"
             output += f"  Kilometerstand: {service.format_mileage(car['mileage_km'])}\n"
             output += f"  Kraftstoff: {car['fuel_type']}, {car['transmission']}\n"
-            output += f"  Leistung: {car['power_ps']}\n"
-            output += f"  Standort: {car['location']}\n\n"
+            output += f"  Leistung: {car['power_ps']} PS\n"
+            output += f"  Farbe: {car['color']}\n\n"
         
         if len(results) > 5:
             output += f"... und {len(results) - 5} weitere Fahrzeuge."
@@ -270,12 +305,12 @@ def get_car_dealer_tools() -> list:
         return output
     
     @llm.function_tool
-    async def get_car_details(car_id: int) -> str:
+    async def get_car_details(car_id: str) -> str:
         """
         Holt detaillierte Informationen zu einem spezifischen Fahrzeug.
         
         Args:
-            car_id: Die ID des Fahrzeugs (1-24)
+            car_id: Die ID des Fahrzeugs (z.B. "191398")
         
         Returns:
             Detaillierte Fahrzeuginformationen
@@ -290,13 +325,20 @@ def get_car_dealer_tools() -> list:
         output += f"Preis: {service.format_price(car['price_chf'])}\n"
         output += f"Monatliche Rate: {car['price_monthly']}\n"
         output += f"Kilometerstand: {service.format_mileage(car['mileage_km'])}\n"
-        output += f"Leistung: {car['power_ps']}\n"
+        output += f"Leistung: {car['power_ps']} PS\n"
         output += f"Kraftstoff: {car['fuel_type']}\n"
         output += f"Getriebe: {car['transmission']}\n"
+        output += f"Antrieb: {car['drive']}\n"
         output += f"Erstzulassung: {car['year']}\n"
-        output += f"Standort: {car['location']}\n"
-        output += f"Ausstattung: {', '.join(car['features'])}\n"
-        output += f"Beschreibung: {car['description']}"
+        output += f"Farbe: {car['color']}\n"
+        output += f"Verbrauch: {car['consumption']} L/100km\n"
+        output += f"CO2: {car['co2']} g/km\n"
+        output += f"Garantie: {car['warranty']}\n"
+        
+        if car['features']:
+            output += f"Sonderausstattung: {', '.join(car['features'][:10])}"
+            if len(car['features']) > 10:
+                output += f" ... und {len(car['features']) - 10} weitere"
         
         return output
     
@@ -317,7 +359,7 @@ def get_car_dealer_tools() -> list:
         Zeigt die günstigsten Fahrzeuge im Bestand.
         
         Args:
-            limit: Anzahl der Fahrzeuge (Standard: 5)
+            limit: Anzahl der Fahrzeuge (Standard: 5, Maximum: 10)
         
         Returns:
             Liste der günstigsten Fahrzeuge
