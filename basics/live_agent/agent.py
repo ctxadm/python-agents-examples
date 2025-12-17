@@ -140,14 +140,21 @@ async def entrypoint(ctx: JobContext):
             min_silence_duration=0.5,
             min_speech_duration=0.2
         ),
-        stt=openai.STT(model="whisper-1", language="de"),
         tts=openai.TTS(
-            model="tts-1",
-            voice="alloy",
-            base_url="http://172.16.0.220:8888/v1",
-            api_key="sk-nokey",
-            speed=1.05,
+            model="kokoro",
+            voice="af_bella",
+            base_url="http://172.16.0.220:8880/v1",
+            api_key="not-needed",
+            speed=1.0,
         ),
+        stt=openai.STT(model="whisper-1", language="en"),
+        #tts=openai.TTS(
+        #    model="tts-1",
+        #    voice="alloy",
+        #    base_url="http://172.16.0.220:8888/v1",
+        #    api_key="sk-nokey",
+        #    speed=1.05,
+        #),
         min_endpointing_delay=0.25,
         max_endpointing_delay=2.5,
     )
