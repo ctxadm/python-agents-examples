@@ -33,7 +33,7 @@ NOTES_FILE = os.getenv("NOTES_FILE", "/data/notes.json")
 
 # E-Mail Konfiguration
 SMTP_HOST = os.getenv("SMTP_HOST", "asmtp.mail.hostpoint.ch")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
 SMTP_USER = os.getenv("SMTP_USER", "agent@fastlane-ai.ch")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "agent@fastlane-ai.ch")
