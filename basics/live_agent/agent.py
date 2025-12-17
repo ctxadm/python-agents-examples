@@ -143,7 +143,7 @@ async def entrypoint(ctx: JobContext):
         tts=openai.TTS(
             model="kokoro",
             voice="af_bella",
-            base_url="http://172.16.0.220:8880/v1",
+            base_url="http://172.16.0.175:8880/v1",
             api_key="not-needed",
             speed=1.0,
         ),
