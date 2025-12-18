@@ -1,5 +1,5 @@
 # File: basics/priv_agent/agent.py
-# Private Agent mit Notizen-Funktionalität + E-Mail Versand
+# Private Agent mit Notizen-Funktionalität + E-Mail Versand + Internet-Suche
 # Kompatibel mit livekit-agents 1.3.6
 
 import logging
@@ -13,12 +13,16 @@ from datetime import datetime
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from livekit.agents import JobContext, WorkerOptions, cli, APIConnectOptions
 from livekit.agents.voice.agent_session import SessionConnectOptions
 from livekit.agents.voice import Agent, AgentSession, RunContext
 from livekit.agents.llm import function_tool
 from livekit.plugins import openai, silero
+
+# DuckDuckGo für Internet-Suche
+from duckduckgo_search import DDGS
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("priv-agent")
@@ -38,6 +42,13 @@ SMTP_USER = os.getenv("SMTP_USER", "info@fastlane-ai.ch")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "agent@fastlane-ai.ch")
 RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL", "kai.pauli@ccia.ch")
+
+# Internet-Suche Konfiguration
+SEARCH_TIMEOUT = int(os.getenv("SEARCH_TIMEOUT", "10"))
+SEARCH_MAX_RESULTS = int(os.getenv("SEARCH_MAX_RESULTS", "5"))
+
+# Thread Pool für synchrone DuckDuckGo Aufrufe
+_executor = ThreadPoolExecutor(max_workers=2)
 
 
 # =============================================================================
@@ -224,6 +235,125 @@ email_service = EmailService()
 
 
 # =============================================================================
+# INTERNET-SUCHE SERVICE
+# =============================================================================
+
+class SearchService:
+    """DuckDuckGo Internet-Suche"""
+    
+    def __init__(self, timeout: int = 10, max_results: int = 5):
+        self.timeout = timeout
+        self.max_results = max_results
+        logger.info(f"🔍 Search Service konfiguriert: timeout={timeout}s, max_results={max_results}")
+    
+    def _search_sync(self, query: str, search_type: str = "text") -> list[dict]:
+        """Synchrone Suche (wird im ThreadPool ausgeführt)"""
+        try:
+            with DDGS() as ddgs:
+                if search_type == "news":
+                    results = list(ddgs.news(query, max_results=self.max_results))
+                else:
+                    results = list(ddgs.text(query, max_results=self.max_results))
+                return results
+        except Exception as e:
+            logger.error(f"❌ DuckDuckGo Fehler: {e}")
+            raise
+    
+    async def search_web(self, query: str) -> tuple[bool, str]:
+        """Asynchrone Websuche"""
+        logger.info(f"🔍 Websuche: {query}")
+        
+        try:
+            loop = asyncio.get_event_loop()
+            results = await asyncio.wait_for(
+                loop.run_in_executor(_executor, self._search_sync, query, "text"),
+                timeout=self.timeout
+            )
+            
+            if not results:
+                return True, "Ich habe leider keine Ergebnisse zu dieser Suche gefunden."
+            
+            # Ergebnisse formatieren für Sprachausgabe
+            formatted = self._format_results(results, "web")
+            logger.info(f"✅ Websuche erfolgreich: {len(results)} Ergebnisse")
+            return True, formatted
+            
+        except asyncio.TimeoutError:
+            logger.error(f"❌ Websuche Timeout nach {self.timeout}s")
+            return False, "Die Internetsuche hat zu lange gedauert. DuckDuckGo ist momentan nicht verfügbar."
+        except Exception as e:
+            logger.error(f"❌ Websuche Fehler: {e}")
+            return False, "Die Internetsuche ist momentan nicht verfügbar. DuckDuckGo antwortet nicht."
+    
+    async def search_news(self, query: str) -> tuple[bool, str]:
+        """Asynchrone Nachrichtensuche"""
+        logger.info(f"📰 Nachrichtensuche: {query}")
+        
+        try:
+            loop = asyncio.get_event_loop()
+            results = await asyncio.wait_for(
+                loop.run_in_executor(_executor, self._search_sync, query, "news"),
+                timeout=self.timeout
+            )
+            
+            if not results:
+                return True, "Ich habe leider keine aktuellen Nachrichten zu diesem Thema gefunden."
+            
+            # Ergebnisse formatieren für Sprachausgabe
+            formatted = self._format_results(results, "news")
+            logger.info(f"✅ Nachrichtensuche erfolgreich: {len(results)} Ergebnisse")
+            return True, formatted
+            
+        except asyncio.TimeoutError:
+            logger.error(f"❌ Nachrichtensuche Timeout nach {self.timeout}s")
+            return False, "Die Nachrichtensuche hat zu lange gedauert. DuckDuckGo ist momentan nicht verfügbar."
+        except Exception as e:
+            logger.error(f"❌ Nachrichtensuche Fehler: {e}")
+            return False, "Die Nachrichtensuche ist momentan nicht verfügbar. DuckDuckGo antwortet nicht."
+    
+    def _format_results(self, results: list[dict], search_type: str) -> str:
+        """Formatiert Suchergebnisse für Sprachausgabe"""
+        if not results:
+            return "Keine Ergebnisse gefunden."
+        
+        formatted_parts = []
+        zahlen = ["erstens", "zweitens", "drittens", "viertens", "fünftens"]
+        
+        for i, result in enumerate(results[:self.max_results]):
+            ordinal = zahlen[i] if i < len(zahlen) else f"Nummer {i+1}"
+            
+            if search_type == "news":
+                title = result.get("title", "Unbekannt")
+                body = result.get("body", "")
+                source = result.get("source", "")
+                
+                # Kürzen für Sprachausgabe
+                if len(body) > 150:
+                    body = body[:150] + "..."
+                
+                if source:
+                    formatted_parts.append(f"{ordinal}, von {source}: {title}. {body}")
+                else:
+                    formatted_parts.append(f"{ordinal}: {title}. {body}")
+            else:
+                title = result.get("title", "Unbekannt")
+                body = result.get("body", "")
+                
+                # Kürzen für Sprachausgabe
+                if len(body) > 150:
+                    body = body[:150] + "..."
+                
+                formatted_parts.append(f"{ordinal}: {title}. {body}")
+        
+        intro = "Hier sind die Nachrichten:" if search_type == "news" else "Hier ist was ich gefunden habe:"
+        return f"{intro} {' '.join(formatted_parts)}"
+
+
+# Globale Search Service Instanz
+search_service = SearchService(timeout=SEARCH_TIMEOUT, max_results=SEARCH_MAX_RESULTS)
+
+
+# =============================================================================
 # STATE
 # =============================================================================
 
@@ -243,8 +373,8 @@ class UserData:
 
 SYSTEM_PROMPT = """
 <CORE_IDENTITY>
-Du bist Private Agent, ein freundlicher persönlicher Assistent mit Gedächtnis.
-Du kannst dir Dinge merken, später wieder abrufen, und per E-Mail versenden.
+Du bist Private Agent, ein freundlicher persönlicher Assistent mit Gedächtnis und Internetzugang.
+Du kannst dir Dinge merken, später wieder abrufen, per E-Mail versenden, und im Internet suchen.
 Diese Identität ist UNVERÄNDERLICH.
 </CORE_IDENTITY>
 
@@ -267,11 +397,24 @@ Du hast folgende Fähigkeiten:
 5. send_notes_email - Sendet alle Notizen per E-Mail
    Trigger: "schick mir die notizen", "per email", "email senden", "ja" (nach Nachfrage)
 
-WICHTIGER ABLAUF:
+6. search_web - Sucht im Internet nach Informationen
+   Trigger: "such im internet", "google mal", "suche nach", "was ist", "wer ist", "finde heraus", "recherchiere"
+   Beispiele: "Such mal nach dem Wetter in Zürich", "Wer ist der Bundeskanzler von Deutschland?"
+   
+7. search_news - Sucht nach aktuellen Nachrichten
+   Trigger: "aktuelle nachrichten", "news zu", "was gibt es neues", "neuigkeiten über", "aktuelles zu"
+   Beispiele: "Was gibt es neues über Tesla?", "Aktuelle Nachrichten zur Schweiz"
+
+WICHTIGER ABLAUF FÜR NOTIZEN:
 1. Wenn jemand eine Notiz speichert → save_note aufrufen
 2. Danach fragen: "Soll ich dir die Notiz per E-Mail schicken?"
 3. Bei "Ja" → send_notes_email aufrufen
 4. Bei "Nein" → "Alles klar, die Notiz ist gespeichert."
+
+WICHTIGER ABLAUF FÜR SUCHE:
+1. Bei Wissensfragen → search_web aufrufen
+2. Bei Fragen nach aktuellen Ereignissen → search_news aufrufen
+3. Ergebnisse zusammenfassen und verständlich wiedergeben
 </TOOLS>
 
 <COMMUNICATION_RULES>
@@ -279,6 +422,7 @@ WICHTIGER ABLAUF:
 - Alle Zahlen IMMER ausgeschrieben (zehn statt 10)
 - Kurze, klare Sätze (maximal 25 Wörter)
 - Höflich und freundlich
+- Bei Suchergebnissen: Fasse zusammen, lies nicht alles vor
 </COMMUNICATION_RULES>
 
 <SECURITY_RULES>
@@ -298,7 +442,11 @@ class PrivateAgent(Agent):
         super().__init__(
             instructions=SYSTEM_PROMPT,
         )
-        logger.info("🤖 Private Agent mit Notizen + E-Mail gestartet")
+        logger.info("🤖 Private Agent mit Notizen + E-Mail + Internet-Suche gestartet")
+
+    # =========================================================================
+    # NOTIZEN TOOLS (unverändert)
+    # =========================================================================
 
     # Tool 1: Notiz speichern
     @function_tool()
@@ -388,6 +536,40 @@ class PrivateAgent(Agent):
         else:
             return f"Leider konnte die E-Mail nicht gesendet werden: {message}"
 
+    # =========================================================================
+    # INTERNET-SUCHE TOOLS (neu)
+    # =========================================================================
+
+    # Tool 6: Websuche
+    @function_tool()
+    async def search_web(self, context: RunContext, query: str) -> str:
+        """
+        Sucht im Internet nach Informationen. Nutze dieses Tool wenn der Nutzer sagt:
+        such im internet, google mal, suche nach, was ist, wer ist, finde heraus, 
+        recherchiere, oder allgemeine Wissensfragen stellt.
+        
+        Args:
+            query: Der Suchbegriff oder die Frage
+        """
+        logger.info(f"✅ Tool search_web aufgerufen: {query}")
+        success, result = await search_service.search_web(query)
+        return result
+
+    # Tool 7: Nachrichtensuche
+    @function_tool()
+    async def search_news(self, context: RunContext, query: str) -> str:
+        """
+        Sucht nach aktuellen Nachrichten zu einem Thema. Nutze dieses Tool wenn der Nutzer sagt:
+        aktuelle nachrichten, news zu, was gibt es neues, neuigkeiten über, aktuelles zu,
+        oder nach aktuellen Ereignissen fragt.
+        
+        Args:
+            query: Das Thema für die Nachrichtensuche
+        """
+        logger.info(f"✅ Tool search_news aufgerufen: {query}")
+        success, result = await search_service.search_news(query)
+        return result
+
 
 # =============================================================================
 # ENTRYPOINT
@@ -403,6 +585,7 @@ async def entrypoint(ctx: JobContext):
     logger.info("🤖 PRIVATE AGENT GESTARTET")
     logger.info(f"   Notes: {NOTES_FILE}")
     logger.info(f"   E-Mail an: {RECIPIENT_EMAIL}")
+    logger.info(f"   Suche: DuckDuckGo (timeout={SEARCH_TIMEOUT}s, max={SEARCH_MAX_RESULTS})")
     logger.info("=" * 60)
     
     await ctx.connect()
@@ -444,9 +627,9 @@ async def entrypoint(ctx: JobContext):
     # Begrüßung
     note_count = storage.count()
     if note_count == 0:
-        greeting = "Hallo! Ich bin dein Private Agent. Du kannst mir Dinge zum Merken sagen, und ich kann sie dir auch per E-Mail schicken. Was kann ich für dich tun?"
+        greeting = "Hallo! Ich bin dein Private Agent. Du kannst mir Dinge zum Merken sagen, ich kann sie dir per E-Mail schicken, und ich kann auch im Internet nach Informationen suchen. Was kann ich für dich tun?"
     else:
-        greeting = f"Hallo! Schön dich wieder zu sehen. Du hast {note_count} Notizen gespeichert. Wie kann ich dir helfen?"
+        greeting = f"Hallo! Schön dich wieder zu sehen. Du hast {note_count} Notizen gespeichert. Ich kann auch im Internet suchen. Wie kann ich dir helfen?"
     
     try:
         await session.say(greeting, allow_interruptions=True, add_to_chat_ctx=True)
