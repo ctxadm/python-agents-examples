@@ -234,7 +234,7 @@ class ERPNextService:
     async def send_invoice_email(self, invoice_name: str, recipient: str) -> tuple[bool, str]:
         ok, data = await self._request(
             "POST",
-            "/api/method/frappe.core.doctype.communication.email.email.make",
+            "/api/method/frappe.core.doctype.communication.email.make",
             json={
                 "doctype": "Sales Invoice",
                 "name": invoice_name,
