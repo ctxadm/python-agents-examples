@@ -628,9 +628,9 @@ async def entrypoint(ctx: JobContext):
     # Begrüßung
     note_count = storage.count()
     if note_count == 0:
-        greeting = "Hallo! Ich bin dein Private Agent. Du kannst mir Dinge zum Merken sagen, ich kann sie dir per E-Mail schicken, und ich kann auch im Internet nach Informationen suchen. Was kann ich für dich tun?"
+        greeting = "Hallo! Ich bin dein privater Assistent. Wie darf ich dir helfen?"
     else:
-        greeting = f"Hallo! Schön dich wieder zu sehen. Du hast {note_count} Notizen gespeichert. Ich kann auch im Internet suchen. Wie kann ich dir helfen?"
+        greeting = f"Hallo! Schön dich wieder zu sehen. Du hast {note_count} Notizen gespeichert."
     
     try:
         await session.say(greeting, allow_interruptions=True, add_to_chat_ctx=True)
