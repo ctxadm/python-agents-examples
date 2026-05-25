@@ -23,7 +23,7 @@ from livekit.plugins import openai, silero
 
 from duckduckgo_search import DDGS
 
-from erpnext_service import ERPNextService
+from basics.priv_agent.erpnext_service import ERPNextServicee
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("priv-agent")
