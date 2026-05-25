@@ -66,6 +66,8 @@ class ERPNextService:
                 logger.error(f"❌ ERPNext {method} {path} → {r.status_code}: {r.text[:300]}")
                 if r.status_code in (401, 403):
                     return False, "Zugriff auf ERPNext ist nicht möglich."
+                if r.status_code == 404:
+                    return False, "Das angeforderte Dokument existiert nicht in ERPNext."
                 return False, f"ERPNext meldete einen Fehler ({r.status_code})."
             return True, r.json()
         except httpx.TimeoutException:
@@ -288,6 +290,14 @@ class ERPNextService:
     async def submit_invoice(self, invoice_name: str) -> tuple[bool, str]:
         ok, data = await self._request("GET", f"/api/resource/Sales Invoice/{invoice_name}")
         if not ok:
+            # Spezifische Meldung wenn die Invoice gar nicht existiert
+            if isinstance(data, str) and "existiert nicht" in data:
+                return False, (
+                    f"Rechnung '{invoice_name}' existiert nicht in ERPNext. "
+                    f"Wahrscheinlich wurde kein Rechnungsentwurf erstellt. "
+                    f"Rufe zuerst erp_create_invoice_draft auf und verwende den dort "
+                    f"zurückgegebenen Namen."
+                )
             return False, data
         doc = data.get("data", {})
         ok2, result = await self._request("POST", "/api/method/frappe.client.submit",
