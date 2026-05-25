@@ -9,6 +9,7 @@ Bietet:
   - get_open_invoices
 """
 import os
+import re
 import json
 import logging
 from typing import Optional
@@ -78,8 +79,13 @@ class ERPNextService:
     # ========================================================================
 
     async def search_customer(self, query: str) -> tuple[bool, list[dict] | str]:
+        # Tokens ab 3 Zeichen, Sonderzeichen als Trenner → tolerantes Fuzzy-Match
+        tokens = [t for t in re.split(r"[\s\-_.]+", query) if len(t) >= 3]
+        if not tokens:
+            tokens = [query]
+        or_filters = [["customer_name", "like", f"%{t}%"] for t in tokens]
         ok, data = await self._request("GET", "/api/resource/Customer", params={
-            "filters": json.dumps([["customer_name", "like", f"%{query}%"]]),
+            "or_filters": json.dumps(or_filters),
             "fields": json.dumps(["name", "customer_name", "customer_group"]),
             "limit_page_length": 10,
         })
@@ -122,7 +128,7 @@ class ERPNextService:
         phone: Optional[str] = None,
         customer_group: str = "Commercial",
     ) -> tuple[bool, str]:
-        # Duplikat-Check
+        # Duplikat-Check (Exact-Match auf customer_name)
         ok, results = await self.search_customer(customer_name)
         if ok and isinstance(results, list):
             for r in results:
