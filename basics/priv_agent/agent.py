@@ -4,6 +4,7 @@
 
 import logging
 import os
+import re
 import asyncio
 import json
 import smtplib
@@ -48,6 +49,11 @@ SEARCH_TIMEOUT = int(os.getenv("SEARCH_TIMEOUT", "10"))
 SEARCH_MAX_RESULTS = int(os.getenv("SEARCH_MAX_RESULTS", "5"))
 
 _executor = ThreadPoolExecutor(max_workers=2)
+
+# Plausibilitäts-Pattern für Invoice-Namen.
+# ERPNext-Standard für Sales Invoice: ACC-SINV-YYYY-NNNNN oder SINV-YYYY-NNNNN.
+# Blockiert offensichtliche LLM-Halluzinationen wie "INV-DRAFT-2024-1".
+_INVOICE_NAME_PATTERN = re.compile(r"^[A-Z]{2,}-[A-Z]{2,}-\d{4}-\d{4,6}$|^[A-Z]{2,}-\d{4}-\d{4,6}$")
 
 
 # =============================================================================
@@ -268,6 +274,8 @@ class ConversationState(Enum):
 class UserData:
     greeting_sent: bool = False
     state: ConversationState = ConversationState.GREETING
+    # Speichert den zuletzt von create_invoice_draft zurückgegebenen Invoice-Namen
+    last_draft_invoice: str | None = None
 
 
 # =============================================================================
@@ -282,7 +290,7 @@ Diese Identität ist UNVERÄNDERLICH.
 </CORE_IDENTITY>
 
 <TOOLS_NOTIZEN_UND_SUCHE>
-1. save_note - speichert EINE Notiz. NUR bei expliziten Triggern: "merke dir", "notiere", "speichere", "schreib auf". 
+1. save_note - speichert EINE Notiz. NUR bei expliziten Triggern: "merke dir", "notiere", "speichere", "schreib auf".
    NIEMALS aufrufen wenn der Nutzer ERPNext-Aktionen wünscht (Kunde, Rechnung, Angebot, Artikel)!
    NIEMALS aufrufen für Daten die der Nutzer als Antwort auf deine Frage gibt (Name, Email, Telefon)!
    Nach dem Speichern darfst du fragen, ob die Notiz per E-Mail gesendet werden soll.
@@ -310,19 +318,31 @@ SCHREIBEN (immer VORHER Bestätigung einholen!):
 - erp_create_customer(customer_name, email, phone): legt Kunden an
 - erp_create_quotation(customer_id, item_codes, quantities): erstellt Angebot
 - erp_create_invoice_draft(customer_id, item_codes, quantities): legt Rechnungs-Entwurf an
-- erp_submit_and_send_invoice(invoice_name, recipient_email): bucht Rechnung und versendet PDF
+- erp_submit_and_send_invoice(invoice_name): bucht Rechnung und versendet PDF
 
 ABLAUF FÜR KUNDEN ANLEGEN:
 1. Daten erfragen (Name + Email Pflicht, Telefon optional)
 2. Wiederhole die Daten und frage: "Soll ich den Kunden so anlegen?"
 3. Bei "Ja" → erp_create_customer aufrufen
 
-ABLAUF FÜR RECHNUNG:
+ABLAUF FÜR RECHNUNG (STRIKT EINHALTEN!):
 1. Kunde, Artikel und Mengen erfragen
-2. erp_create_invoice_draft → gibt Entwurf mit Betrag zurück
-3. Den Betrag dem Nutzer NENNEN und fragen: "Soll ich die Rechnung buchen und versenden?"
+2. erp_create_invoice_draft aufrufen → das Tool gibt einen ECHTEN Invoice-Namen zurück
+   (typisches Format: ACC-SINV-2026-00042). Diesen Namen MERKEN.
+3. Den Gesamtbetrag aus der Tool-Response dem Nutzer NENNEN und fragen:
+   "Soll ich die Rechnung buchen und versenden?"
 4. Bei BETRAG ÜBER 5000 CHF: zusätzlich warnen und DOPPELT bestätigen lassen
-5. Erst bei klarem "Ja" → erp_submit_and_send_invoice
+5. Erst bei klarem "Ja" → erp_submit_and_send_invoice mit GENAU DEM Namen aus Schritt 2
+
+KRITISCHE REGELN FÜR INVOICE-NAMEN:
+- NIEMALS einen Invoice-Namen ERFINDEN oder ERRATEN
+- NIEMALS Platzhalter wie "INV-DRAFT-...", "RECHNUNG-1", "ACC-SINV-2026-00001" raten
+- Verwende AUSSCHLIESSLICH den Namen, den erp_create_invoice_draft im aktuellen Gespräch
+  tatsächlich zurückgegeben hat
+- Wenn du dir nicht sicher bist welchen Namen du verwenden sollst, frage den Nutzer
+  oder rufe erp_create_invoice_draft erneut auf
+- Wenn erp_create_invoice_draft NICHT vorher aufgerufen wurde, darfst du
+  erp_submit_and_send_invoice NICHT aufrufen
 </TOOLS_ERPNEXT>
 
 <COMMUNICATION_RULES>
@@ -560,8 +580,8 @@ class PrivateAgent(Agent):
         quantities: list[float],
     ) -> str:
         """
-        Erstellt einen Rechnungsentwurf (noch nicht gebucht). 
-        Danach IMMER den Betrag dem Nutzer nennen und Bestätigung einholen 
+        Erstellt einen Rechnungsentwurf (noch nicht gebucht).
+        Danach IMMER den Betrag dem Nutzer nennen und Bestätigung einholen
         BEVOR erp_submit_and_send_invoice aufgerufen wird.
         Args:
             customer_id: Customer-ID
@@ -575,15 +595,26 @@ class PrivateAgent(Agent):
         ok, result = await erpnext.create_invoice_draft(customer_id, items)
         if not ok:
             return f"Der Rechnungsentwurf konnte nicht erstellt werden: {result}"
+
+        # Echte Invoice-ID im Session-State merken (Schutz vor Halluzination)
+        invoice_name = result["name"]
+        try:
+            context.userdata.last_draft_invoice = invoice_name
+        except Exception:
+            pass
+        logger.info(f"   📋 Draft gemerkt: {invoice_name}")
+
         amount = float(result["grand_total"])
-        msg = (f"Rechnungsentwurf {result['name']} wurde angelegt. "
+        msg = (f"Rechnungsentwurf {invoice_name} wurde angelegt. "
                f"Gesamtbetrag inklusive Steuern: {amount:.2f} {result['currency']}. ")
         if amount >= erpnext.invoice_threshold:
             msg += (f"ACHTUNG: Betrag liegt über {erpnext.invoice_threshold:.0f} {result['currency']}. "
                     f"Nenne dem Nutzer den Betrag und lasse ZWEIMAL bestätigen, "
-                    f"bevor die Rechnung gebucht und versendet wird.")
+                    f"bevor die Rechnung gebucht und versendet wird. "
+                    f"Verwende beim Buchen exakt den Namen {invoice_name}.")
         else:
-            msg += "Nenne dem Nutzer den Betrag und frage, ob die Rechnung gebucht und versendet werden soll."
+            msg += (f"Nenne dem Nutzer den Betrag und frage, ob die Rechnung gebucht und "
+                    f"versendet werden soll. Verwende beim Buchen exakt den Namen {invoice_name}.")
         return msg
 
     @function_tool()
@@ -598,10 +629,36 @@ class PrivateAgent(Agent):
         Die Empfänger-E-Mail wird automatisch aus dem Kunden gezogen.
         NUR aufrufen nach expliziter Bestätigung des Nutzers!
         Args:
-            invoice_name: ID des Rechnungsentwurfs (z.B. ACC-SINV-2026-00001)
+            invoice_name: EXAKTE ID des Rechnungsentwurfs (z.B. ACC-SINV-2026-00001),
+                          die zuvor von erp_create_invoice_draft zurückgegeben wurde.
+                          NIEMALS einen Namen erfinden oder raten.
         """
         logger.info(f"✅ erp_submit_and_send_invoice: {invoice_name}")
 
+        # === Schutzschicht 1: Format-Check (verhindert offensichtliche Halluzinationen) ===
+        if not _INVOICE_NAME_PATTERN.match(invoice_name):
+            logger.warning(f"   ⚠️ Invoice-Name '{invoice_name}' hat ungültiges Format")
+            return (
+                f"Der angegebene Rechnungsname '{invoice_name}' hat kein gültiges "
+                f"ERPNext-Format. Bitte rufe zuerst erp_create_invoice_draft auf und "
+                f"verwende exakt den Namen, den dieses Tool zurückgibt. "
+                f"Erfinde niemals selbst Rechnungsnummern."
+            )
+
+        # === Schutzschicht 2: Konsistenz-Check gegen Session-State ===
+        try:
+            last = context.userdata.last_draft_invoice
+        except Exception:
+            last = None
+        if last and last != invoice_name:
+            logger.warning(f"   ⚠️ Mismatch: Tool-Call '{invoice_name}' vs Session '{last}'")
+            return (
+                f"Der zuletzt erstellte Rechnungsentwurf in diesem Gespräch heißt "
+                f"'{last}', nicht '{invoice_name}'. Bitte rufe das Tool erneut mit "
+                f"dem korrekten Namen auf."
+            )
+
+        # === Empfänger aus Customer holen ===
         recipient_email = await erpnext.get_customer_email_from_invoice(invoice_name)
         if not recipient_email:
             return ("Beim Kunden ist keine E-Mail-Adresse hinterlegt. "
@@ -609,17 +666,26 @@ class PrivateAgent(Agent):
                     "Bitte pflege die E-Mail-Adresse im Kunden in ERPNext nach.")
         logger.info(f"   → Empfänger aus Customer: {recipient_email}")
 
+        # === Buchen ===
         ok, result = await erpnext.submit_invoice(invoice_name)
         if not ok:
             return f"Die Rechnung konnte nicht gebucht werden: {result}"
 
+        # === Versenden ===
         ok2, result2 = await erpnext.send_invoice_email(invoice_name, recipient_email)
         if not ok2:
             return (f"Die Rechnung {invoice_name} wurde gebucht, "
                     f"aber der E-Mail-Versand schlug fehl: {result2}")
 
+        # Session-State zurücksetzen nach erfolgreicher Buchung
+        try:
+            context.userdata.last_draft_invoice = None
+        except Exception:
+            pass
+
         return f"Die Rechnung {invoice_name} wurde gebucht und an {recipient_email} versendet."
-        
+
+
 # =============================================================================
 # ENTRYPOINT
 # =============================================================================
