@@ -3,9 +3,10 @@ ERPNext Service für LiveKit Agent (async, analog EmailService).
 
 Bietet:
   - search_customer / get_customer / create_customer
+  - get_customer_email_from_invoice
   - find_item
   - create_quotation
-  - create_invoice_draft / submit_and_send_invoice
+  - create_invoice_draft / submit_invoice / send_invoice_email
   - get_open_invoices
 """
 import os
@@ -120,6 +121,19 @@ class ERPNextService:
                 a = addr.get("data", {})
                 details["address"] = f"{a.get('address_line1', '')}, {a.get('pincode', '')} {a.get('city', '')}".strip(", ")
         return True, details
+
+    async def get_customer_email_from_invoice(self, invoice_name: str) -> Optional[str]:
+        """Holt die primäre Email des Customers, der zu einer Invoice gehört."""
+        ok, data = await self._request("GET", f"/api/resource/Sales Invoice/{invoice_name}")
+        if not ok:
+            return None
+        customer_id = data.get("data", {}).get("customer") if isinstance(data, dict) else None
+        if not customer_id:
+            return None
+        ok2, details = await self.get_customer(customer_id)
+        if not ok2 or not isinstance(details, dict):
+            return None
+        return details.get("email")
 
     async def create_customer(
         self,
