@@ -95,6 +95,12 @@ class ERPNextService:
         return True, data.get("data", [])
 
     async def get_customer(self, name: str) -> tuple[bool, dict | str]:
+        """
+        Liest Customer-Details inkl. Email/Phone mit 3-stufigem Fallback:
+          1. Customer.email_id (Direktfeld)
+          2. Customer.customer_primary_contact → Contact.email_ids[0]
+          3. Beliebiger via Dynamic Link verknüpfter Contact mit email_id
+        """
         ok, data = await self._request("GET", f"/api/resource/Customer/{name}")
         if not ok:
             return False, data
@@ -107,19 +113,59 @@ class ERPNextService:
             "phone": None,
             "address": None,
         }
+
+        # --- Stufe 1: Direktes email_id-Feld am Customer ---
+        if cust.get("email_id"):
+            details["email"] = cust["email_id"]
+            logger.info(f"   📧 Email aus Customer.email_id: {details['email']}")
+
+        # --- Stufe 2: customer_primary_contact (klassischer Weg) ---
         if cust.get("customer_primary_contact"):
-            ok2, contact = await self._request("GET", f"/api/resource/Contact/{cust['customer_primary_contact']}")
+            ok2, contact = await self._request(
+                "GET", f"/api/resource/Contact/{cust['customer_primary_contact']}"
+            )
             if ok2:
                 c = contact.get("data", {})
-                if c.get("email_ids"):
+                if not details["email"] and c.get("email_ids"):
                     details["email"] = c["email_ids"][0].get("email_id")
+                    logger.info(f"   📧 Email aus Primary Contact: {details['email']}")
                 if c.get("phone_nos"):
                     details["phone"] = c["phone_nos"][0].get("phone")
-        if cust.get("customer_primary_address"):
-            ok3, addr = await self._request("GET", f"/api/resource/Address/{cust['customer_primary_address']}")
+
+        # --- Stufe 3: Fallback – Contacts via Dynamic Link suchen ---
+        if not details["email"] or not details["phone"]:
+            ok3, contacts_data = await self._request(
+                "GET", "/api/resource/Contact",
+                params={
+                    "filters": json.dumps([
+                        ["Dynamic Link", "link_doctype", "=", "Customer"],
+                        ["Dynamic Link", "link_name", "=", cust.get("name")],
+                    ]),
+                    "fields": json.dumps(["name", "email_id", "phone"]),
+                    "limit_page_length": 10,
+                },
+            )
             if ok3:
+                for contact in contacts_data.get("data", []):
+                    if not details["email"] and contact.get("email_id"):
+                        details["email"] = contact["email_id"]
+                        logger.info(
+                            f"   📧 Email via Dynamic-Link-Fallback aus '{contact['name']}': {details['email']}"
+                        )
+                    if not details["phone"] and contact.get("phone"):
+                        details["phone"] = contact["phone"]
+                    if details["email"] and details["phone"]:
+                        break
+
+        # --- Adresse ---
+        if cust.get("customer_primary_address"):
+            ok4, addr = await self._request(
+                "GET", f"/api/resource/Address/{cust['customer_primary_address']}"
+            )
+            if ok4:
                 a = addr.get("data", {})
                 details["address"] = f"{a.get('address_line1', '')}, {a.get('pincode', '')} {a.get('city', '')}".strip(", ")
+
         return True, details
 
     async def get_customer_email_from_invoice(self, invoice_name: str) -> Optional[str]:
