@@ -591,16 +591,23 @@ class PrivateAgent(Agent):
         self,
         context: RunContext,
         invoice_name: str,
-        recipient_email: str,
     ) -> str:
         """
-        Bucht den Rechnungsentwurf verbindlich und versendet ihn als PDF per E-Mail.
+        Bucht den Rechnungsentwurf verbindlich und versendet ihn als PDF
+        per E-Mail an die im Kunden hinterlegte primäre E-Mail-Adresse.
+        Die Empfänger-E-Mail wird automatisch aus dem Kunden gezogen.
         NUR aufrufen nach expliziter Bestätigung des Nutzers!
         Args:
-            invoice_name: ID des Rechnungsentwurfs (z.B. ACC-SINV-2025-00001)
-            recipient_email: Empfänger-E-Mail-Adresse
+            invoice_name: ID des Rechnungsentwurfs (z.B. ACC-SINV-2026-00001)
         """
-        logger.info(f"✅ erp_submit_and_send_invoice: {invoice_name} → {recipient_email}")
+        logger.info(f"✅ erp_submit_and_send_invoice: {invoice_name}")
+
+        recipient_email = await erpnext.get_customer_email_from_invoice(invoice_name)
+        if not recipient_email:
+            return ("Beim Kunden ist keine E-Mail-Adresse hinterlegt. "
+                    "Die Rechnung wurde NICHT gebucht. "
+                    "Bitte pflege die E-Mail-Adresse im Kunden in ERPNext nach.")
+        logger.info(f"   → Empfänger aus Customer: {recipient_email}")
 
         ok, result = await erpnext.submit_invoice(invoice_name)
         if not ok:
@@ -611,9 +618,8 @@ class PrivateAgent(Agent):
             return (f"Die Rechnung {invoice_name} wurde gebucht, "
                     f"aber der E-Mail-Versand schlug fehl: {result2}")
 
-        return (f"Die Rechnung {invoice_name} wurde gebucht und per E-Mail an {recipient_email} versendet.")
-
-
+        return f"Die Rechnung {invoice_name} wurde gebucht und an {recipient_email} versendet."
+        
 # =============================================================================
 # ENTRYPOINT
 # =============================================================================
