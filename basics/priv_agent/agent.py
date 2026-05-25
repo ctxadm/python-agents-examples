@@ -654,10 +654,10 @@ async def entrypoint(ctx: JobContext):
         stt=openai.STT(model="whisper-1", language="de"),
         tts=openai.TTS(
             model="tts-1",
-            voice="alloy",
+            voice=os.getenv("TTS_VOICE", "martin"),  # ← deutsche Stimme
             base_url=os.getenv("TTS_URL", "http://172.16.0.220:8881/v1"),
             api_key="sk-nokey",
-            speed=1.05,
+            speed=float(os.getenv("TTS_SPEED", "1.0")),  # ← 1.0 für klarere Aussprache
             response_format="wav",
         ),
         min_endpointing_delay=0.25,
