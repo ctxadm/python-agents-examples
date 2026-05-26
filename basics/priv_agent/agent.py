@@ -552,38 +552,38 @@ class PrivateAgent(Agent):
             f"Frage den Nutzer welcher gemeint ist."
         )
 
-        @function_tool()
-        async def erp_get_customer_details(self, context: RunContext, customer_id: str) -> str:
-            """
-            Holt Details eines Kunden (Email, Telefon, Adresse).
-            Liefert eine kurze Voice-Einleitung + strukturierten Daten-Block (technisches Format).
-            Args:
-                customer_id: Customer-ID aus ERPNext
-            """
-            logger.info(f"✅ erp_get_customer_details: {customer_id}")
-            ok, result = await erpnext.get_customer(customer_id)
-            if not ok:
-                return result
+    @function_tool()
+    async def erp_get_customer_details(self, context: RunContext, customer_id: str) -> str:
+        """
+        Holt Details eines Kunden (Email, Telefon, Adresse).
+        Liefert eine kurze Voice-Einleitung + strukturierten Daten-Block (technisches Format).
+        Args:
+            customer_id: Customer-ID aus ERPNext
+        """
+        logger.info(f"✅ erp_get_customer_details: {customer_id}")
+        ok, result = await erpnext.get_customer(customer_id)
+        if not ok:
+            return result
 
-            customer_name = result.get("customer_name") or customer_id
-            email = result.get("email") or ""
-            phone = result.get("phone") or ""
-            address_line1 = result.get("address_line1") or ""
-            pincode = result.get("pincode") or ""
-            city = result.get("city") or ""
+        customer_name = result.get("customer_name") or customer_id
+        email = result.get("email") or ""
+        phone = result.get("phone") or ""
+        address_line1 = result.get("address_line1") or ""
+        pincode = result.get("pincode") or ""
+        city = result.get("city") or ""
 
-            # Daten-Block (technisches Format)
-            data_lines = [f"Kunde: {customer_name}"]
-            if phone:
-                data_lines.append(f"Telefon: {format_phone_for_tts_spaced(phone)}")
-            if email:
-                data_lines.append(f"E-Mail: {email}")
-            if address_line1:
-                data_lines.append(f"Strasse: {address_line1}")
-            if pincode or city:
-                data_lines.append(f"Postleitzahl: {pincode} {city}".strip())
+        # Daten-Block (technisches Format)
+        data_lines = [f"Kunde: {customer_name}"]
+        if phone:
+            data_lines.append(f"Telefon: {format_phone_for_tts_spaced(phone)}")
+        if email:
+            data_lines.append(f"E-Mail: {email}")
+        if address_line1:
+            data_lines.append(f"Strasse: {address_line1}")
+        if pincode or city:
+            data_lines.append(f"Postleitzahl: {pincode} {city}".strip())
 
-            return f"Hier sind die Details für {customer_name}.\n\n" + "\n".join(data_lines)
+        return f"Hier sind die Details für {customer_name}.\n\n" + "\n".join(data_lines)
 
     @function_tool()
     async def erp_find_item(self, context: RunContext, query: str) -> str:
