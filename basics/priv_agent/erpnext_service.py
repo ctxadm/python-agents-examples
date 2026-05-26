@@ -37,6 +37,9 @@ _COMPANY_SUFFIXES = (
 # Mindest-Ähnlichkeits-Score, ab dem ein Fuzzy-Treffer als "exakt" gilt
 _HIGH_CONFIDENCE_THRESHOLD = 0.85
 
+# Minimum-Ähnlichkeit, ab der ein Customer überhaupt in die Fuzzy-Liste kommt
+_MIN_FUZZY_SCORE = 0.4
+
 
 def _normalize_customer_name(name: str) -> str:
     """Lowercase + gängigen Firmensuffix abschneiden für tolerantes Matching."""
@@ -103,9 +106,10 @@ class ERPNextService:
 
     async def search_customer(self, query: str) -> tuple[bool, dict | str]:
         """
-        Suche Customers mit dreistufiger Strategie:
+        Suche Customers mit mehrstufiger Strategie:
           1. Exact (case-insensitive + Firmensuffix-tolerant)
-          2. Substring-Präfix-Suche (4-Zeichen-Tokens, breite Vorauswahl)
+          2. Substring-Präfix-Suche (4-Zeichen-Tokens, schnell)
+          2b. Fetch-All Fallback wenn Stufe 2 leer (typo-tolerant an jeder Position)
           3. Re-Ranking via difflib.SequenceMatcher;
              Top-1 mit Score >= 0.85 wird als exact_match gewertet.
 
@@ -120,8 +124,6 @@ class ERPNextService:
         query_norm = _normalize_customer_name(query_clean)
 
         # === Stufe 1: Case-insensitive Substring + Suffix-tolerantes Match ===
-        # MariaDB "like" ist mit utf8mb4_general_ci standardmässig case-insensitive.
-        # Wir holen Kandidaten via %query% und prüfen dann normalisiert auf Gleichheit.
         ok, data = await self._request("GET", "/api/resource/Customer", params={
             "filters": json.dumps([["customer_name", "like", f"%{query_clean}%"]]),
             "fields": json.dumps(["name", "customer_name", "customer_group"]),
@@ -139,12 +141,11 @@ class ERPNextService:
             logger.info(f"   🎯 Exact-Match (case/suffix-tolerant): {exact_matches[0]['customer_name']}")
             return True, {"exact_match": True, "results": exact_matches}
 
-        # === Stufe 2: Substring-Präfix-Suche (typo-tolerant) ===
+        # === Stufe 2: Substring-Präfix-Suche (typo-tolerant am Wortende) ===
         tokens = [t for t in re.split(r"[\s\-_.]+", query_clean) if len(t) >= 3]
         if not tokens:
             tokens = [query_clean]
-        # Kürze Tokens auf 4 Zeichen für Toleranz gegen Tippfehler am Wortende
-        # (z.B. "Flaggprint" → "Flag" matched "flagprint ag")
+        # Kürze Tokens auf 4 Zeichen: "Flaggprint" → "Flag" matched "flagprint ag"
         short_tokens = [t[:4] if len(t) > 4 else t for t in tokens]
         or_filters = [["customer_name", "like", f"%{t}%"] for t in short_tokens]
 
@@ -156,6 +157,20 @@ class ERPNextService:
         if not ok:
             return False, data
         raw_results = data.get("data", [])
+
+        # === Stufe 2b: Fetch-All Fallback (typo-tolerant an JEDER Position) ===
+        # Greift wenn Stufe 2 leer ist (z.B. "Flakprint" → kein %Flak% in der DB).
+        # Bei <500 Customers performant.
+        if not raw_results:
+            logger.info(f"   ⚠️ Stufe 2 leer für '{query_clean}' – Fallback Fetch-All")
+            ok, data = await self._request("GET", "/api/resource/Customer", params={
+                "fields": json.dumps(["name", "customer_name", "customer_group"]),
+                "limit_page_length": 0,  # 0 = alle
+            })
+            if not ok:
+                return False, data
+            raw_results = data.get("data", [])
+            logger.info(f"   📥 Fetch-All: {len(raw_results)} Customers geladen")
 
         if not raw_results:
             logger.info(f"   ❌ Kein Treffer für '{query_clean}'")
@@ -180,13 +195,21 @@ class ERPNextService:
             f"(Query: '{query_clean}')"
         )
 
+        # Score zu schlecht: gar kein sinnvoller Treffer
+        if top_score < _MIN_FUZZY_SCORE:
+            logger.info(f"   ❌ Top-Score {top_score:.2f} unter Schwelle {_MIN_FUZZY_SCORE}")
+            return True, {"exact_match": False, "results": []}
+
         # High-Confidence: Top-1 wird als exakter Treffer behandelt
         if top_score >= _HIGH_CONFIDENCE_THRESHOLD:
             logger.info(f"   🎯 High-Confidence-Match: {top_customer['customer_name']}")
             return True, {"exact_match": True, "results": [top_customer]}
 
-        # Sonst: Top 5 als Fuzzy-Liste, nach Score sortiert
-        return True, {"exact_match": False, "results": [c for _, c in scored[:5]]}
+        # Sonst: Top 5 mit Score über Minimum-Schwelle
+        return True, {
+            "exact_match": False,
+            "results": [c for s, c in scored[:5] if s >= _MIN_FUZZY_SCORE],
+        }
 
     async def get_customer(self, name: str) -> tuple[bool, dict | str]:
         """
