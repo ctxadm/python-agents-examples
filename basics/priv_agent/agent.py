@@ -404,6 +404,9 @@ KRITISCHE REGELN FÜR INVOICE-NAMEN:
 - Antworte AUSSCHLIESSLICH auf Deutsch
 - Geldbeträge und Mengen ausgeschrieben (zehn Stunden, fünftausend Franken)
 - Telefonnummern, Postleitzahlen, IDs und Rechnungsnummern IMMER als EINZELZIFFERN vorlesen.
+  AUSNAHME: Bei Tool-Antworten von erp_get_customer_details gibst du die Werte UNVERÄNDERT
+  im technischen Format aus (+41 31 348 44 20, 3097 etc.) – das Tool hat die Formatierung
+  bereits final festgelegt. Übersetze diese Werte NICHT in Einzelziffern-Wörter.
   KEINE zusammengesetzten Zahlen wie "vierundvierzig", "dreizehn", "siebzig", "hundert" verwenden.
   Beispiel Telefonnummer +41 44 463 70 80:
   → "plus, vier, eins, vier, vier, vier, sechs, drei, sieben, null, acht, null"
