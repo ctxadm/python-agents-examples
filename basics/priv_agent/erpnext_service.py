@@ -12,6 +12,7 @@ Bietet:
 import os
 import re
 import json
+import difflib
 import logging
 from typing import Optional
 import httpx
@@ -26,6 +27,25 @@ ERPNEXT_CURRENCY = os.getenv("ERPNEXT_DEFAULT_CURRENCY", "CHF")
 ERPNEXT_TAX_TEMPLATE = os.getenv("ERPNEXT_DEFAULT_TAX_TEMPLATE", "CH MwSt 8.1% - FAG")
 ERPNEXT_INVOICE_THRESHOLD = float(os.getenv("ERPNEXT_INVOICE_AMOUNT_CONFIRM_THRESHOLD", "5000"))
 ERPNEXT_TIMEOUT = float(os.getenv("ERPNEXT_TIMEOUT", "20"))
+
+# Firmensuffixe für tolerantes Customer-Name-Matching
+_COMPANY_SUFFIXES = (
+    " ag", " gmbh", " sa", " sarl", " inc", " ltd", " llc",
+    " gbr", " kg", " ohg", " e.k.", " e.v.", " ug",
+)
+
+# Mindest-Ähnlichkeits-Score, ab dem ein Fuzzy-Treffer als "exakt" gilt
+_HIGH_CONFIDENCE_THRESHOLD = 0.85
+
+
+def _normalize_customer_name(name: str) -> str:
+    """Lowercase + gängigen Firmensuffix abschneiden für tolerantes Matching."""
+    s = (name or "").lower().strip()
+    for suf in _COMPANY_SUFFIXES:
+        if s.endswith(suf):
+            s = s[:-len(suf)].strip()
+            break
+    return s
 
 
 class ERPNextService:
@@ -83,41 +103,90 @@ class ERPNextService:
 
     async def search_customer(self, query: str) -> tuple[bool, dict | str]:
         """
-        Suche Customers in ERPNext mit zweistufiger Strategie.
+        Suche Customers mit dreistufiger Strategie:
+          1. Exact (case-insensitive + Firmensuffix-tolerant)
+          2. Substring-Präfix-Suche (4-Zeichen-Tokens, breite Vorauswahl)
+          3. Re-Ranking via difflib.SequenceMatcher;
+             Top-1 mit Score >= 0.85 wird als exact_match gewertet.
 
         Returns:
             (True, {"exact_match": bool, "results": list[dict]})
-            - exact_match=True: EIN Kunde mit exakt diesem customer_name existiert
-            - exact_match=False: Fuzzy-Treffer (ggf. leere Liste)
+            - exact_match=True: genau EIN passender Kunde gefunden
+            - exact_match=False: Fuzzy-Liste (sortiert nach Ähnlichkeit), ggf. leer
         """
-        # === Stufe 1: Exact-Match (customer_name = query) ===
+        query_clean = (query or "").strip()
+        if not query_clean:
+            return True, {"exact_match": False, "results": []}
+        query_norm = _normalize_customer_name(query_clean)
+
+        # === Stufe 1: Case-insensitive Substring + Suffix-tolerantes Match ===
+        # MariaDB "like" ist mit utf8mb4_general_ci standardmässig case-insensitive.
+        # Wir holen Kandidaten via %query% und prüfen dann normalisiert auf Gleichheit.
         ok, data = await self._request("GET", "/api/resource/Customer", params={
-            "filters": json.dumps([["customer_name", "=", query]]),
+            "filters": json.dumps([["customer_name", "like", f"%{query_clean}%"]]),
             "fields": json.dumps(["name", "customer_name", "customer_group"]),
-            "limit_page_length": 1,
+            "limit_page_length": 20,
         })
         if not ok:
             return False, data
-        exact = data.get("data", [])
-        if exact:
-            logger.info(f"   🎯 Exact-Match: {exact[0]['customer_name']}")
-            return True, {"exact_match": True, "results": exact}
 
-        # === Stufe 2: Fuzzy via Tokens ===
-        tokens = [t for t in re.split(r"[\s\-_.]+", query) if len(t) >= 3]
+        candidates = data.get("data", [])
+        exact_matches = [
+            c for c in candidates
+            if _normalize_customer_name(c["customer_name"]) == query_norm
+        ]
+        if len(exact_matches) == 1:
+            logger.info(f"   🎯 Exact-Match (case/suffix-tolerant): {exact_matches[0]['customer_name']}")
+            return True, {"exact_match": True, "results": exact_matches}
+
+        # === Stufe 2: Substring-Präfix-Suche (typo-tolerant) ===
+        tokens = [t for t in re.split(r"[\s\-_.]+", query_clean) if len(t) >= 3]
         if not tokens:
-            tokens = [query]
-        or_filters = [["customer_name", "like", f"%{t}%"] for t in tokens]
+            tokens = [query_clean]
+        # Kürze Tokens auf 4 Zeichen für Toleranz gegen Tippfehler am Wortende
+        # (z.B. "Flaggprint" → "Flag" matched "flagprint ag")
+        short_tokens = [t[:4] if len(t) > 4 else t for t in tokens]
+        or_filters = [["customer_name", "like", f"%{t}%"] for t in short_tokens]
+
         ok, data = await self._request("GET", "/api/resource/Customer", params={
             "or_filters": json.dumps(or_filters),
             "fields": json.dumps(["name", "customer_name", "customer_group"]),
-            "limit_page_length": 10,
+            "limit_page_length": 50,
         })
         if not ok:
             return False, data
-        results = data.get("data", [])
-        logger.info(f"   🔍 Fuzzy-Match: {len(results)} Treffer für '{query}'")
-        return True, {"exact_match": False, "results": results}
+        raw_results = data.get("data", [])
+
+        if not raw_results:
+            logger.info(f"   ❌ Kein Treffer für '{query_clean}'")
+            return True, {"exact_match": False, "results": []}
+
+        # === Stufe 3: Re-Ranking via SequenceMatcher ===
+        scored = [
+            (
+                difflib.SequenceMatcher(
+                    None,
+                    query_norm,
+                    _normalize_customer_name(c["customer_name"]),
+                ).ratio(),
+                c,
+            )
+            for c in raw_results
+        ]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top_score, top_customer = scored[0]
+        logger.info(
+            f"   🔍 Top-Score: {top_customer['customer_name']} = {top_score:.2f} "
+            f"(Query: '{query_clean}')"
+        )
+
+        # High-Confidence: Top-1 wird als exakter Treffer behandelt
+        if top_score >= _HIGH_CONFIDENCE_THRESHOLD:
+            logger.info(f"   🎯 High-Confidence-Match: {top_customer['customer_name']}")
+            return True, {"exact_match": True, "results": [top_customer]}
+
+        # Sonst: Top 5 als Fuzzy-Liste, nach Score sortiert
+        return True, {"exact_match": False, "results": [c for _, c in scored[:5]]}
 
     async def get_customer(self, name: str) -> tuple[bool, dict | str]:
         """
@@ -213,7 +282,7 @@ class ERPNextService:
         phone: Optional[str] = None,
         customer_group: str = "Commercial",
     ) -> tuple[bool, str]:
-        # Duplikat-Check (Exact-Match auf customer_name)
+        # Duplikat-Check (Exact-Match auf customer_name, jetzt case/suffix-tolerant)
         ok, results = await self.search_customer(customer_name)
         if ok and isinstance(results, dict) and results.get("exact_match"):
             existing = results["results"][0]
