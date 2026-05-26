@@ -81,20 +81,43 @@ class ERPNextService:
     # CUSTOMER
     # ========================================================================
 
-    async def search_customer(self, query: str) -> tuple[bool, list[dict] | str]:
-        # Tokens ab 3 Zeichen, Sonderzeichen als Trenner → tolerantes Fuzzy-Match
-        tokens = [t for t in re.split(r"[\s\-_.]+", query) if len(t) >= 3]
-        if not tokens:
-            tokens = [query]
-        or_filters = [["customer_name", "like", f"%{t}%"] for t in tokens]
-        ok, data = await self._request("GET", "/api/resource/Customer", params={
-            "or_filters": json.dumps(or_filters),
-            "fields": json.dumps(["name", "customer_name", "customer_group"]),
-            "limit_page_length": 10,
-        })
-        if not ok:
-            return False, data
-        return True, data.get("data", [])
+async def search_customer(self, query: str) -> tuple[bool, dict | str]:
+    """
+    Suche Customers in ERPNext mit zweistufiger Strategie.
+    
+    Returns:
+        (True, {"exact_match": bool, "results": list[dict]})
+        - exact_match=True: EIN Kunde mit exakt diesem customer_name existiert
+        - exact_match=False: Fuzzy-Treffer (ggf. leere Liste)
+    """
+    # === Stufe 1: Exact-Match (customer_name = query) ===
+    ok, data = await self._request("GET", "/api/resource/Customer", params={
+        "filters": json.dumps([["customer_name", "=", query]]),
+        "fields": json.dumps(["name", "customer_name", "customer_group"]),
+        "limit_page_length": 1,
+    })
+    if not ok:
+        return False, data
+    exact = data.get("data", [])
+    if exact:
+        logger.info(f"   🎯 Exact-Match: {exact[0]['customer_name']}")
+        return True, {"exact_match": True, "results": exact}
+
+    # === Stufe 2: Fuzzy via Tokens (bisheriges Verhalten) ===
+    tokens = [t for t in re.split(r"[\s\-_.]+", query) if len(t) >= 3]
+    if not tokens:
+        tokens = [query]
+    or_filters = [["customer_name", "like", f"%{t}%"] for t in tokens]
+    ok, data = await self._request("GET", "/api/resource/Customer", params={
+        "or_filters": json.dumps(or_filters),
+        "fields": json.dumps(["name", "customer_name", "customer_group"]),
+        "limit_page_length": 10,
+    })
+    if not ok:
+        return False, data
+    results = data.get("data", [])
+    logger.info(f"   🔍 Fuzzy-Match: {len(results)} Treffer für '{query}'")
+    return True, {"exact_match": False, "results": results}
 
     async def get_customer(self, name: str) -> tuple[bool, dict | str]:
         """
@@ -192,10 +215,9 @@ class ERPNextService:
     ) -> tuple[bool, str]:
         # Duplikat-Check (Exact-Match auf customer_name)
         ok, results = await self.search_customer(customer_name)
-        if ok and isinstance(results, list):
-            for r in results:
-                if r.get("customer_name", "").lower() == customer_name.lower():
-                    return False, f"Kunde existiert bereits: {r['name']}"
+        if ok and isinstance(results, dict) and results.get("exact_match"):
+            existing = results["results"][0]
+            return False, f"Kunde existiert bereits: {existing['name']}"
 
         ok, data = await self._request("POST", "/api/resource/Customer", json={
             "customer_name": customer_name,
