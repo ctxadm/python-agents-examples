@@ -57,7 +57,7 @@ _INVOICE_NAME_PATTERN = re.compile(r"^[A-Z]{2,}-[A-Z]{2,}-\d{4}-\d{4,6}$|^[A-Z]{
 
 
 # =============================================================================
-# JSON STORAGE (unverändert)
+# JSON STORAGE
 # =============================================================================
 
 class NoteStorage:
@@ -112,7 +112,7 @@ storage = NoteStorage(NOTES_FILE)
 
 
 # =============================================================================
-# E-MAIL SERVICE (unverändert)
+# E-MAIL SERVICE
 # =============================================================================
 
 class EmailService:
@@ -184,7 +184,7 @@ email_service = EmailService()
 
 
 # =============================================================================
-# INTERNET-SUCHE SERVICE (unverändert)
+# INTERNET-SUCHE SERVICE
 # =============================================================================
 
 class SearchService:
@@ -451,46 +451,46 @@ class PrivateAgent(Agent):
     # ERPNEXT - LESEN
     # =========================================================================
 
-@function_tool()
-async def erp_search_customer(self, context: RunContext, query: str) -> str:
-    """
-    Sucht einen Kunden in ERPNext per Name.
-    Versucht zuerst exakte Übereinstimmung, dann Fuzzy.
-    Args:
-        query: Kundenname (vollständig oder Teil davon)
-    """
-    logger.info(f"✅ erp_search_customer: {query}")
-    ok, result = await erpnext.search_customer(query)
-    if not ok:
-        return result  # Fehler-String
+    @function_tool()
+    async def erp_search_customer(self, context: RunContext, query: str) -> str:
+        """
+        Sucht einen Kunden in ERPNext per Name.
+        Versucht zuerst exakte Übereinstimmung, dann Fuzzy.
+        Args:
+            query: Kundenname (vollständig oder Teil davon)
+        """
+        logger.info(f"✅ erp_search_customer: {query}")
+        ok, result = await erpnext.search_customer(query)
+        if not ok:
+            return result  # Fehler-String
 
-    exact = result.get("exact_match", False)
-    customers = result.get("results", [])
+        exact = result.get("exact_match", False)
+        customers = result.get("results", [])
 
-    # --- Exakter Treffer: nur diesen Kunden nennen, keine Alternativen ---
-    if exact and customers:
-        c = customers[0]
+        # --- Exakter Treffer: nur diesen Kunden nennen, keine Alternativen ---
+        if exact and customers:
+            c = customers[0]
+            return (
+                f"EXAKTER TREFFER: Kunde '{c['customer_name']}' mit ID {c['name']}. "
+                f"Verwende ausschliesslich diesen Kunden. "
+                f"Nenne dem Nutzer KEINE anderen Kunden als Alternative."
+            )
+
+        # --- Kein Treffer ---
+        if not customers:
+            return (
+                f"Kein Kunde gefunden für '{query}'. "
+                f"Frage den Nutzer ob ein neuer Kunde angelegt werden soll."
+            )
+
+        # --- Fuzzy: ähnliche Kandidaten, kein Exact-Match ---
+        names = ", ".join(f"{c['customer_name']} (ID {c['name']})" for c in customers[:5])
         return (
-            f"EXAKTER TREFFER: Kunde '{c['customer_name']}' mit ID {c['name']}. "
-            f"Verwende ausschliesslich diesen Kunden. "
-            f"Nenne dem Nutzer KEINE anderen Kunden als Alternative."
+            f"KEIN exakter Treffer für '{query}'. "
+            f"{len(customers)} ähnliche Kunden in ERPNext: {names}. "
+            f"Frage den Nutzer welcher gemeint ist."
         )
 
-    # --- Kein Treffer ---
-    if not customers:
-        return (
-            f"Kein Kunde gefunden für '{query}'. "
-            f"Frage den Nutzer ob ein neuer Kunde angelegt werden soll."
-        )
-
-    # --- Fuzzy: ähnliche Kandidaten, kein Exact-Match ---
-    names = ", ".join(f"{c['customer_name']} (ID {c['name']})" for c in customers[:5])
-    return (
-        f"KEIN exakter Treffer für '{query}'. "
-        f"{len(customers)} ähnliche Kunden in ERPNext: {names}. "
-        f"Frage den Nutzer welcher gemeint ist."
-    )
-    
     @function_tool()
     async def erp_get_customer_details(self, context: RunContext, customer_id: str) -> str:
         """
@@ -755,10 +755,10 @@ async def entrypoint(ctx: JobContext):
         stt=openai.STT(model="whisper-1", language="de"),
         tts=openai.TTS(
             model="tts-1",
-            voice=os.getenv("TTS_VOICE", "martin"),  # ← deutsche Stimme
+            voice=os.getenv("TTS_VOICE", "martin"),
             base_url=os.getenv("TTS_URL", "http://172.16.0.220:8881/v1"),
             api_key="sk-nokey",
-            speed=float(os.getenv("TTS_SPEED", "1.0")),  # ← 1.0 für klarere Aussprache
+            speed=float(os.getenv("TTS_SPEED", "1.0")),
             response_format="wav",
         ),
         min_endpointing_delay=0.25,
