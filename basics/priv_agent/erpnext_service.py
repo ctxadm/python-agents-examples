@@ -115,8 +115,6 @@ class ERPNextService:
 
         Returns:
             (True, {"exact_match": bool, "results": list[dict]})
-            - exact_match=True: genau EIN passender Kunde gefunden
-            - exact_match=False: Fuzzy-Liste (sortiert nach Ähnlichkeit), ggf. leer
         """
         query_clean = (query or "").strip()
         if not query_clean:
@@ -145,7 +143,6 @@ class ERPNextService:
         tokens = [t for t in re.split(r"[\s\-_.]+", query_clean) if len(t) >= 3]
         if not tokens:
             tokens = [query_clean]
-        # Kürze Tokens auf 4 Zeichen: "Flaggprint" → "Flag" matched "flagprint ag"
         short_tokens = [t[:4] if len(t) > 4 else t for t in tokens]
         or_filters = [["customer_name", "like", f"%{t}%"] for t in short_tokens]
 
@@ -159,13 +156,11 @@ class ERPNextService:
         raw_results = data.get("data", [])
 
         # === Stufe 2b: Fetch-All Fallback (typo-tolerant an JEDER Position) ===
-        # Greift wenn Stufe 2 leer ist (z.B. "Flakprint" → kein %Flak% in der DB).
-        # Bei <500 Customers performant.
         if not raw_results:
             logger.info(f"   ⚠️ Stufe 2 leer für '{query_clean}' – Fallback Fetch-All")
             ok, data = await self._request("GET", "/api/resource/Customer", params={
                 "fields": json.dumps(["name", "customer_name", "customer_group"]),
-                "limit_page_length": 0,  # 0 = alle
+                "limit_page_length": 0,
             })
             if not ok:
                 return False, data
@@ -195,17 +190,14 @@ class ERPNextService:
             f"(Query: '{query_clean}')"
         )
 
-        # Score zu schlecht: gar kein sinnvoller Treffer
         if top_score < _MIN_FUZZY_SCORE:
             logger.info(f"   ❌ Top-Score {top_score:.2f} unter Schwelle {_MIN_FUZZY_SCORE}")
             return True, {"exact_match": False, "results": []}
 
-        # High-Confidence: Top-1 wird als exakter Treffer behandelt
         if top_score >= _HIGH_CONFIDENCE_THRESHOLD:
             logger.info(f"   🎯 High-Confidence-Match: {top_customer['customer_name']}")
             return True, {"exact_match": True, "results": [top_customer]}
 
-        # Sonst: Top 5 mit Score über Minimum-Schwelle
         return True, {
             "exact_match": False,
             "results": [c for s, c in scored[:5] if s >= _MIN_FUZZY_SCORE],
@@ -213,10 +205,9 @@ class ERPNextService:
 
     async def get_customer(self, name: str) -> tuple[bool, dict | str]:
         """
-        Liest Customer-Details inkl. Email/Phone mit 3-stufigem Fallback:
-          1. Customer.email_id (Direktfeld)
-          2. Customer.customer_primary_contact → Contact.email_ids[0]
-          3. Beliebiger via Dynamic Link verknüpfter Contact mit email_id
+        Liest Customer-Details inkl. Email/Phone mit 3-stufigem Fallback.
+        Liefert zusätzlich address_line1, pincode und city einzeln,
+        damit die Adresse im Tool-Layer Voice-/Chat-konform formatiert werden kann.
         """
         ok, data = await self._request("GET", f"/api/resource/Customer/{name}")
         if not ok:
@@ -228,7 +219,10 @@ class ERPNextService:
             "customer_group": cust.get("customer_group"),
             "email": None,
             "phone": None,
-            "address": None,
+            "address": None,         # combined (kompatibel)
+            "address_line1": None,   # neu: Strasse separat
+            "pincode": None,         # neu: PLZ separat
+            "city": None,            # neu: Ort separat
         }
 
         # --- Stufe 1: Direktes email_id-Feld am Customer ---
@@ -274,14 +268,22 @@ class ERPNextService:
                     if details["email"] and details["phone"]:
                         break
 
-        # --- Adresse ---
+        # --- Adresse (jetzt mit Einzelfeldern) ---
         if cust.get("customer_primary_address"):
             ok4, addr = await self._request(
                 "GET", f"/api/resource/Address/{cust['customer_primary_address']}"
             )
             if ok4:
                 a = addr.get("data", {})
-                details["address"] = f"{a.get('address_line1', '')}, {a.get('pincode', '')} {a.get('city', '')}".strip(", ")
+                details["address_line1"] = a.get("address_line1") or None
+                details["pincode"] = a.get("pincode") or None
+                details["city"] = a.get("city") or None
+                # Kombiniertes Feld für Backwards-Compat
+                line1 = a.get("address_line1", "")
+                pin = a.get("pincode", "")
+                city = a.get("city", "")
+                combined = f"{line1}, {pin} {city}".strip(", ").strip()
+                details["address"] = combined or None
 
         return True, details
 
@@ -305,7 +307,6 @@ class ERPNextService:
         phone: Optional[str] = None,
         customer_group: str = "Commercial",
     ) -> tuple[bool, str]:
-        # Duplikat-Check (Exact-Match auf customer_name, jetzt case/suffix-tolerant)
         ok, results = await self.search_customer(customer_name)
         if ok and isinstance(results, dict) and results.get("exact_match"):
             existing = results["results"][0]
@@ -404,7 +405,6 @@ class ERPNextService:
     async def submit_invoice(self, invoice_name: str) -> tuple[bool, str]:
         ok, data = await self._request("GET", f"/api/resource/Sales Invoice/{invoice_name}")
         if not ok:
-            # Spezifische Meldung wenn die Invoice gar nicht existiert
             if isinstance(data, str) and "existiert nicht" in data:
                 return False, (
                     f"Rechnung '{invoice_name}' existiert nicht in ERPNext. "
