@@ -776,7 +776,7 @@ async def entrypoint(ctx: JobContext):
     note_count = storage.count()
     greeting = ("Hallo! Wie kann ich helfen?"
                 if note_count == 0
-                else f"Hallo willkommen zurück! ...zur Info, du hast {note_count} Notizen gespeichert.")
+                else f"Willkommen zurück! ...du hast {note_count} Notizen gespeichert.")
 
     try:
         await session.say(greeting, allow_interruptions=True, add_to_chat_ctx=True)
