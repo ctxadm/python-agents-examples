@@ -452,7 +452,7 @@ class PrivateAgent(Agent):
     # =========================================================================
 
 @function_tool()
-    async def erp_search_customer(self, context: RunContext, query: str) -> str:
+async def erp_search_customer(self, context: RunContext, query: str) -> str:
     """
     Sucht einen Kunden in ERPNext per Name.
     Versucht zuerst exakte Übereinstimmung, dann Fuzzy.
@@ -479,7 +479,7 @@ class PrivateAgent(Agent):
     # --- Kein Treffer ---
     if not customers:
         return (
-            f"Kein Kunde mit dem Namen '{query}' in ERPNext gefunden. "
+            f"Kein Kunde gefunden für '{query}'. "
             f"Frage den Nutzer ob ein neuer Kunde angelegt werden soll."
         )
 
