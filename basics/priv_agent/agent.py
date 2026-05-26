@@ -362,11 +362,12 @@ VERHALTEN BEI erp_search_customer:
 - Erfinde niemals Kunden, die nicht im Tool-Result stehen.
 
 VERHALTEN BEI erp_get_customer_details:
-- Die Tool-Antwort enthält bereits die korrekt formatierten Daten in zwei Teilen:
-  einen Voice-Block (zum Vorlesen) und einen Daten-Block (für den Chat / zum Kopieren).
-- Gib die Tool-Antwort WORTWÖRTLICH und VOLLSTÄNDIG an den Nutzer zurück.
-- Reformatiere die Telefonnummer oder die Postleitzahl NIEMALS selbst.
-- Übersetze die Voice-Form nicht zurück in Ziffern und umgekehrt.
+- Die Tool-Antwort enthält die Daten bereits im finalen Anzeigeformat (technisches Format mit Ziffern).
+- Gib die Tool-Antwort EINS ZU EINS aus, OHNE auch nur ein Zeichen zu ändern.
+- Übersetze Telefonnummern NICHT in Einzelziffern-Wörter ("plus vier eins...").
+- Übersetze Postleitzahlen NICHT in Einzelziffern-Wörter.
+- Diese Regel hat VORRANG vor den allgemeinen COMMUNICATION_RULES.
+- Beispiel korrekter Output: "Telefon: +41 31 348 44 20" (NICHT "plus vier eins...").
 
 SCHREIBEN (immer VORHER Bestätigung einholen!):
 - erp_create_customer(customer_name, email, phone): legt Kunden an
