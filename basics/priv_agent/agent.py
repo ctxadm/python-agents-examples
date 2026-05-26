@@ -37,7 +37,6 @@ logger.setLevel(logging.INFO)
 AGENT_NAME = os.getenv("AGENT_NAME", "priv-agent")
 NOTES_FILE = os.getenv("NOTES_FILE", "/data/notes.json")
 
-# E-Mail (SMTP für Notizen-Versand)
 SMTP_HOST = os.getenv("SMTP_HOST", "asmtp.mail.hostpoint.ch")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
 SMTP_USER = os.getenv("SMTP_USER", "info@fastlane-ai.ch")
@@ -50,10 +49,51 @@ SEARCH_MAX_RESULTS = int(os.getenv("SEARCH_MAX_RESULTS", "5"))
 
 _executor = ThreadPoolExecutor(max_workers=2)
 
-# Plausibilitäts-Pattern für Invoice-Namen.
-# ERPNext-Standard für Sales Invoice: ACC-SINV-YYYY-NNNNN oder SINV-YYYY-NNNNN.
-# Blockiert offensichtliche LLM-Halluzinationen wie "INV-DRAFT-2024-1".
 _INVOICE_NAME_PATTERN = re.compile(r"^[A-Z]{2,}-[A-Z]{2,}-\d{4}-\d{4,6}$|^[A-Z]{2,}-\d{4}-\d{4,6}$")
+
+
+# =============================================================================
+# VOICE-FORMATIERUNG (Helper für Telefon + PLZ)
+# =============================================================================
+
+_DIGIT_WORDS = {
+    '0': 'null', '1': 'eins', '2': 'zwei', '3': 'drei',
+    '4': 'vier', '5': 'fünf', '6': 'sechs', '7': 'sieben',
+    '8': 'acht', '9': 'neun',
+}
+
+
+def format_phone_for_voice(phone: str) -> str:
+    """
+    Wandelt eine Telefonnummer in die Sprech-Form mit Ziffern und Gruppen-Kommas:
+      "+41 31 348 44 20"  →  "plus vier eins, drei eins, drei vier acht, vier vier, zwei null"
+    Gruppen werden anhand der vorhandenen Leerzeichen erhalten.
+    """
+    if not phone:
+        return ""
+    groups = phone.strip().split()
+    voice_groups = []
+    for group in groups:
+        voice_chars = []
+        for ch in group:
+            if ch == '+':
+                voice_chars.append("plus")
+            elif ch.isdigit():
+                voice_chars.append(_DIGIT_WORDS[ch])
+            # Andere Zeichen ((, ), -, /) überspringen
+        if voice_chars:
+            voice_groups.append(" ".join(voice_chars))
+    return ", ".join(voice_groups)
+
+
+def format_pincode_for_voice(pincode: str) -> str:
+    """
+    Wandelt eine Postleitzahl in Einzelziffern:
+      "3097"  →  "drei null neun sieben"
+    """
+    if not pincode:
+        return ""
+    return " ".join(_DIGIT_WORDS[ch] for ch in str(pincode).strip() if ch.isdigit())
 
 
 # =============================================================================
@@ -274,7 +314,6 @@ class ConversationState(Enum):
 class UserData:
     greeting_sent: bool = False
     state: ConversationState = ConversationState.GREETING
-    # Speichert den zuletzt von create_invoice_draft zurückgegebenen Invoice-Namen
     last_draft_invoice: str | None = None
 
 
@@ -321,6 +360,13 @@ VERHALTEN BEI erp_search_customer:
   Kunden vor und frage welcher gemeint ist.
 - Antwort beginnt mit "Kein Kunde gefunden": Frage ob ein neuer Kunde angelegt werden soll.
 - Erfinde niemals Kunden, die nicht im Tool-Result stehen.
+
+VERHALTEN BEI erp_get_customer_details:
+- Die Tool-Antwort enthält bereits die korrekt formatierten Daten in zwei Teilen:
+  einen Voice-Block (zum Vorlesen) und einen Daten-Block (für den Chat / zum Kopieren).
+- Gib die Tool-Antwort WORTWÖRTLICH und VOLLSTÄNDIG an den Nutzer zurück.
+- Reformatiere die Telefonnummer oder die Postleitzahl NIEMALS selbst.
+- Übersetze die Voice-Form nicht zurück in Ziffern und umgekehrt.
 
 SCHREIBEN (immer VORHER Bestätigung einholen!):
 - erp_create_customer(customer_name, email, phone): legt Kunden an
@@ -467,12 +513,11 @@ class PrivateAgent(Agent):
         logger.info(f"✅ erp_search_customer: {query}")
         ok, result = await erpnext.search_customer(query)
         if not ok:
-            return result  # Fehler-String
+            return result
 
         exact = result.get("exact_match", False)
         customers = result.get("results", [])
 
-        # --- Exakter Treffer: nur diesen Kunden nennen, keine Alternativen ---
         if exact and customers:
             c = customers[0]
             return (
@@ -481,14 +526,12 @@ class PrivateAgent(Agent):
                 f"Nenne dem Nutzer KEINE anderen Kunden als Alternative."
             )
 
-        # --- Kein Treffer ---
         if not customers:
             return (
                 f"Kein Kunde gefunden für '{query}'. "
                 f"Frage den Nutzer ob ein neuer Kunde angelegt werden soll."
             )
 
-        # --- Fuzzy: ähnliche Kandidaten, kein Exact-Match ---
         names = ", ".join(f"{c['customer_name']} (ID {c['name']})" for c in customers[:5])
         return (
             f"KEIN exakter Treffer für '{query}'. "
@@ -500,6 +543,9 @@ class PrivateAgent(Agent):
     async def erp_get_customer_details(self, context: RunContext, customer_id: str) -> str:
         """
         Holt Details eines Kunden (Email, Telefon, Adresse).
+        Liefert eine Antwort, die zwei Blöcke kombiniert:
+          1. Voice-Block: zum Vorlesen (Telefon/PLZ als Einzelziffern)
+          2. Daten-Block: zum Anzeigen im Chat / Kopieren (technisches Format)
         Args:
             customer_id: Customer-ID aus ERPNext
         """
@@ -507,14 +553,45 @@ class PrivateAgent(Agent):
         ok, result = await erpnext.get_customer(customer_id)
         if not ok:
             return result
-        parts = [f"Kunde: {result['customer_name']}"]
-        if result.get("email"):
-            parts.append(f"Email: {result['email']}")
-        if result.get("phone"):
-            parts.append(f"Telefon: {result['phone']}")
-        if result.get("address"):
-            parts.append(f"Adresse: {result['address']}")
-        return ". ".join(parts) + "."
+
+        customer_name = result.get("customer_name") or customer_id
+        email = result.get("email") or ""
+        phone = result.get("phone") or ""
+        address_line1 = result.get("address_line1") or ""
+        pincode = result.get("pincode") or ""
+        city = result.get("city") or ""
+
+        # --- Voice-Block (zum Sprechen) ---
+        voice_parts = [f"Kunde {customer_name}"]
+        if email:
+            voice_parts.append(f"E-Mail {email}")
+        if address_line1 or pincode or city:
+            addr_voice = address_line1
+            pincode_voice = format_pincode_for_voice(pincode) if pincode else ""
+            if pincode_voice and city:
+                addr_voice = f"{address_line1}, PLZ {pincode_voice}, {city}".strip(", ")
+            elif city:
+                addr_voice = f"{address_line1}, {city}".strip(", ")
+            voice_parts.append(f"Adresse {addr_voice}")
+        if phone:
+            phone_voice = format_phone_for_voice(phone)
+            voice_parts.append(f"Telefon {phone_voice}")
+        voice_text = ". ".join(voice_parts) + "."
+
+        # --- Daten-Block (zum Kopieren im Chat) ---
+        data_lines = []
+        if phone:
+            data_lines.append(f"Telefon: {phone}")
+        if email:
+            data_lines.append(f"E-Mail: {email}")
+        if pincode or city:
+            data_lines.append(f"PLZ/Ort: {pincode} {city}".strip())
+        if address_line1:
+            data_lines.append(f"Strasse: {address_line1}")
+
+        if data_lines:
+            return voice_text + "\n\nZum Kopieren:\n" + "\n".join(data_lines)
+        return voice_text
 
     @function_tool()
     async def erp_find_item(self, context: RunContext, query: str) -> str:
@@ -552,7 +629,7 @@ class PrivateAgent(Agent):
         return f"Es gibt {len(result)} offene Rechnungen mit einem Gesamtbetrag von {total:.2f} {erpnext.currency}."
 
     # =========================================================================
-    # ERPNEXT - SCHREIBEN (Customer + Quotation)
+    # ERPNEXT - SCHREIBEN
     # =========================================================================
 
     @function_tool()
@@ -602,7 +679,7 @@ class PrivateAgent(Agent):
                 f"Gesamtbetrag: {result['grand_total']:.2f} {result['currency']}.")
 
     # =========================================================================
-    # ERPNEXT - BUCHUNG (kritisch, mit Confirmation-Flow)
+    # ERPNEXT - BUCHUNG
     # =========================================================================
 
     @function_tool()
@@ -615,8 +692,6 @@ class PrivateAgent(Agent):
     ) -> str:
         """
         Erstellt einen Rechnungsentwurf (noch nicht gebucht).
-        Danach IMMER den Betrag dem Nutzer nennen und Bestätigung einholen
-        BEVOR erp_submit_and_send_invoice aufgerufen wird.
         Args:
             customer_id: Customer-ID
             item_codes: Liste von Artikel-Codes
@@ -630,7 +705,6 @@ class PrivateAgent(Agent):
         if not ok:
             return f"Der Rechnungsentwurf konnte nicht erstellt werden: {result}"
 
-        # Echte Invoice-ID im Session-State merken (Schutz vor Halluzination)
         invoice_name = result["name"]
         try:
             context.userdata.last_draft_invoice = invoice_name
@@ -660,16 +734,11 @@ class PrivateAgent(Agent):
         """
         Bucht den Rechnungsentwurf verbindlich und versendet ihn als PDF
         per E-Mail an die im Kunden hinterlegte primäre E-Mail-Adresse.
-        Die Empfänger-E-Mail wird automatisch aus dem Kunden gezogen.
-        NUR aufrufen nach expliziter Bestätigung des Nutzers!
         Args:
-            invoice_name: EXAKTE ID des Rechnungsentwurfs (z.B. ACC-SINV-2026-00001),
-                          die zuvor von erp_create_invoice_draft zurückgegeben wurde.
-                          NIEMALS einen Namen erfinden oder raten.
+            invoice_name: EXAKTE ID des Rechnungsentwurfs.
         """
         logger.info(f"✅ erp_submit_and_send_invoice: {invoice_name}")
 
-        # === Schutzschicht 1: Format-Check (verhindert offensichtliche Halluzinationen) ===
         if not _INVOICE_NAME_PATTERN.match(invoice_name):
             logger.warning(f"   ⚠️ Invoice-Name '{invoice_name}' hat ungültiges Format")
             return (
@@ -679,7 +748,6 @@ class PrivateAgent(Agent):
                 f"Erfinde niemals selbst Rechnungsnummern."
             )
 
-        # === Schutzschicht 2: Konsistenz-Check gegen Session-State ===
         try:
             last = context.userdata.last_draft_invoice
         except Exception:
@@ -692,7 +760,6 @@ class PrivateAgent(Agent):
                 f"dem korrekten Namen auf."
             )
 
-        # === Empfänger aus Customer holen ===
         recipient_email = await erpnext.get_customer_email_from_invoice(invoice_name)
         if not recipient_email:
             return ("Beim Kunden ist keine E-Mail-Adresse hinterlegt. "
@@ -700,18 +767,15 @@ class PrivateAgent(Agent):
                     "Bitte pflege die E-Mail-Adresse im Kunden in ERPNext nach.")
         logger.info(f"   → Empfänger aus Customer: {recipient_email}")
 
-        # === Buchen ===
         ok, result = await erpnext.submit_invoice(invoice_name)
         if not ok:
             return f"Die Rechnung konnte nicht gebucht werden: {result}"
 
-        # === Versenden ===
         ok2, result2 = await erpnext.send_invoice_email(invoice_name, recipient_email)
         if not ok2:
             return (f"Die Rechnung {invoice_name} wurde gebucht, "
                     f"aber der E-Mail-Versand schlug fehl: {result2}")
 
-        # Session-State zurücksetzen nach erfolgreicher Buchung
         try:
             context.userdata.last_draft_invoice = None
         except Exception:
@@ -776,7 +840,7 @@ async def entrypoint(ctx: JobContext):
     note_count = storage.count()
     greeting = ("Hallo! Wie kann ich helfen?"
                 if note_count == 0
-                else f"Willkommen zurück! ...du hast {note_count} Notizen gespeichert.")
+                else f"Hallo willkommen zurück! ...zur Info, du hast {note_count} Notizen gespeichert.")
 
     try:
         await session.say(greeting, allow_interruptions=True, add_to_chat_ctx=True)
