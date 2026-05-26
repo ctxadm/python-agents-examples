@@ -314,6 +314,14 @@ LESEN (jederzeit erlaubt):
 - erp_find_item(query): findet Artikel
 - erp_get_open_invoices(customer_id): offene Rechnungen
 
+VERHALTEN BEI erp_search_customer:
+- Antwort beginnt mit "EXAKTER TREFFER": Verwende AUSSCHLIESSLICH diesen Kunden.
+  Nenne dem Nutzer NIEMALS andere Kunden als Alternative.
+- Antwort beginnt mit "KEIN exakter Treffer": Lies dem Nutzer die ähnlichen
+  Kunden vor und frage welcher gemeint ist.
+- Antwort beginnt mit "Kein Kunde gefunden": Frage ob neu angelegt werden soll.
+- Erfinde niemals Kunden, die nicht im Tool-Result stehen.
+
 SCHREIBEN (immer VORHER Bestätigung einholen!):
 - erp_create_customer(customer_name, email, phone): legt Kunden an
 - erp_create_quotation(customer_id, item_codes, quantities): erstellt Angebot
@@ -444,7 +452,7 @@ class PrivateAgent(Agent):
     # =========================================================================
 
 @function_tool()
-async def erp_search_customer(self, context: RunContext, query: str) -> str:
+    async def erp_search_customer(self, context: RunContext, query: str) -> str:
     """
     Sucht einen Kunden in ERPNext per Name.
     Versucht zuerst exakte Übereinstimmung, dann Fuzzy.
