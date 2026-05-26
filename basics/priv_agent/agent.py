@@ -443,25 +443,46 @@ class PrivateAgent(Agent):
     # ERPNEXT - LESEN
     # =========================================================================
 
-    @function_tool()
-    async def erp_search_customer(self, context: RunContext, query: str) -> str:
-        """
-        Sucht Kunden in ERPNext per Name (fuzzy).
-        Args:
-            query: Teil des Kundennamens
-        """
-        logger.info(f"✅ erp_search_customer: {query}")
-        ok, result = await erpnext.search_customer(query)
-        if not ok:
-            return result
-        if not result:
-            return f"Es wurde kein Kunde mit dem Namen '{query}' gefunden."
-        if len(result) == 1:
-            c = result[0]
-            return f"Ein Kunde gefunden: {c['customer_name']} (ID {c['name']})."
-        names = ", ".join(c["customer_name"] for c in result[:5])
-        return f"{len(result)} Kunden gefunden: {names}."
+@function_tool()
+async def erp_search_customer(self, context: RunContext, query: str) -> str:
+    """
+    Sucht einen Kunden in ERPNext per Name.
+    Versucht zuerst exakte Übereinstimmung, dann Fuzzy.
+    Args:
+        query: Kundenname (vollständig oder Teil davon)
+    """
+    logger.info(f"✅ erp_search_customer: {query}")
+    ok, result = await erpnext.search_customer(query)
+    if not ok:
+        return result  # Fehler-String
 
+    exact = result.get("exact_match", False)
+    customers = result.get("results", [])
+
+    # --- Exakter Treffer: nur diesen Kunden nennen, keine Alternativen ---
+    if exact and customers:
+        c = customers[0]
+        return (
+            f"EXAKTER TREFFER: Kunde '{c['customer_name']}' mit ID {c['name']}. "
+            f"Verwende ausschliesslich diesen Kunden. "
+            f"Nenne dem Nutzer KEINE anderen Kunden als Alternative."
+        )
+
+    # --- Kein Treffer ---
+    if not customers:
+        return (
+            f"Kein Kunde mit dem Namen '{query}' in ERPNext gefunden. "
+            f"Frage den Nutzer ob ein neuer Kunde angelegt werden soll."
+        )
+
+    # --- Fuzzy: ähnliche Kandidaten, kein Exact-Match ---
+    names = ", ".join(f"{c['customer_name']} (ID {c['name']})" for c in customers[:5])
+    return (
+        f"KEIN exakter Treffer für '{query}'. "
+        f"{len(customers)} ähnliche Kunden in ERPNext: {names}. "
+        f"Frage den Nutzer welcher gemeint ist."
+    )
+    
     @function_tool()
     async def erp_get_customer_details(self, context: RunContext, customer_id: str) -> str:
         """
