@@ -543,9 +543,7 @@ class PrivateAgent(Agent):
     async def erp_get_customer_details(self, context: RunContext, customer_id: str) -> str:
         """
         Holt Details eines Kunden (Email, Telefon, Adresse).
-        Liefert eine Antwort, die zwei Blöcke kombiniert:
-          1. Voice-Block: zum Vorlesen (Telefon/PLZ als Einzelziffern)
-          2. Daten-Block: zum Anzeigen im Chat / Kopieren (technisches Format)
+        Liefert eine kurze Voice-Einleitung + strukturierten Daten-Block (technisches Format).
         Args:
             customer_id: Customer-ID aus ERPNext
         """
@@ -561,37 +559,19 @@ class PrivateAgent(Agent):
         pincode = result.get("pincode") or ""
         city = result.get("city") or ""
 
-        # --- Voice-Block (zum Sprechen) ---
-        voice_parts = [f"Kunde {customer_name}"]
-        if email:
-            voice_parts.append(f"E-Mail {email}")
-        if address_line1 or pincode or city:
-            addr_voice = address_line1
-            pincode_voice = format_pincode_for_voice(pincode) if pincode else ""
-            if pincode_voice and city:
-                addr_voice = f"{address_line1}, PLZ {pincode_voice}, {city}".strip(", ")
-            elif city:
-                addr_voice = f"{address_line1}, {city}".strip(", ")
-            voice_parts.append(f"Adresse {addr_voice}")
-        if phone:
-            phone_voice = format_phone_for_voice(phone)
-            voice_parts.append(f"Telefon {phone_voice}")
-        voice_text = ". ".join(voice_parts) + "."
-
-        # --- Daten-Block (zum Kopieren im Chat) ---
-        data_lines = []
+        # Daten-Block (technisches Format für Chat / Copy-Paste)
+        data_lines = [f"Kunde: {customer_name}"]
         if phone:
             data_lines.append(f"Telefon: {phone}")
         if email:
             data_lines.append(f"E-Mail: {email}")
-        if pincode or city:
-            data_lines.append(f"PLZ/Ort: {pincode} {city}".strip())
         if address_line1:
             data_lines.append(f"Strasse: {address_line1}")
+        if pincode or city:
+            data_lines.append(f"PLZ/Ort: {pincode} {city}".strip())
 
-        if data_lines:
-            return voice_text + "\n\nZum Kopieren:\n" + "\n".join(data_lines)
-        return voice_text
+        # Kurze Voice-Einleitung + Daten-Block
+        return f"Hier sind die Details für {customer_name}.\n\n" + "\n".join(data_lines)
 
     @function_tool()
     async def erp_find_item(self, context: RunContext, query: str) -> str:
