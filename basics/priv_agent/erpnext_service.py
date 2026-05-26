@@ -81,7 +81,7 @@ class ERPNextService:
     # CUSTOMER
     # ========================================================================
 
-async def search_customer(self, query: str) -> tuple[bool, dict | str]:
+    async def search_customer(self, query: str) -> tuple[bool, dict | str]:
     """
     Suche Customers in ERPNext mit zweistufiger Strategie.
     
