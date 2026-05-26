@@ -81,17 +81,14 @@ class ERPNextService:
     # CUSTOMER
     # ========================================================================
 
-
-    # ====================================================================
-    # CUSTOMER
-    # ====================================================================
-
     async def search_customer(self, query: str) -> tuple[bool, dict | str]:
         """
         Suche Customers in ERPNext mit zweistufiger Strategie.
 
         Returns:
             (True, {"exact_match": bool, "results": list[dict]})
+            - exact_match=True: EIN Kunde mit exakt diesem customer_name existiert
+            - exact_match=False: Fuzzy-Treffer (ggf. leere Liste)
         """
         # === Stufe 1: Exact-Match (customer_name = query) ===
         ok, data = await self._request("GET", "/api/resource/Customer", params={
