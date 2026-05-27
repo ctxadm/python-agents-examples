@@ -84,6 +84,30 @@ class IPMIService:
         msg = result.get("message", "") if isinstance(result, dict) else str(result)
         return True, msg
 
+    async def power_off(self, server: str) -> tuple[bool, str]:
+        """
+        Fährt einen Server sauber herunter (chassis power soft / ACPI-Shutdown).
+        Das OS bekommt Zeit Services zu stoppen und Filesystems sauber zu
+        unmounten — kein hartes Power-Off.
+        Rückgabe: (ok, message)
+        """
+        ok, result = await self._request_power(server, "soft")
+        if not ok:
+            return False, str(result)
+        msg = result.get("message", "") if isinstance(result, dict) else str(result)
+        return True, msg
+
+    async def power_reset(self, server: str) -> tuple[bool, str]:
+        """
+        Hard-Reset des Servers (chassis power reset, sofortiger Neustart).
+        Rückgabe: (ok, message)
+        """
+        ok, result = await self._request_power(server, "reset")
+        if not ok:
+            return False, str(result)
+        msg = result.get("message", "") if isinstance(result, dict) else str(result)
+        return True, msg
+
     async def power_status(self, server: str) -> tuple[bool, str]:
         """
         Liest den aktuellen Power-Status (chassis power status).
