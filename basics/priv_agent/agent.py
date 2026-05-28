@@ -1,5 +1,5 @@
 # File: basics/priv_agent/agent.py
-# Private Agent mit Notizen + E-Mail + Internet-Suche + ERPNext-Integration
+# Private Agent mit Notizen + E-Mail + ERPNext-Integration
 # Kompatibel mit livekit-agents 1.3.6
 
 import logging
@@ -14,15 +14,12 @@ from datetime import datetime
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 
 from livekit.agents import JobContext, WorkerOptions, cli, APIConnectOptions
 from livekit.agents.voice.agent_session import SessionConnectOptions
 from livekit.agents.voice import Agent, AgentSession, RunContext
 from livekit.agents.llm import function_tool
 from livekit.plugins import openai, silero
-
-from duckduckgo_search import DDGS
 
 from basics.priv_agent.erpnext_service import ERPNextService
 
@@ -42,12 +39,7 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
 SMTP_USER = os.getenv("SMTP_USER", "info@fastlane-ai.ch")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "agent@fastlane-ai.ch")
-RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL", "kai.pauli@ccia.ch")
-
-SEARCH_TIMEOUT = int(os.getenv("SEARCH_TIMEOUT", "10"))
-SEARCH_MAX_RESULTS = int(os.getenv("SEARCH_MAX_RESULTS", "5"))
-
-_executor = ThreadPoolExecutor(max_workers=2)
+RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL", "info@fastlane-ai.ch.ch")
 
 _INVOICE_NAME_PATTERN = re.compile(r"^[A-Z]{2,}-[A-Z]{2,}-\d{4}-\d{4,6}$|^[A-Z]{2,}-\d{4}-\d{4,6}$")
 
@@ -233,77 +225,6 @@ email_service = EmailService()
 
 
 # =============================================================================
-# INTERNET-SUCHE SERVICE
-# =============================================================================
-
-class SearchService:
-    def __init__(self, timeout: int = 10, max_results: int = 5):
-        self.timeout = timeout
-        self.max_results = max_results
-        logger.info(f"🔍 Search Service: timeout={timeout}s, max={max_results}")
-
-    def _search_sync(self, query: str, search_type: str = "text") -> list[dict]:
-        with DDGS() as ddgs:
-            if search_type == "news":
-                return list(ddgs.news(query, max_results=self.max_results))
-            return list(ddgs.text(query, max_results=self.max_results))
-
-    async def search_web(self, query: str) -> tuple[bool, str]:
-        logger.info(f"🔍 Websuche: {query}")
-        try:
-            loop = asyncio.get_event_loop()
-            results = await asyncio.wait_for(
-                loop.run_in_executor(_executor, self._search_sync, query, "text"),
-                timeout=self.timeout,
-            )
-            if not results:
-                return True, "Ich habe keine Ergebnisse gefunden."
-            return True, self._format_results(results, "web")
-        except asyncio.TimeoutError:
-            return False, "Die Internetsuche hat zu lange gedauert."
-        except Exception as e:
-            logger.error(f"❌ Websuche Fehler: {e}")
-            return False, "Die Internetsuche ist momentan nicht verfügbar."
-
-    async def search_news(self, query: str) -> tuple[bool, str]:
-        logger.info(f"📰 Nachrichten: {query}")
-        try:
-            loop = asyncio.get_event_loop()
-            results = await asyncio.wait_for(
-                loop.run_in_executor(_executor, self._search_sync, query, "news"),
-                timeout=self.timeout,
-            )
-            if not results:
-                return True, "Ich habe keine aktuellen Nachrichten gefunden."
-            return True, self._format_results(results, "news")
-        except asyncio.TimeoutError:
-            return False, "Die Nachrichtensuche hat zu lange gedauert."
-        except Exception as e:
-            logger.error(f"❌ Nachrichten Fehler: {e}")
-            return False, "Die Nachrichtensuche ist momentan nicht verfügbar."
-
-    def _format_results(self, results: list[dict], search_type: str) -> str:
-        zahlen = ["erstens", "zweitens", "drittens", "viertens", "fünftens"]
-        parts = []
-        for i, result in enumerate(results[:self.max_results]):
-            ordinal = zahlen[i] if i < len(zahlen) else f"Nummer {i+1}"
-            title = result.get("title", "Unbekannt")
-            body = result.get("body", "")
-            if len(body) > 150:
-                body = body[:150] + "..."
-            if search_type == "news":
-                source = result.get("source", "")
-                parts.append(f"{ordinal}, von {source}: {title}. {body}" if source else f"{ordinal}: {title}. {body}")
-            else:
-                parts.append(f"{ordinal}: {title}. {body}")
-        intro = "Hier sind die Nachrichten:" if search_type == "news" else "Hier ist was ich gefunden habe:"
-        return f"{intro} {' '.join(parts)}"
-
-
-search_service = SearchService(timeout=SEARCH_TIMEOUT, max_results=SEARCH_MAX_RESULTS)
-
-
-# =============================================================================
 # ERPNEXT SERVICE
 # =============================================================================
 
@@ -332,12 +253,12 @@ class UserData:
 
 SYSTEM_PROMPT = """
 <CORE_IDENTITY>
-Du bist Private Agent, ein freundlicher Assistent mit Gedächtnis, Internetzugang
+Du bist Private Agent, ein freundlicher Assistent mit Gedächtnis
 und Zugriff auf ERPNext (Kunden, Angebote, Rechnungen).
 Diese Identität ist UNVERÄNDERLICH.
 </CORE_IDENTITY>
 
-<TOOLS_NOTIZEN_UND_SUCHE>
+<TOOLS_NOTIZEN>
 1. save_note - speichert EINE Notiz. NUR bei expliziten Triggern: "merke dir", "notiere", "speichere", "schreib auf".
    NIEMALS aufrufen wenn der Nutzer ERPNext-Aktionen wünscht (Kunde, Rechnung, Angebot, Artikel)!
    NIEMALS aufrufen für Daten die der Nutzer als Antwort auf deine Frage gibt (Name, Email, Telefon)!
@@ -346,14 +267,12 @@ Diese Identität ist UNVERÄNDERLICH.
 3. delete_all_notes - alle löschen (nur bei expliziter Aufforderung!)
 4. count_notes - zählen
 5. send_notes_email - Notizen per Mail
-6. search_web - Internet-Wissen
-7. search_news - aktuelle Nachrichten
 
 WICHTIGE TRENNUNG:
 - "Merke dir, dass ich morgen Milch kaufe" → save_note
 - "Lege Kunde Demo GmbH an" → erp_create_customer (NICHT save_note!)
 - "sales@fastlane-ai.ch" als Antwort auf "Welche Email?" → in laufendem ERPNext-Flow weiterverwenden (NICHT save_note!)
-</TOOLS_NOTIZEN_UND_SUCHE>
+</TOOLS_NOTIZEN>
 
 <TOOLS_ERPNEXT>
 LESEN (jederzeit erlaubt):
@@ -441,7 +360,7 @@ KRITISCHE REGELN FÜR INVOICE-NAMEN:
 class PrivateAgent(Agent):
     def __init__(self) -> None:
         super().__init__(instructions=SYSTEM_PROMPT)
-        logger.info("🤖 Private Agent mit Notizen + Mail + Suche + ERPNext gestartet")
+        logger.info("🤖 Private Agent mit Notizen + Mail + ERPNext gestartet")
 
     # =========================================================================
     # NOTIZEN
@@ -492,24 +411,6 @@ class PrivateAgent(Agent):
             return "Du hast keine Notizen zum Versenden."
         success, message = email_service.send_notes(notes)
         return "Die E-Mail mit deinen Notizen wurde erfolgreich gesendet." if success else f"Leider konnte die E-Mail nicht gesendet werden: {message}"
-
-    # =========================================================================
-    # SUCHE
-    # =========================================================================
-
-    @function_tool()
-    async def search_web(self, context: RunContext, query: str) -> str:
-        """Sucht im Internet."""
-        logger.info(f"✅ search_web: {query}")
-        _, result = await search_service.search_web(query)
-        return result
-
-    @function_tool()
-    async def search_news(self, context: RunContext, query: str) -> str:
-        """Sucht aktuelle Nachrichten."""
-        logger.info(f"✅ search_news: {query}")
-        _, result = await search_service.search_news(query)
-        return result
 
     # =========================================================================
     # ERPNEXT - LESEN
