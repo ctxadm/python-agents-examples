@@ -298,23 +298,32 @@ VERHALTEN BEI erp_get_customer_details:
 - Beispiel korrekter Output: "Telefon: +41 31 348 44 20" (NICHT "plus vier eins...").
 
 SCHREIBEN (immer VORHER Bestätigung einholen!):
-- erp_create_customer(customer_name, email, phone): legt Kunden an
-- erp_set_customer_contact(customer_id, phone, email=None): trägt primären Kontakt
-  (Telefon + optional Email) bei einem bestehenden Kunden nach.
-  NUR möglich wenn der Kunde aktuell KEINEN primären Kontakt hat (typisch nach CSV-Import).
+- erp_create_customer(customer_name, email, phone): legt einen NEUEN Kunden an
+- erp_set_customer_contact(customer_id, phone=None, email=None):
+  Setzt oder ERGÄNZT den primären Kontakt eines BESTEHENDEN Kunden.
+  WICHTIG: phone UND email sind beide optional. Es muss aber MINDESTENS EINES übergeben werden.
+  Ergänzungs-Verhalten: nur leere Felder werden befüllt. Bereits gesetzte
+  Felder werden NIE überschrieben (das Tool meldet dann einen Konflikt zurück).
+  Anwendungsfälle:
+    - Telefon ist leer, soll nachgetragen werden → erp_set_customer_contact(customer_id, phone="...")
+    - E-Mail ist leer, soll nachgetragen werden → erp_set_customer_contact(customer_id, email="...")
+    - Beides leer, beides soll nachgetragen werden → erp_set_customer_contact(customer_id, phone="...", email="...")
 - erp_create_quotation(customer_id, item_codes, quantities): erstellt Angebot
 - erp_create_invoice_draft(customer_id, item_codes, quantities): legt Rechnungs-Entwurf an
 - erp_submit_and_send_invoice(invoice_name): bucht Rechnung und versendet PDF
 
-ABLAUF FÜR KONTAKT NACHTRAGEN (erp_set_customer_contact):
+ABLAUF FÜR KONTAKT NACHTRAGEN / ERGÄNZEN (erp_set_customer_contact):
 1. erp_search_customer aufrufen, um die Customer-ID zu ermitteln
-2. erp_get_customer_details aufrufen, um dem Nutzer zu zeigen was aktuell hinterlegt ist
-3. Telefonnummer (und optional Email) vom Nutzer wiederholen lassen
-4. Frage: "Soll ich die Telefonnummer XYZ für den Kunden ABC speichern?"
-5. Bei klarem "Ja" → erp_set_customer_contact aufrufen
-6. Wenn das Tool meldet "Kunde hat bereits einen primären Kontakt" →
-   dem Nutzer mitteilen, dass das Update bestehender Kontakte aktuell nicht freigegeben ist
-   und im ERPNext-UI gepflegt werden muss.
+2. erp_get_customer_details aufrufen, um zu sehen welche Felder leer sind
+3. Den fehlenden Wert vom Nutzer erfragen und wiederholen lassen
+4. Frage: "Soll ich [die Telefonnummer XYZ / die E-Mail XYZ] für den Kunden ABC speichern?"
+5. Bei klarem "Ja" → erp_set_customer_contact aufrufen.
+   - Wenn nur Telefon nachgetragen werden soll: rufe das Tool nur mit phone auf.
+   - Wenn nur E-Mail nachgetragen werden soll: rufe das Tool nur mit email auf.
+   - Übergebe NIEMALS den String "None", "null", "" oder ähnliche Platzhalter.
+   - Wenn der Nutzer einen Wert nicht genannt hat, lasse den Parameter komplett WEG.
+6. Wenn das Tool meldet "bereits hinterlegt" / "Überschreiben nicht freigegeben":
+   dem Nutzer mitteilen, dass das Überschreiben nur im ERPNext-UI möglich ist.
 
 ABLAUF FÜR KUNDEN ANLEGEN:
 1. Daten erfragen (Name + Email Pflicht, Telefon optional)
@@ -564,25 +573,39 @@ class PrivateAgent(Agent):
         self,
         context: RunContext,
         customer_id: str,
-        phone: str,
+        phone: str | None = None,
         email: str | None = None,
     ) -> str:
         """
-        Setzt den primären Kontakt (Telefon, optional E-Mail) eines bestehenden Kunden.
-        NUR aufrufen, wenn der Kunde aktuell keinen primären Kontakt hat (typisch nach CSV-Import).
+        Setzt oder ERGÄNZT den primären Kontakt (Telefon, E-Mail) eines bestehenden Kunden.
+
+        Mindestens einer der Parameter phone ODER email muss übergeben werden.
+        Beide Parameter sind unabhängig voneinander optional.
+
+        Verhalten:
+          - Hat der Kunde noch keinen primären Kontakt → neuer Contact wird angelegt und verlinkt
+          - Hat der Kunde einen primären Kontakt, aber das angefragte Feld ist leer
+            → wird ergänzt (Merge, keine Überschreibung bestehender Daten)
+          - Ist das angefragte Feld bereits gesetzt
+            → wird ABGELEHNT (Schutz vor Datenverlust, manuell im UI ändern)
+
         NUR aufrufen nach expliziter Bestätigung durch den Nutzer!
+
         Args:
             customer_id: Customer-ID aus ERPNext (genau wie in erp_search_customer zurückgegeben)
-            phone: Telefonnummer (wird automatisch zu E.164 normalisiert)
+            phone: Telefonnummer (optional, wird automatisch zu E.164 normalisiert)
             email: E-Mail-Adresse (optional)
         """
-        logger.info(f"✅ erp_set_customer_contact: {customer_id} / phone={phone} / email={email}")
-        ok, result = await erpnext.set_customer_contact(customer_id, phone=phone, email=email)
+        logger.info(
+            f"✅ erp_set_customer_contact: {customer_id} / phone={phone} / email={email}"
+        )
+        ok, result = await erpnext.set_customer_contact(
+            customer_id, phone=phone, email=email
+        )
         if not ok:
             return f"Der Kontakt konnte nicht gesetzt werden: {result}"
-        if email:
-            return f"Telefonnummer und E-Mail wurden für {customer_id} gespeichert."
-        return f"Telefonnummer wurde für {customer_id} gespeichert."
+        # result enthält bereits die voice-tauglich formatierte Statusmeldung
+        return result
 
     @function_tool()
     async def erp_create_quotation(
