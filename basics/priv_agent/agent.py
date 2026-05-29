@@ -573,8 +573,8 @@ class PrivateAgent(Agent):
         self,
         context: RunContext,
         customer_id: str,
-        phone: str | None = None,
-        email: str | None = None,
+        phone: Optional[str] = None,
+        email: Optional[str] = None,
     ) -> str:
         """
         Setzt oder ERGÄNZT den primären Kontakt (Telefon, E-Mail) eines bestehenden Kunden.
