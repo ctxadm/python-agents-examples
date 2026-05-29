@@ -14,6 +14,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Optional
 
 from livekit.agents import JobContext, WorkerOptions, cli, APIConnectOptions
 from livekit.agents.voice.agent_session import SessionConnectOptions
