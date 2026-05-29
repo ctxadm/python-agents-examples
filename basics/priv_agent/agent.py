@@ -299,9 +299,22 @@ VERHALTEN BEI erp_get_customer_details:
 
 SCHREIBEN (immer VORHER Bestätigung einholen!):
 - erp_create_customer(customer_name, email, phone): legt Kunden an
+- erp_set_customer_contact(customer_id, phone, email=None): trägt primären Kontakt
+  (Telefon + optional Email) bei einem bestehenden Kunden nach.
+  NUR möglich wenn der Kunde aktuell KEINEN primären Kontakt hat (typisch nach CSV-Import).
 - erp_create_quotation(customer_id, item_codes, quantities): erstellt Angebot
 - erp_create_invoice_draft(customer_id, item_codes, quantities): legt Rechnungs-Entwurf an
 - erp_submit_and_send_invoice(invoice_name): bucht Rechnung und versendet PDF
+
+ABLAUF FÜR KONTAKT NACHTRAGEN (erp_set_customer_contact):
+1. erp_search_customer aufrufen, um die Customer-ID zu ermitteln
+2. erp_get_customer_details aufrufen, um dem Nutzer zu zeigen was aktuell hinterlegt ist
+3. Telefonnummer (und optional Email) vom Nutzer wiederholen lassen
+4. Frage: "Soll ich die Telefonnummer XYZ für den Kunden ABC speichern?"
+5. Bei klarem "Ja" → erp_set_customer_contact aufrufen
+6. Wenn das Tool meldet "Kunde hat bereits einen primären Kontakt" →
+   dem Nutzer mitteilen, dass das Update bestehender Kontakte aktuell nicht freigegeben ist
+   und im ERPNext-UI gepflegt werden muss.
 
 ABLAUF FÜR KUNDEN ANLEGEN:
 1. Daten erfragen (Name + Email Pflicht, Telefon optional)
@@ -545,6 +558,31 @@ class PrivateAgent(Agent):
         if not ok:
             return f"Der Kunde konnte nicht angelegt werden: {result}"
         return f"Der Kunde {customer_name} wurde erfolgreich angelegt unter der ID {result}."
+
+    @function_tool()
+    async def erp_set_customer_contact(
+        self,
+        context: RunContext,
+        customer_id: str,
+        phone: str,
+        email: str | None = None,
+    ) -> str:
+        """
+        Setzt den primären Kontakt (Telefon, optional E-Mail) eines bestehenden Kunden.
+        NUR aufrufen, wenn der Kunde aktuell keinen primären Kontakt hat (typisch nach CSV-Import).
+        NUR aufrufen nach expliziter Bestätigung durch den Nutzer!
+        Args:
+            customer_id: Customer-ID aus ERPNext (genau wie in erp_search_customer zurückgegeben)
+            phone: Telefonnummer (wird automatisch zu E.164 normalisiert)
+            email: E-Mail-Adresse (optional)
+        """
+        logger.info(f"✅ erp_set_customer_contact: {customer_id} / phone={phone} / email={email}")
+        ok, result = await erpnext.set_customer_contact(customer_id, phone=phone, email=email)
+        if not ok:
+            return f"Der Kontakt konnte nicht gesetzt werden: {result}"
+        if email:
+            return f"Telefonnummer und E-Mail wurden für {customer_id} gespeichert."
+        return f"Telefonnummer wurde für {customer_id} gespeichert."
 
     @function_tool()
     async def erp_create_quotation(
