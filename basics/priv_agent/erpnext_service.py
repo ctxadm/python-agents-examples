@@ -351,8 +351,8 @@ class ERPNextService:
                 "first_name": customer_name[:140],
                 "links": [{"link_doctype": "Customer", "link_name": customer_id}],
             }
-            if email:
-                payload["email_ids"] = [{"email_id": email, "is_primary": 1}]
+        if email and isinstance(email, str) and email.strip() and email.strip().lower() not in ("none", "null") and "@" in email:
+            payload["email_ids"] = [{"email_id": email.strip(), "is_primary": 1}]
             if phone:
                 phone_e164 = _normalize_phone_e164(phone)
                 payload["phone_nos"] = [{
