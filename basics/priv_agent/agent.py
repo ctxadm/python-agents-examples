@@ -319,10 +319,10 @@ ABLAUF FÜR KONTAKT NACHTRAGEN / ERGÄNZEN (erp_set_customer_contact):
 3. Den fehlenden Wert vom Nutzer erfragen und wiederholen lassen
 4. Frage: "Soll ich [die Telefonnummer XYZ / die E-Mail XYZ] für den Kunden ABC speichern?"
 5. Bei klarem "Ja" → erp_set_customer_contact aufrufen.
-   - Wenn nur Telefon nachgetragen werden soll: rufe das Tool nur mit phone auf.
-   - Wenn nur E-Mail nachgetragen werden soll: rufe das Tool nur mit email auf.
-   - Übergebe NIEMALS den String "None", "null", "" oder ähnliche Platzhalter.
-   - Wenn der Nutzer einen Wert nicht genannt hat, lasse den Parameter komplett WEG.
+   - Wenn nur Telefon nachgetragen werden soll: phone="..." und email="" (leerer String!) übergeben.
+   - Wenn nur E-Mail nachgetragen werden soll: email="..." und phone="" (leerer String!) übergeben.
+   - Übergebe NIEMALS den String "None" oder "null" als Wert.
+   - Felder die nicht nachgetragen werden sollen: leeren String "" übergeben (NICHT weglassen).
 6. Wenn das Tool meldet "bereits hinterlegt" / "Überschreiben nicht freigegeben":
    dem Nutzer mitteilen, dass das Überschreiben nur im ERPNext-UI möglich ist.
 
