@@ -2,7 +2,7 @@
 ERPNext Service für LiveKit Agent (async, analog EmailService).
 
 Bietet:
-  - search_customer / get_customer / create_customer
+  - search_customer / get_customer / create_customer / set_customer_contact
   - get_customer_email_from_invoice
   - find_item
   - create_quotation
@@ -49,6 +49,29 @@ def _normalize_customer_name(name: str) -> str:
             s = s[:-len(suf)].strip()
             break
     return s
+
+
+def _normalize_phone_e164(phone: str, default_country_code: str = "+41") -> str:
+    """
+    Normalisiert eine Telefonnummer zu E.164-Format (CH-Default: +41).
+    Beispiele:
+      "044 123 45 67"     -> "+41441234567"
+      "+41 44 123 45 67"  -> "+41441234567"
+      "0041 44 123 45 67" -> "+41441234567"
+      "+41441234567"      -> "+41441234567"
+    """
+    if not phone:
+        return ""
+    cleaned = re.sub(r"[^\d+]", "", phone.strip())
+    if not cleaned:
+        return ""
+    if cleaned.startswith("+"):
+        return cleaned
+    if cleaned.startswith("00"):
+        return "+" + cleaned[2:]
+    if cleaned.startswith("0"):
+        return default_country_code + cleaned[1:]
+    return default_country_code + cleaned
 
 
 class ERPNextService:
@@ -331,7 +354,12 @@ class ERPNextService:
             if email:
                 payload["email_ids"] = [{"email_id": email, "is_primary": 1}]
             if phone:
-                payload["phone_nos"] = [{"phone": phone, "is_primary_phone": 1}]
+                phone_e164 = _normalize_phone_e164(phone)
+                payload["phone_nos"] = [{
+                    "phone": phone_e164 or phone,
+                    "is_primary_phone": 1,
+                    "is_primary_mobile_no": 1,
+                }]
 
             ok2, contact_data = await self._request("POST", "/api/resource/Contact", json=payload)
             if ok2:
@@ -340,6 +368,84 @@ class ERPNextService:
                                     json={"customer_primary_contact": contact_id})
                 logger.info(f"   Contact verknüpft: {contact_id}")
         return True, customer_id
+
+    async def set_customer_contact(
+        self,
+        customer_id: str,
+        phone: str,
+        email: Optional[str] = None,
+    ) -> tuple[bool, str]:
+        """
+        Setzt den primären Kontakt (Telefon + optional Email) eines bestehenden Kunden.
+
+        Phase 1: Funktioniert NUR wenn der Kunde aktuell KEINEN primären Kontakt hat
+        (typischer Fall nach CSV-Import). Wenn customer_primary_contact bereits gesetzt
+        ist, wird abgebrochen und ein klarer Hinweis zurückgegeben.
+
+        Telefon wird automatisch zu E.164 normalisiert (CH-Default: +41).
+
+        Args:
+            customer_id: Customer-ID aus ERPNext (exakter Name)
+            phone: Telefonnummer (beliebiges Format, wird normalisiert)
+            email: E-Mail-Adresse (optional)
+
+        Returns:
+            (True, contact_id) bei Erfolg
+            (False, fehlermeldung) bei Fehler oder bereits vorhandenem Primary Contact
+        """
+        # 1) Customer lesen → primary_contact prüfen
+        ok, data = await self._request("GET", f"/api/resource/Customer/{customer_id}")
+        if not ok:
+            return False, data if isinstance(data, str) else "Kunde nicht gefunden."
+
+        cust = data.get("data", {})
+        if cust.get("customer_primary_contact"):
+            existing = cust["customer_primary_contact"]
+            logger.warning(f"   ⚠️ Customer hat bereits Primary Contact: {existing}")
+            return False, (
+                f"Der Kunde hat bereits einen primären Kontakt ({existing}). "
+                f"Das Aktualisieren bestehender Kontakte ist aktuell nicht freigegeben."
+            )
+
+        customer_name = cust.get("customer_name") or customer_id
+
+        # 2) Telefon normalisieren
+        phone_e164 = _normalize_phone_e164(phone)
+        if not phone_e164:
+            return False, "Die Telefonnummer ist ungültig."
+
+        # 3) Neuen Contact anlegen
+        payload = {
+            "first_name": customer_name[:140],
+            "links": [{"link_doctype": "Customer", "link_name": customer_id}],
+            "phone_nos": [{
+                "phone": phone_e164,
+                "is_primary_phone": 1,
+                "is_primary_mobile_no": 1,
+            }],
+        }
+        if email:
+            payload["email_ids"] = [{"email_id": email, "is_primary": 1}]
+
+        ok, contact_data = await self._request("POST", "/api/resource/Contact", json=payload)
+        if not ok:
+            return False, contact_data
+        contact_id = contact_data["data"]["name"]
+        logger.info(f"✅ Contact angelegt: {contact_id} für {customer_id}")
+
+        # 4) Customer verlinken
+        ok, link_data = await self._request(
+            "PUT",
+            f"/api/resource/Customer/{customer_id}",
+            json={"customer_primary_contact": contact_id},
+        )
+        if not ok:
+            return False, (
+                f"Kontakt {contact_id} angelegt, aber Verknüpfung mit Kunde fehlgeschlagen: {link_data}"
+            )
+
+        logger.info(f"   ✅ Customer {customer_id} → Primary Contact {contact_id}")
+        return True, contact_id
 
     # ========================================================================
     # ITEM
