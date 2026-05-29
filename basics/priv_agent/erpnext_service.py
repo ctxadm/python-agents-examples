@@ -74,6 +74,23 @@ def _normalize_phone_e164(phone: str, default_country_code: str = "+41") -> str:
     return default_country_code + cleaned
 
 
+def _is_valid_email(value) -> bool:
+    """
+    Defensiver Filter gegen LLM-Pannen: akzeptiert nur echte Email-Strings.
+    Filtert Platzhalter wie 'None', 'null', leere Strings, Whitespace, fehlendes '@'.
+    """
+    if not value or not isinstance(value, str):
+        return False
+    s = value.strip()
+    if not s:
+        return False
+    if s.lower() in ("none", "null", "n/a", "na", "-"):
+        return False
+    if "@" not in s or "." not in s:
+        return False
+    return True
+
+
 class ERPNextService:
     """Async REST API Client für ERPNext v16."""
 
@@ -346,17 +363,20 @@ class ERPNextService:
         customer_id = data["data"]["name"]
         logger.info(f"✅ Customer angelegt: {customer_id}")
 
-        if email or phone:
+        # Defensiv: Email/Phone nur akzeptieren wenn echte Werte
+        email_valid = _is_valid_email(email)
+        phone_clean = _normalize_phone_e164(phone) if phone else ""
+
+        if email_valid or phone_clean:
             payload = {
                 "first_name": customer_name[:140],
                 "links": [{"link_doctype": "Customer", "link_name": customer_id}],
             }
-        if email and isinstance(email, str) and email.strip() and email.strip().lower() not in ("none", "null") and "@" in email:
-            payload["email_ids"] = [{"email_id": email.strip(), "is_primary": 1}]
-            if phone:
-                phone_e164 = _normalize_phone_e164(phone)
+            if email_valid:
+                payload["email_ids"] = [{"email_id": email.strip(), "is_primary": 1}]
+            if phone_clean:
                 payload["phone_nos"] = [{
-                    "phone": phone_e164 or phone,
+                    "phone": phone_clean,
                     "is_primary_phone": 1,
                     "is_primary_mobile_no": 1,
                 }]
@@ -367,6 +387,9 @@ class ERPNextService:
                 await self._request("PUT", f"/api/resource/Customer/{customer_id}",
                                     json={"customer_primary_contact": contact_id})
                 logger.info(f"   Contact verknüpft: {contact_id}")
+            else:
+                logger.warning(f"   ⚠️ Contact-Anlage fehlgeschlagen: {contact_data}")
+
         return True, customer_id
 
     async def set_customer_contact(
@@ -383,6 +406,7 @@ class ERPNextService:
         ist, wird abgebrochen und ein klarer Hinweis zurückgegeben.
 
         Telefon wird automatisch zu E.164 normalisiert (CH-Default: +41).
+        Email wird defensiv geprüft (Platzhalter wie 'None', 'null' werden ignoriert).
 
         Args:
             customer_id: Customer-ID aus ERPNext (exakter Name)
@@ -414,7 +438,7 @@ class ERPNextService:
         if not phone_e164:
             return False, "Die Telefonnummer ist ungültig."
 
-        # 3) Neuen Contact anlegen
+        # 3) Neuen Contact anlegen (Email defensiv geprüft)
         payload = {
             "first_name": customer_name[:140],
             "links": [{"link_doctype": "Customer", "link_name": customer_id}],
@@ -424,8 +448,11 @@ class ERPNextService:
                 "is_primary_mobile_no": 1,
             }],
         }
-        if email:
-            payload["email_ids"] = [{"email_id": email, "is_primary": 1}]
+        if _is_valid_email(email):
+            payload["email_ids"] = [{"email_id": email.strip(), "is_primary": 1}]
+            logger.info(f"   📧 Email akzeptiert: {email.strip()}")
+        elif email:
+            logger.info(f"   ⚠️ Email '{email}' ignoriert (Platzhalter/ungültig)")
 
         ok, contact_data = await self._request("POST", "/api/resource/Contact", json=payload)
         if not ok:
