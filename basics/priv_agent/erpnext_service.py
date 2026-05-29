@@ -395,72 +395,195 @@ class ERPNextService:
     async def set_customer_contact(
         self,
         customer_id: str,
-        phone: str,
+        phone: Optional[str] = None,
         email: Optional[str] = None,
     ) -> tuple[bool, str]:
         """
-        Setzt den primären Kontakt (Telefon + optional Email) eines bestehenden Kunden.
+        Setzt oder ergänzt den primären Kontakt eines bestehenden Kunden.
 
-        Phase 1: Funktioniert NUR wenn der Kunde aktuell KEINEN primären Kontakt hat
-        (typischer Fall nach CSV-Import). Wenn customer_primary_contact bereits gesetzt
-        ist, wird abgebrochen und ein klarer Hinweis zurückgegeben.
+        Verhalten (Sanftes Phase 2):
+          - Wenn der Kunde KEINEN primären Kontakt hat:
+              → Neuen Contact anlegen mit phone und/oder email, dann verlinken
+          - Wenn ein primärer Kontakt existiert, dort aber phone ODER email LEER ist:
+              → Leeres Feld wird ergänzt (Merge), niemals überschreiben
+          - Wenn ein Feld bereits gesetzt ist und neu beschrieben werden soll:
+              → Ablehnen mit klarer Meldung (Schutz vor Datenverlust)
 
-        Telefon wird automatisch zu E.164 normalisiert (CH-Default: +41).
-        Email wird defensiv geprüft (Platzhalter wie 'None', 'null' werden ignoriert).
+        Mindestens einer der Parameter phone oder email muss übergeben werden.
+        Telefon wird zu E.164 normalisiert (CH-Default: +41).
+        Email wird defensiv geprüft (Platzhalter werden ignoriert).
 
         Args:
             customer_id: Customer-ID aus ERPNext (exakter Name)
-            phone: Telefonnummer (beliebiges Format, wird normalisiert)
+            phone: Telefonnummer (optional)
             email: E-Mail-Adresse (optional)
 
         Returns:
-            (True, contact_id) bei Erfolg
-            (False, fehlermeldung) bei Fehler oder bereits vorhandenem Primary Contact
+            (True, statusmeldung) bei Erfolg
+            (False, fehlermeldung) bei Konflikt oder Fehler
         """
+        # 0) Eingangs-Validierung
+        phone_e164 = _normalize_phone_e164(phone) if phone else ""
+        email_valid = _is_valid_email(email)
+        email_clean = email.strip() if email_valid else ""
+
+        if not phone_e164 and not email_valid:
+            return False, (
+                "Es muss mindestens eine gültige Telefonnummer oder E-Mail-Adresse "
+                "übergeben werden."
+            )
+
         # 1) Customer lesen → primary_contact prüfen
         ok, data = await self._request("GET", f"/api/resource/Customer/{customer_id}")
         if not ok:
             return False, data if isinstance(data, str) else "Kunde nicht gefunden."
 
         cust = data.get("data", {})
-        if cust.get("customer_primary_contact"):
-            existing = cust["customer_primary_contact"]
-            logger.warning(f"   ⚠️ Customer hat bereits Primary Contact: {existing}")
-            return False, (
-                f"Der Kunde hat bereits einen primären Kontakt ({existing}). "
-                f"Das Aktualisieren bestehender Kontakte ist aktuell nicht freigegeben."
+        customer_name = cust.get("customer_name") or customer_id
+        primary_contact_id = cust.get("customer_primary_contact")
+
+        # =====================================================================
+        # FALL A: KEIN primary_contact → neuen Contact anlegen
+        # =====================================================================
+        if not primary_contact_id:
+            return await self._create_and_link_new_contact(
+                customer_id, customer_name, phone_e164, email_clean
             )
 
-        customer_name = cust.get("customer_name") or customer_id
+        # =====================================================================
+        # FALL B: primary_contact existiert → Merge-Logik
+        # =====================================================================
+        ok, contact_resp = await self._request(
+            "GET", f"/api/resource/Contact/{primary_contact_id}"
+        )
+        if not ok:
+            return False, (
+                f"Primärer Kontakt {primary_contact_id} konnte nicht geladen werden."
+            )
 
-        # 2) Telefon normalisieren
-        phone_e164 = _normalize_phone_e164(phone)
-        if not phone_e164:
-            return False, "Die Telefonnummer ist ungültig."
+        contact = contact_resp.get("data", {}) if isinstance(contact_resp, dict) else {}
+        existing_phones = contact.get("phone_nos") or []
+        existing_emails = contact.get("email_ids") or []
 
-        # 3) Neuen Contact anlegen (Email defensiv geprüft)
-        payload = {
-            "first_name": customer_name[:140],
-            "links": [{"link_doctype": "Customer", "link_name": customer_id}],
-            "phone_nos": [{
+        has_phone = len(existing_phones) > 0
+        has_email = len(existing_emails) > 0
+
+        # Konflikt-Erkennung
+        phone_conflict = bool(phone_e164) and has_phone
+        email_conflict = bool(email_valid) and has_email
+
+        # Wenn ALLE angefragten Felder bereits belegt sind → ablehnen
+        wants_phone = bool(phone_e164)
+        wants_email = bool(email_valid)
+
+        if wants_phone and wants_email and phone_conflict and email_conflict:
+            return False, (
+                f"Beim Kunden {customer_name} sind bereits Telefonnummer und E-Mail "
+                f"hinterlegt. Das Überschreiben bestehender Daten ist nicht freigegeben. "
+                f"Bitte im ERPNext-UI manuell ändern."
+            )
+        if wants_phone and not wants_email and phone_conflict:
+            return False, (
+                f"Beim Kunden {customer_name} ist bereits eine Telefonnummer hinterlegt. "
+                f"Das Überschreiben ist nicht freigegeben. Bitte im ERPNext-UI ändern."
+            )
+        if wants_email and not wants_phone and email_conflict:
+            return False, (
+                f"Beim Kunden {customer_name} ist bereits eine E-Mail-Adresse hinterlegt. "
+                f"Das Überschreiben ist nicht freigegeben. Bitte im ERPNext-UI ändern."
+            )
+
+        # Merge: bestehende Listen 1:1 übernehmen + neue Einträge nur in leere Slots
+        merged_phones = list(existing_phones)
+        merged_emails = list(existing_emails)
+        added_phone = False
+        added_email = False
+
+        if wants_phone and not has_phone:
+            merged_phones.append({
                 "phone": phone_e164,
                 "is_primary_phone": 1,
                 "is_primary_mobile_no": 1,
-            }],
-        }
-        if _is_valid_email(email):
-            payload["email_ids"] = [{"email_id": email.strip(), "is_primary": 1}]
-            logger.info(f"   📧 Email akzeptiert: {email.strip()}")
-        elif email:
-            logger.info(f"   ⚠️ Email '{email}' ignoriert (Platzhalter/ungültig)")
+            })
+            added_phone = True
 
-        ok, contact_data = await self._request("POST", "/api/resource/Contact", json=payload)
+        if wants_email and not has_email:
+            merged_emails.append({
+                "email_id": email_clean,
+                "is_primary": 1,
+            })
+            added_email = True
+
+        if not added_phone and not added_email:
+            # Sollte durch Konflikt-Prüfung oben abgefangen sein – Safety-Net
+            return False, (
+                f"Keine Änderung möglich: alle angefragten Felder sind bereits gesetzt."
+            )
+
+        # PUT Contact: nur die geänderten Listen mitschicken
+        update_payload = {}
+        if added_phone:
+            update_payload["phone_nos"] = merged_phones
+        if added_email:
+            update_payload["email_ids"] = merged_emails
+
+        ok, put_result = await self._request(
+            "PUT",
+            f"/api/resource/Contact/{primary_contact_id}",
+            json=update_payload,
+        )
+        if not ok:
+            return False, (
+                f"Die Aktualisierung des Kontakts schlug fehl: {put_result}"
+            )
+
+        logger.info(
+            f"✅ Contact {primary_contact_id} ergänzt: "
+            f"phone_added={added_phone}, email_added={added_email}"
+        )
+
+        # Status-Meldung
+        if added_phone and added_email:
+            return True, f"Telefonnummer und E-Mail wurden bei {customer_name} ergänzt."
+        if added_phone:
+            return True, f"Telefonnummer wurde bei {customer_name} ergänzt."
+        return True, f"E-Mail-Adresse wurde bei {customer_name} ergänzt."
+
+    async def _create_and_link_new_contact(
+        self,
+        customer_id: str,
+        customer_name: str,
+        phone_e164: str,
+        email_clean: str,
+    ) -> tuple[bool, str]:
+        """
+        Hilfsmethode: legt einen neuen Contact an und verlinkt ihn als
+        customer_primary_contact. Verwendet von set_customer_contact (Fall A).
+        """
+        payload = {
+            "first_name": customer_name[:140],
+            "links": [{"link_doctype": "Customer", "link_name": customer_id}],
+        }
+        if phone_e164:
+            payload["phone_nos"] = [{
+                "phone": phone_e164,
+                "is_primary_phone": 1,
+                "is_primary_mobile_no": 1,
+            }]
+        if email_clean:
+            payload["email_ids"] = [{
+                "email_id": email_clean,
+                "is_primary": 1,
+            }]
+
+        ok, contact_data = await self._request(
+            "POST", "/api/resource/Contact", json=payload
+        )
         if not ok:
             return False, contact_data
         contact_id = contact_data["data"]["name"]
-        logger.info(f"✅ Contact angelegt: {contact_id} für {customer_id}")
+        logger.info(f"✅ Contact NEU angelegt: {contact_id} für {customer_id}")
 
-        # 4) Customer verlinken
         ok, link_data = await self._request(
             "PUT",
             f"/api/resource/Customer/{customer_id}",
@@ -468,11 +591,17 @@ class ERPNextService:
         )
         if not ok:
             return False, (
-                f"Kontakt {contact_id} angelegt, aber Verknüpfung mit Kunde fehlgeschlagen: {link_data}"
+                f"Kontakt {contact_id} angelegt, aber Verknüpfung mit Kunde "
+                f"fehlgeschlagen: {link_data}"
             )
 
         logger.info(f"   ✅ Customer {customer_id} → Primary Contact {contact_id}")
-        return True, contact_id
+
+        if phone_e164 and email_clean:
+            return True, f"Telefonnummer und E-Mail wurden für {customer_name} angelegt."
+        if phone_e164:
+            return True, f"Telefonnummer wurde für {customer_name} angelegt."
+        return True, f"E-Mail-Adresse wurde für {customer_name} angelegt."
 
     # ========================================================================
     # ITEM
